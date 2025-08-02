@@ -1,7 +1,10 @@
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QCheckBox,
                                QComboBox, QLabel, QFrame, QPushButton)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtGui import QGuiApplication, QPixmap, QIcon
+
+from assistant.config import CLIENT_CONFIG
+from assistant.util import encode_client_type
 
 
 class SettingsWidget(QWidget):
@@ -9,6 +12,7 @@ class SettingsWidget(QWidget):
 
     config_changed = Signal(str, object)  # key, value
     single_step_clicked = Signal()  # Signal emitted when single step button is clicked
+    clipboard_step_clicked = Signal()  # Signal emitted when clipboard step button is clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,23 +41,39 @@ class SettingsWidget(QWidget):
         self.single_step_button.clicked.connect(self.on_single_step_clicked)
         step_layout.addWidget(self.single_step_button)
 
-        # Loading label (hidden by default)
-        self.loading_label = QLabel("Loading...")
-        self.loading_label.setVisible(False)
-        step_layout.addWidget(self.loading_label)
+        # Loading indicator icon (hidden by default)
+        self.loading_icon = QLabel("⏳")  # Using hourglass emoji as static icon
+        self.loading_icon.setVisible(False)
+        self.loading_icon.setStyleSheet("font-size: 16px;")
+        step_layout.addWidget(self.loading_icon)
 
         first_column.addLayout(step_layout)
+
+        # Clipboard step button
+        self.clipboard_step_button = QPushButton("Clipboard step")
+        self.clipboard_step_button.setToolTip("Process image from clipboard")
+        self.clipboard_step_button.clicked.connect(self.on_clipboard_step_clicked)
+        first_column.addWidget(self.clipboard_step_button)
         first_column.addStretch()
 
         # Request in progress flag
         self._request_in_progress = False
 
-        # Second column: Screen selector
+        # Second column: Screen selector and Client selector
         second_column = QVBoxLayout()
+
+        # Screen selector
         self.screen_combo = QComboBox()
         self.populate_screen_combo()
         self.screen_combo.currentTextChanged.connect(self.on_screen_changed)
         second_column.addWidget(self.screen_combo)
+
+        # Client selector
+        self.client_combo = QComboBox()
+        self.populate_client_combo()
+        self.client_combo.currentTextChanged.connect(self.on_client_changed)
+        second_column.addWidget(self.client_combo)
+
         second_column.addStretch()
 
         # Third column: Image placeholder
@@ -89,6 +109,15 @@ class SettingsWidget(QWidget):
             name = f"Screen {i+1}: {geometry.width()}x{geometry.height()}"
             self.screen_combo.addItem(name, screen.name())
 
+    def populate_client_combo(self):
+        """Populate the client combo box with all available client:model combinations."""
+        self.client_combo.clear()
+        for backend, models in CLIENT_CONFIG.items():
+            for model in models:
+                client_type = encode_client_type(backend, model)
+                display_name = f"{backend.capitalize()} - {model}"
+                self.client_combo.addItem(display_name, client_type)
+
     def on_auto_query_changed(self, state):
         """Handle auto-query checkbox state change."""
         is_checked = state == Qt.CheckState.Checked
@@ -100,6 +129,13 @@ class SettingsWidget(QWidget):
         if index >= 0:
             screen_name = self.screen_combo.itemData(index)
             self.config_changed.emit("screen", screen_name)
+
+    def on_client_changed(self, client_text):
+        """Handle client selection change."""
+        index = self.client_combo.currentIndex()
+        if index >= 0:
+            client_type = self.client_combo.itemData(index)
+            self.config_changed.emit("client_type", client_type)
 
     def update_from_config(self, config):
         """Update widget state from config."""
@@ -115,10 +151,22 @@ class SettingsWidget(QWidget):
                     self.screen_combo.setCurrentIndex(i)
                     break
 
+        # Update client combo
+        client_type = config.get("client_type", "ollama:moondream")
+        for i in range(self.client_combo.count()):
+            if self.client_combo.itemData(i) == client_type:
+                self.client_combo.setCurrentIndex(i)
+                break
+
     def on_single_step_clicked(self):
         """Handle single step button click."""
         if not self._request_in_progress:
             self.single_step_clicked.emit()
+
+    def on_clipboard_step_clicked(self):
+        """Handle clipboard step button click."""
+        if not self._request_in_progress:
+            self.clipboard_step_clicked.emit()
 
     @property
     def request_in_progress(self) -> bool:
@@ -130,7 +178,8 @@ class SettingsWidget(QWidget):
         """Set the request in progress flag and update UI accordingly."""
         self._request_in_progress = value
         self.single_step_button.setEnabled(not value)
-        self.loading_label.setVisible(value)
+        self.clipboard_step_button.setEnabled(not value)
+        self.loading_icon.setVisible(value)
 
     def set_image(self, pixmap: QPixmap):
         """Set the image in the image placeholder."""

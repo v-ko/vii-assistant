@@ -2,6 +2,12 @@ import json
 import pathlib
 from typing import Callable, Dict, Any, Optional, List
 
+# Client configuration mapping backends to available models
+CLIENT_CONFIG = {
+    "ollama": ["moondream", "gemma3", "qwen2.5vl"],
+    "vllm": ["osunlp/UGround-V1-2B"]
+}
+
 
 class Config:
     """Configuration manager for the assistant application."""
@@ -17,6 +23,7 @@ class Config:
             "auto_query": False,
             "screen": "",  # Will be set to actual screen in init
             "system_prompt": "",
+            "client_type": "ollama:moondream",  # Default client type with model
         }
 
         self._init_config()

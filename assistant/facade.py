@@ -1,16 +1,18 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Optional, Dict, Any
+from typing import TYPE_CHECKING, Optional, Dict, Any, Tuple
 from PySide6.QtGui import QScreen, QGuiApplication, QPixmap
-from PySide6.QtCore import QBuffer, QIODevice
+from PySide6.QtCore import QBuffer, QIODevice, QThread, QObject, Signal
 
 from assistant.services.automation import AutomationService
+from assistant.services.base_client import BaseClient
 from assistant.services.ollama_client import OllamaClient
+from assistant.services.vllm_client import VLLMClient
+from assistant.config import CLIENT_CONFIG
+from assistant.util import decode_client_type
 
 if TYPE_CHECKING:
     from assistant.qt_app import AssistantQtApp
     from assistant.config import Config
-
-MODEL = 'moondream'  # moonderam
 
 
 class Facade:
@@ -18,12 +20,13 @@ class Facade:
     _desktop_server = None
     _config = None
     _automation_service = None
-    _ollama_client = None
+    _client: Optional[BaseClient] = None
+    _client_type: str = "ollama:moondream"
     _watched_screen = None
 
     def __init__(self):
         self._automation_service = AutomationService()
-        self._ollama_client = OllamaClient("http://desk:11434")
+        self._init_client()
 
     @property
     def qt_app(self) -> "AssistantQtApp":
@@ -35,6 +38,7 @@ class Facade:
     def config(self) -> "Config":
         if self._config is None:
             from assistant.config import Config
+
             self._config = Config()
             self._config.set_config_changed_callback(self.apply_config)
         return self._config
@@ -45,11 +49,71 @@ class Facade:
             raise RuntimeError("Automation service not initialized")
         return self._automation_service
 
+    def _parse_client_type(self) -> Tuple[str, str]:
+        """Parse the client_type string into backend and model.
+
+        Validates that the backend and model are valid according to CLIENT_CONFIG.
+        If not, defaults to a known good configuration.
+
+        Returns:
+            A tuple of (backend, model)
+        """
+        # Default values
+        default_backend = "ollama"
+        default_model = "moondream"
+
+        # Parse the client_type string
+        backend, model = decode_client_type(self._client_type)
+
+        # Validate backend
+        if backend not in CLIENT_CONFIG:
+            print(f"Unknown backend: {backend}, using default")
+            return default_backend, default_model
+
+        # Validate model
+        if model not in CLIENT_CONFIG[backend]:
+            print(f"Model {model} not available for backend {backend}, using default")
+            # Use the first model in the list for this backend
+            model = CLIENT_CONFIG[backend][0]
+
+        return backend, model
+
+    def _init_client(self) -> None:
+        """Initialize the appropriate client based on the client_type."""
+        backend, model = self._parse_client_type()
+
+        if backend == "ollama":
+            self._client = OllamaClient("http://desk:11434")
+        elif backend == "vllm":
+            self._client = VLLMClient("http://desk:8000", model)
+        else:
+            raise ValueError(f"Unknown backend type: {backend}")
+
     @property
-    def client(self) -> OllamaClient:
-        if self._ollama_client is None:
-            raise RuntimeError("Ollama client not initialized")
-        return self._ollama_client
+    def client(self) -> BaseClient:
+        if self._client is None:
+            raise RuntimeError("Client not initialized")
+        return self._client
+
+    @property
+    def client_type(self) -> str:
+        return self._client_type
+
+    @property
+    def backend(self) -> str:
+        """Get the backend part of the client_type."""
+        return self._parse_client_type()[0]
+
+    @property
+    def model(self) -> str:
+        """Get the model part of the client_type."""
+        return self._parse_client_type()[1]
+
+    def set_client_type(self, client_type: str) -> None:
+        """Set the client type and initialize the appropriate client."""
+        if client_type != self._client_type:
+            self._client_type = client_type
+            self._init_client()
 
     @property
     def watched_screen(self) -> Optional[QScreen]:
@@ -59,9 +123,27 @@ class Facade:
     def setQtApp(self, app: "AssistantQtApp"):
         self._qt_app = app
 
+        # Connect signals from terminal window
+        self._qt_app.terminal_window.system_prompt_changed.connect(
+            lambda prompt: self.config.set("system_prompt", prompt)
+        )
+        self._qt_app.terminal_window.config_changed.connect(
+            lambda key, value: self.config.set(key, value)
+        )
+        self._qt_app.terminal_window.model_settings.single_step_clicked.connect(
+            lambda: self.single_step(source="screen")
+        )
+        self._qt_app.terminal_window.model_settings.clipboard_step_clicked.connect(
+            lambda: self.single_step(source="clipboard")
+        )
+
+        # Update terminal window with current config
+        self._qt_app.terminal_window.update_from_config(self.config._config)
+
     def start_desktop_server(self, port: int):
         """Start the desktop server."""
         from assistant.server.desktop_server import DesktopServer
+
         server = DesktopServer(port)
         server.start()
         self._desktop_server = server
@@ -82,24 +164,36 @@ class Facade:
         system_prompt = config.get("system_prompt", "")
         self.automation.set_system_prompt(system_prompt)
 
+        # Handle client_type setting
+        client_type = config.get("client_type", "ollama:moondream")
+        if client_type != self._client_type:
+            self.set_client_type(client_type)
+
         # Handle screen setting
         screen_name = config.get("screen", "")
-        current_screen = self.watched_screen.name(
-        ) if self.watched_screen else ""
+        current_screen = self.watched_screen.name() if self.watched_screen else ""
 
         if screen_name and screen_name != current_screen:
             screen = self.get_screen_by_name(screen_name)
             if screen:
                 self._watched_screen = screen
                 print(f"Watched screen set: {screen.name()}")
+                # Update overlay to match the watched screen
+                if self._qt_app and self._qt_app.overlay:
+                    self._qt_app.overlay.setScreen(screen)  # Set to new screen
+                    self._qt_app.overlay._setup_full_screen()  # Resize to fit screen
             else:
                 # If screen not found, use default
                 self._watched_screen = self.get_default_screen()
-                print(
-                    f"Watched screen set to default: {self._watched_screen.name()}"
-                )
+                print(f"Watched screen set to default: {self._watched_screen.name()}")
+                # Update overlay to match the default screen
+                if self._qt_app and self._qt_app.overlay:
+                    self._qt_app.overlay.setScreen(
+                        self._watched_screen
+                    )  # Set to default screen
+                    self._qt_app.overlay._setup_full_screen()  # Resize to fit screen
 
-        self.qt_app.terminal_window.update_from_config()
+        self.qt_app.terminal_window.update_from_config(config)
 
     def get_screen_by_name(self, name: str) -> Optional[QScreen]:
         """Get a QScreen object by its name."""
@@ -136,70 +230,161 @@ class Facade:
             print(f"Error taking screenshot: {e}")
             return None
 
-    def single_step(self) -> None:
+    def get_clipboard_image(self) -> Optional[QPixmap]:
+        """Get image from system clipboard.
+
+        Returns:
+            A QPixmap containing the clipboard image, or None if no image is found
+        """
+        try:
+            clipboard = QGuiApplication.clipboard()
+            mime_data = clipboard.mimeData()
+
+            if mime_data.hasImage():
+                # Get the image data and convert to QPixmap
+                image_data = mime_data.imageData()
+                if image_data:
+                    pixmap = QPixmap(image_data)
+                    return pixmap
+
+            return None
+        except Exception as e:
+            print(f"Error getting clipboard image: {e}")
+            return None
+
+    def single_step(self, source: str = "screen") -> None:
         """Perform a single step of the automation process.
 
-        This takes a screenshot, processes it with the ollama client,
+        This takes a screenshot or clipboard image, processes it with the VLM client,
         and updates the UI accordingly.
+
+        Args:
+            source: Either 'screen' for screenshot or 'clipboard' for clipboard image
         """
-        # Get the settings widget from the terminal window
+        # Get the settings widget
         settings_widget = self.qt_app.terminal_window.model_settings
 
-        # Set request in progress
-        settings_widget.request_in_progress = True
-
-        try:
-            # Take screenshot
+        # Get image first to check if it's available
+        if source == "screen":
             pixmap = self.take_screenshot()
             if not pixmap:
                 error_msg = "Failed to take screenshot"
                 print(error_msg)
                 self.qt_app.terminal_window.set_output_text(error_msg)
-                settings_widget.request_in_progress = False
                 return
+        elif source == "clipboard":
+            pixmap = self.get_clipboard_image()
+            if not pixmap:
+                error_msg = "No image found in clipboard"
+                print(error_msg)
+                self.qt_app.terminal_window.set_output_text(error_msg)
+                return
+        else:
+            error_msg = f"Unknown source: {source}"
+            print(error_msg)
+            self.qt_app.terminal_window.set_output_text(error_msg)
+            return
 
-            # Update the image in the settings widget
-            settings_widget.set_image(pixmap)
+        # Update the image in the settings widget (on main thread)
+        settings_widget.set_image(pixmap)
 
+        # Set request in progress BEFORE starting worker thread
+        settings_widget.request_in_progress = True
+
+        # Create and start worker thread with the pixmap
+        self.worker = VLMWorker(self, source, pixmap)
+        self.worker.finished.connect(self._on_worker_finished)
+        self.worker.error.connect(self._on_worker_error)
+        self.worker.start()
+
+    def _on_worker_finished(self, result):
+        """Handle successful completion of VLM processing."""
+        settings_widget = self.qt_app.terminal_window.model_settings
+        settings_widget.request_in_progress = False
+
+        response, system_prompt, image_width, image_height = result
+
+        # Check if response starts with "Error:" which indicates an error
+        if response.startswith("Error:"):
+            print(f"API error: {response}")
+            self.qt_app.terminal_window.set_output_text(response)
+        else:
+            # Format and print the response
+            formatted_response = self.client.format_response(system_prompt, response)
+            print(f"Model response: {formatted_response}")
+            self.qt_app.terminal_window.set_output_text(formatted_response)
+
+            # Use the client's extract_shapes method
+            shapes = self.client.extract_shapes(response, image_width, image_height)
+
+            # Update the overlay with the shapes
+            if shapes:
+                self.qt_app.overlay.setShapes(shapes)
+            else:
+                self.qt_app.overlay.setShapes([])
+
+    def _on_worker_error(self, error_msg):
+        """Handle error from VLM processing."""
+        settings_widget = self.qt_app.terminal_window.model_settings
+        settings_widget.request_in_progress = False
+        print(error_msg)
+        self.qt_app.terminal_window.set_output_text(error_msg)
+        self.qt_app.overlay.hide()
+
+
+class VLMWorker(QThread):
+    """Worker thread for VLM processing to avoid blocking the UI."""
+
+    finished = Signal(tuple)  # (response, system_prompt, screen_width, screen_height)
+    error = Signal(str)  # error message
+
+    def __init__(self, facade, source, pixmap):
+        super().__init__()
+        self.facade = facade
+        self.source = source
+        self.pixmap = pixmap
+
+    def run(self):
+        """Run VLM processing in background thread."""
+        try:
             # Get the system prompt
-            system_prompt = self.automation.get_system_prompt(
-            ) or "What's in this image?"
+            system_prompt = (
+                self.facade.automation.get_system_prompt() or "What's in this image?"
+            )
 
             # Convert pixmap to bytes
             buffer = QBuffer()
             buffer.open(QIODevice.OpenModeFlag.WriteOnly)
             try:
-                pixmap.save(buffer, "PNG")
+                self.pixmap.save(buffer, "PNG")
 
-                # Call the VLM with the screenshot
-                response = self.client.call_vlm(MODEL, system_prompt,
-                                                bytes(buffer.data().data()))
+                # Call the VLM with the image
+                response = self.facade.client.call_vlm(
+                    self.facade.model, system_prompt, bytes(buffer.data().data())
+                )
 
-                # Check if response starts with "Error:" which indicates an error
-                if response.startswith("Error:"):
-                    print(f"API error: {response}")
-                    # Still display the error to the user
-                    self.qt_app.terminal_window.set_output_text(response)
+                # Get image dimensions for coordinate scaling
+                # For screen source, use screen dimensions
+                # For clipboard source, use actual image dimensions
+                if self.source == "screen" and self.facade.watched_screen:
+                    image_width = self.facade.watched_screen.size().width()
+                    image_height = self.facade.watched_screen.size().height()
                 else:
-                    # Format and print the response
-                    formatted_response = self.client.format_response(
-                        system_prompt, response)
-                    print(f"Model response: {formatted_response}")
+                    # Use pixmap dimensions for clipboard images
+                    image_width = self.pixmap.width()
+                    image_height = self.pixmap.height()
 
-                    # Update the terminal window with the response
-                    self.qt_app.terminal_window.set_output_text(
-                        formatted_response)
+                # Emit success signal with results
+                self.finished.emit(
+                    (response, system_prompt, image_width, image_height)
+                )
             finally:
                 # Always close the buffer
                 buffer.close()
         except Exception as e:
             # Handle any unexpected exceptions
             error_msg = f"Error during processing: {str(e)}"
-            print(error_msg)
-            self.qt_app.terminal_window.set_output_text(error_msg)
-        finally:
-            # Always reset request in progress
-            settings_widget.request_in_progress = False
+            self.error.emit(error_msg)
 
 
 facade = Facade()

@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction
 from assistant.actions import toggle_terminal
 from assistant.util import get_logger
 from assistant.widgets.terminal import TerminalWindow
+from assistant.widgets.overlay import ModelVisionOverlay
 
 log = get_logger(__name__)
 
@@ -20,6 +21,12 @@ class AssistantQtApp(QApplication):
 
         # Initialize components
         self.terminal_window = TerminalWindow()
+
+        # Create the overlay and show it
+        # The screen will be set properly in facade.py when apply_config is called
+        self.overlay = ModelVisionOverlay()
+        # Show the overlay immediately
+        self.overlay.show()
 
         # Set up the tray icon
         self.setup_tray_icon()
@@ -51,4 +58,3 @@ class AssistantQtApp(QApplication):
 
         # Show the tray icon
         self.tray_icon.show()
-

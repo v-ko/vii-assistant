@@ -1,13 +1,15 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-                               QLabel, QFrame)
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPoint
-from PySide6.QtGui import QGuiApplication
+                               QLabel, QFrame, QTextBrowser)
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPoint, QCoreApplication, Signal
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 
 from assistant.widgets.settings import SettingsWidget
-from assistant.facade import facade
 
 
 class TerminalWindow(QWidget):
+    # Signals
+    system_prompt_changed = Signal(str)
+    config_changed = Signal(str, object)  # key, value
 
     def __init__(self, parent=None):
         super().__init__(
@@ -17,6 +19,7 @@ class TerminalWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()
         self.position_window()
+        self.setup_shortcuts()
         # self.setup_animations()
 
     def setup_ui(self):
@@ -32,6 +35,8 @@ class TerminalWindow(QWidget):
             "Enter system prompt here...")
         self.system_prompt_textedit.textChanged.connect(
             self._on_system_prompt_changed)
+        # Set to accept only plain text (no formatting)
+        self.system_prompt_textedit.setAcceptRichText(False)
         container_layout.addWidget(self.system_prompt_textedit, 1)
 
         # Right side: output label and model settings
@@ -40,17 +45,17 @@ class TerminalWindow(QWidget):
         # Model settings widget
         self.model_settings = SettingsWidget()
         self.model_settings.config_changed.connect(self._on_config_changed)
-        self.model_settings.single_step_clicked.connect(facade.single_step)
+        # single_step_clicked is connected in the app
         right_layout.addWidget(self.model_settings, 1)
 
-        # Output label
-        self.output_label = QLabel("Model output will appear here")
-        self.output_label.setAlignment(Qt.AlignmentFlag.AlignTop
-                                       | Qt.AlignmentFlag.AlignLeft)
-        self.output_label.setWordWrap(True)
-        self.output_label.setFrameShape(QFrame.Shape.Box)
-        self.output_label.setFrameShadow(QFrame.Shadow.Sunken)
-        right_layout.addWidget(self.output_label, 2)
+        # Output text area (using QTextBrowser for selectable text)
+        self.output_text = QTextBrowser()
+        self.output_text.setText("Model output will appear here")
+        self.output_text.setReadOnly(True)
+        self.output_text.setFrameShape(QFrame.Shape.Box)
+        self.output_text.setFrameShadow(QFrame.Shadow.Sunken)
+        self.output_text.setOpenExternalLinks(False)
+        right_layout.addWidget(self.output_text, 2)
 
         container_layout.addLayout(right_layout, 1)
 
@@ -62,7 +67,7 @@ class TerminalWindow(QWidget):
                 border-radius: 5px;
                 color: #e0e0e0;
             }
-            QTextEdit, QLabel {
+            QTextEdit, QTextBrowser {
                 background-color: #3a3a3a;
                 border: 1px solid #555;
                 border-radius: 3px;
@@ -110,7 +115,7 @@ class TerminalWindow(QWidget):
         hide_animation.start()
 
     def set_output_text(self, text):
-        self.output_label.setText(text)
+        self.output_text.setText(text)
 
     def get_system_prompt(self):
         return self.system_prompt_textedit.toPlainText()
@@ -118,7 +123,7 @@ class TerminalWindow(QWidget):
     def _on_system_prompt_changed(self):
         """Handle system prompt text changes."""
         system_prompt = self.get_system_prompt()
-        facade.config.set("system_prompt", system_prompt)
+        self.system_prompt_changed.emit(system_prompt)
 
     def _on_config_changed(self, key, value):
         """Handle config changes from the model settings widget."""
@@ -126,13 +131,11 @@ class TerminalWindow(QWidget):
             # Update the system prompt text edit
             self.system_prompt_textedit.setPlainText(value)
 
-        # Update the config through the facade
-        facade.config.set(key, value)
+        # Emit the config changed signal
+        self.config_changed.emit(key, value)
 
-    def update_from_config(self):
+    def update_from_config(self, config):
         """Update the UI from the current configuration."""
-        config = facade.config._config
-
         # Update system prompt
         system_prompt = config.get("system_prompt", "")
         if system_prompt and system_prompt != self.get_system_prompt():
@@ -140,6 +143,15 @@ class TerminalWindow(QWidget):
 
         # Update model settings widget
         self.model_settings.update_from_config(config)
+
+    def setup_shortcuts(self):
+        """Set up keyboard shortcuts."""
+        self.alt_f4_shortcut = QShortcut(QKeySequence("Ctrl+w"), self)
+        self.alt_f4_shortcut.activated.connect(self.quit_application)
+
+    def quit_application(self):
+        """Quit the application."""
+        QCoreApplication.quit()
 
     def closeEvent(self, event):
         self.hide()
