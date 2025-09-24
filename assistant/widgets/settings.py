@@ -1,7 +1,15 @@
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QCheckBox,
-                               QComboBox, QLabel, QFrame, QPushButton)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap, QIcon
+from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from assistant.config import CLIENT_CONFIG
 from assistant.util import encode_client_type
@@ -12,7 +20,10 @@ class SettingsWidget(QWidget):
 
     config_changed = Signal(str, object)  # key, value
     single_step_clicked = Signal()  # Signal emitted when single step button is clicked
-    clipboard_step_clicked = Signal()  # Signal emitted when clipboard step button is clicked
+    # Signal emitted when clipboard step button is clicked
+    clipboard_step_clicked = Signal()
+    # Signal emitted when OCR clipboard button is clicked
+    ocr_clipboard_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,8 +41,7 @@ class SettingsWidget(QWidget):
         # Auto-query checkbox
         self.auto_query_checkbox = QCheckBox("Auto-query")
         self.auto_query_checkbox.setToolTip("Enable automatic querying")
-        self.auto_query_checkbox.stateChanged.connect(
-            self.on_auto_query_changed)
+        self.auto_query_checkbox.stateChanged.connect(self.on_auto_query_changed)
         first_column.addWidget(self.auto_query_checkbox)
 
         # Single step button with loading label
@@ -54,6 +64,14 @@ class SettingsWidget(QWidget):
         self.clipboard_step_button.setToolTip("Process image from clipboard")
         self.clipboard_step_button.clicked.connect(self.on_clipboard_step_clicked)
         first_column.addWidget(self.clipboard_step_button)
+
+        # OCR Clipboard button
+        self.ocr_clipboard_button = QPushButton("OCR clipboard")
+        self.ocr_clipboard_button.setToolTip(
+            "Run OCR (Tesseract) on clipboard image and show text output"
+        )
+        self.ocr_clipboard_button.clicked.connect(self.on_ocr_clipboard_clicked)
+        first_column.addWidget(self.ocr_clipboard_button)
         first_column.addStretch()
 
         # Request in progress flag
@@ -91,14 +109,16 @@ class SettingsWidget(QWidget):
         main_layout.addLayout(third_column)
 
         # Apply styling
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QWidget { background-color: #2d2d2d; color: #e0e0e0; }
             QComboBox {
                 background-color: #3a3a3a;
                 border: 1px solid #555;
                 padding: 5px;
             }
-        """)
+        """
+        )
 
     def populate_screen_combo(self):
         """Populate the screen combo box with available screens."""
@@ -110,7 +130,7 @@ class SettingsWidget(QWidget):
             self.screen_combo.addItem(name, screen.name())
 
     def populate_client_combo(self):
-        """Populate the client combo box with all available client:model combinations."""
+        """Populate the client combo with all available client:model combos."""
         self.client_combo.clear()
         for backend, models in CLIENT_CONFIG.items():
             for model in models:
@@ -168,6 +188,11 @@ class SettingsWidget(QWidget):
         if not self._request_in_progress:
             self.clipboard_step_clicked.emit()
 
+    def on_ocr_clipboard_clicked(self):
+        """Handle OCR clipboard button click."""
+        if not self._request_in_progress:
+            self.ocr_clipboard_clicked.emit()
+
     @property
     def request_in_progress(self) -> bool:
         """Get the request in progress flag."""
@@ -179,6 +204,7 @@ class SettingsWidget(QWidget):
         self._request_in_progress = value
         self.single_step_button.setEnabled(not value)
         self.clipboard_step_button.setEnabled(not value)
+        self.ocr_clipboard_button.setEnabled(not value)
         self.loading_icon.setVisible(value)
 
     def set_image(self, pixmap: QPixmap):
@@ -188,7 +214,7 @@ class SettingsWidget(QWidget):
             scaled_pixmap = pixmap.scaled(
                 self.image_placeholder.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                Qt.TransformationMode.SmoothTransformation,
             )
             self.image_placeholder.setPixmap(scaled_pixmap)
         else:

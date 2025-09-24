@@ -2,10 +2,23 @@ import json
 import pathlib
 from typing import Callable, Dict, Any, Optional, List
 
+from assistant.services import qwen25_preprocess
+
 # Client configuration mapping backends to available models
 CLIENT_CONFIG = {
     "ollama": ["moondream", "gemma3", "qwen2.5vl"],
-    "vllm": ["osunlp/UGround-V1-2B"]
+    "vllm": ["osunlp/UGround-V1-2B"],
+}
+
+# Hardcoded model-to-extractor key routing per backend (no regex)
+# Keys in the inner dict must exactly match model names in CLIENT_CONFIG.
+MODEL_EXTRACTOR_MAP = {
+    "ollama": {
+        "qwen2.5vl": qwen25_preprocess.extract_qwen25_shapes_ollama_policy,
+    },
+    "vllm": {
+        # Add vLLM model-specific extractors here if needed
+    },
 }
 
 

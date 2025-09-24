@@ -1,9 +1,10 @@
-from typing import List
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPolygon
 
-from assistant.util import Shape
+from assistant.util import Shape, get_logger
+
+log = get_logger(__name__)
 
 
 class ModelVisionOverlay(QWidget):
@@ -31,10 +32,10 @@ class ModelVisionOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         # List of shapes to draw
-        self._shapes: List[Shape] = []
+        self._shapes: list[Shape] = []
 
         # Hardcoded style settings (but color comes from shape)
-        self.default_color = "#FF0000"  # Red default
+        self.default_color = QColor(255, 0, 0, 50)  # Red default
         self.shape_width = 2
         self.triangle_size = 40  # Size of triangle cursor for points
 
@@ -69,7 +70,7 @@ class ModelVisionOverlay(QWidget):
 
             print("Overlay should now be transparent for mouse events")
 
-    def setShapes(self, shapes: List[Shape]):
+    def setShapes(self, shapes: list[Shape]):
         """
         Set the shapes to be drawn on the overlay.
 
@@ -84,12 +85,16 @@ class ModelVisionOverlay(QWidget):
     def paintEvent(self, event):
         """Paint the overlay with the configured shapes."""
         painter = QPainter(self)
+        log.info(
+            f"Overlay paint event, size: {self.width()}x{self.height()}, shapes:"
+            f" {len(self._shapes)}"
+        )
 
         # Enable antialiasing for smoother shapes
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw a thin red outline around the widget
-        outline_pen = QPen(QColor(255, 0, 0))  # Red
+        outline_pen = QPen(QColor(255, 0, 0, 50))  # Red
         outline_pen.setWidth(10)
         painter.setPen(outline_pen)
         painter.drawRect(self.rect())
@@ -129,10 +134,14 @@ class ModelVisionOverlay(QWidget):
                     size = self.triangle_size
 
                     # Create an inclined triangle pointing bottom-right
-                    triangle = QPolygon([
-                        QPoint(x, y),  # The exact point (tip of cursor)
-                        QPoint(x + size//3, y + size),  # Bottom right (narrow)
-                        QPoint(x + size//2, y + size//2),  # Middle right (wider)
-                        QPoint(x + size, y + size//3)   # Top right
-                    ])
+                    triangle = QPolygon(
+                        [
+                            QPoint(x, y),  # The exact point (tip of cursor)
+                            QPoint(x + size // 3, y + size),  # Bottom right (narrow)
+                            QPoint(
+                                x + size // 2, y + size // 2
+                            ),  # Middle right (wider)
+                            QPoint(x + size, y + size // 3),  # Top right
+                        ]
+                    )
                     painter.drawPolygon(triangle)

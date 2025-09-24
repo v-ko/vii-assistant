@@ -1,7 +1,7 @@
 import signal
 import sys
 import click
-from assistant.actions import execute_action
+from assistant.registries.actions import execute_action
 from assistant.server.util import send_command
 from assistant.server.util import port_is_taken
 from PySide6.QtGui import QGuiApplication

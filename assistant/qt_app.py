@@ -1,13 +1,12 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QStyle
 from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
-
-from assistant.actions import toggle_terminal
+from assistant.app_actions import toggle_terminal
 from assistant.util import get_logger
-from assistant.widgets.terminal import TerminalWindow
 from assistant.widgets.overlay import ModelVisionOverlay
+from assistant.widgets.terminal import TerminalWindow
 
 log = get_logger(__name__)
 
@@ -37,8 +36,9 @@ class AssistantQtApp(QApplication):
         self.tray_icon.setToolTip("Desktop Screenshot Assistant")
 
         # Use a default icon (you can replace this with a custom icon)
-        self.tray_icon.setIcon(self.style().standardIcon(
-            QStyle.StandardPixmap.SP_ComputerIcon))
+        self.tray_icon.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        )
 
         # Create the tray menu
         tray_menu = QMenu()

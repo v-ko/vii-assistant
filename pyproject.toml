@@ -9,13 +9,29 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
-    "PySide6",
-    "Pillow",
-    "requests",
-    "click",
-    "fastapi",
-    "uvicorn",
+  "PySide6",
+  "Pillow",
+  "requests",
+  "click",
+  "fastapi",
+  "uvicorn",
+  "qwen-vl-utils",
+  "pytesseract",
 ]
 
 [project.scripts]
 vii-assistant = "assistant.main:main"
+
+
+[project.optional-dependencies]
+dev = ["black>=24.0.0", "ruff>=0.5.0"]
+
+[tool.black]
+line-length = 88
+# target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+# target-version = "py311"
+select = ["E", "F", "W", "I", "RUF"] # , "B", "UP", "SIM",
+ignore = ["E203"]

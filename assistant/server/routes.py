@@ -1,8 +1,10 @@
+from typing import Any
+
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Dict, Any
 
-import assistant.actions as actions
+import assistant.app_actions as app_actions
+from assistant.registries.actions import execute_on_main_thread
 
 # Create the FastAPI appw
 router = APIRouter()
@@ -10,23 +12,20 @@ router = APIRouter()
 
 class CommandResponse(BaseModel):
     """Model for command responses."""
+
     success: bool
     message: str
 
 
 @router.get("/health")
-async def health_check() -> Dict[str, Any]:
+async def health_check() -> dict[str, Any]:
     """Health check endpoint."""
-    return {
-        "status": "ok",
-        "service": "screenshot-assistant",
-        "version": "0.1.0"
-    }
+    return {"status": "ok", "service": "screenshot-assistant", "version": "0.1.0"}
 
 
 @router.post("/toggle_terminal", response_model=CommandResponse)
 def toggle_terminal() -> CommandResponse:
     """Toggle the terminal window."""
 
-    actions.execute_on_main_thread(actions.toggle_terminal)
+    execute_on_main_thread(app_actions.toggle_terminal)
     return CommandResponse(success=True, message="Terminal toggled")

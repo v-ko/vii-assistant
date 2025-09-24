@@ -1,18 +1,23 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Optional, Dict, Any, Tuple
-from PySide6.QtGui import QScreen, QGuiApplication, QPixmap
-from PySide6.QtCore import QBuffer, QIODevice, QThread, QObject, Signal
 
+import io
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+import pytesseract
+from PIL import Image
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThread, Signal
+from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
+
+from assistant.config import CLIENT_CONFIG
 from assistant.services.automation import AutomationService
 from assistant.services.base_client import BaseClient
 from assistant.services.ollama_client import OllamaClient
 from assistant.services.vllm_client import VLLMClient
-from assistant.config import CLIENT_CONFIG
 from assistant.util import decode_client_type
 
 if TYPE_CHECKING:
-    from assistant.qt_app import AssistantQtApp
     from assistant.config import Config
+    from assistant.qt_app import AssistantQtApp
 
 
 class Facade:
@@ -135,6 +140,9 @@ class Facade:
         )
         self._qt_app.terminal_window.model_settings.clipboard_step_clicked.connect(
             lambda: self.single_step(source="clipboard")
+        )
+        self._qt_app.terminal_window.model_settings.ocr_clipboard_clicked.connect(
+            self.ocr_clipboard_action
         )
 
         # Update terminal window with current config
@@ -297,6 +305,61 @@ class Facade:
         self.worker.error.connect(self._on_worker_error)
         self.worker.start()
 
+    def ocr_clipboard_action(self):
+        """Perform OCR on the clipboard image and display text output.
+
+        Uses local Tesseract via pytesseract. Non-blocking (worker thread).
+        """
+        pixmap = self.get_clipboard_image()
+        if not pixmap:
+            msg = "No image found in clipboard for OCR"
+            print(msg)
+            self.qt_app.terminal_window.set_output_text(msg)
+            return
+
+        # Indicate progress
+        settings_widget = self.qt_app.terminal_window.model_settings
+        settings_widget.request_in_progress = True
+
+        self.ocr_worker = OCRWorker(pixmap)
+        self.ocr_worker.finished.connect(self._on_ocr_finished)
+        self.ocr_worker.error.connect(self._on_worker_error)
+        self.ocr_worker.start()
+
+    def _on_ocr_finished(self, text: str):
+        settings_widget = self.qt_app.terminal_window.model_settings
+        settings_widget.request_in_progress = False
+        self.qt_app.terminal_window.set_output_text(text)
+
+    # --- Getter API for external callers ---
+    def get_clipboard_ocr_text(self, lang: str = "eng") -> str:
+        """Get OCR text from the current clipboard image synchronously.
+
+        Args:
+            lang: Tesseract language code (default "eng").
+
+        Returns:
+            Recognized text, or an error message starting with "Error:".
+        """
+        pixmap = self.get_clipboard_image()
+        if not pixmap:
+            return "Error: No image in clipboard"
+        try:
+            # Convert pixmap to bytes
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            try:
+                pixmap.save(buf, "PNG")
+            finally:
+                buf.close()
+            img_bytes = ba.data()  # sip.voidptr -> Python buffer interface
+            pil_img = Image.open(io.BytesIO(bytes(img_bytes)))
+            text = pytesseract.image_to_string(pil_img, lang=lang)
+            return text.strip() or "<No text recognized>"
+        except Exception as e:  # pragma: no cover
+            return f"Error: OCR failed: {e}"
+
     def _on_worker_finished(self, result):
         """Handle successful completion of VLM processing."""
         settings_widget = self.qt_app.terminal_window.model_settings
@@ -375,16 +438,44 @@ class VLMWorker(QThread):
                     image_height = self.pixmap.height()
 
                 # Emit success signal with results
-                self.finished.emit(
-                    (response, system_prompt, image_width, image_height)
-                )
+                self.finished.emit((response, system_prompt, image_width, image_height))
             finally:
                 # Always close the buffer
                 buffer.close()
         except Exception as e:
             # Handle any unexpected exceptions
-            error_msg = f"Error during processing: {str(e)}"
+            error_msg = f"Error during processing: {e}"
             self.error.emit(error_msg)
+
+
+class OCRWorker(QThread):
+    """Worker thread for performing Tesseract OCR on a QPixmap."""
+
+    finished = Signal(str)  # OCR text
+    error = Signal(str)
+
+    def __init__(self, pixmap: QPixmap, lang: str = "eng"):
+        super().__init__()
+        self.pixmap = pixmap
+        self.lang = lang
+
+    def run(self):  # type: ignore[override]
+        try:
+            # Convert QPixmap to PNG bytes via QBuffer/QByteArray
+            ba = QByteArray()
+            buffer = QBuffer(ba)
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            try:
+                # Use QPixmap.save directly (simpler & reliable)
+                self.pixmap.save(buffer, "PNG")
+            finally:
+                buffer.close()
+            raw = ba.data()
+            pil_image = Image.open(io.BytesIO(bytes(raw)))
+            text = pytesseract.image_to_string(pil_image, lang=self.lang)
+            self.finished.emit((text.strip()) or "<No text recognized>")
+        except Exception as e:  # pragma: no cover
+            self.error.emit(f"Error during OCR: {e}")
 
 
 facade = Facade()
