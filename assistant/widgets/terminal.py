@@ -1,10 +1,12 @@
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
+    QSignalBlocker,
     Qt,
-    Signal,
 )
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -18,23 +20,24 @@ from PySide6.QtWidgets import (
 
 from assistant.widgets.settings import SettingsWidget
 
+if TYPE_CHECKING:  # pragma: no cover - typing aid
+    from assistant.view_states.terminal import TerminalViewState
+
 
 class TerminalWindow(QWidget):
-    # Signals
-    system_prompt_changed = Signal(str)
-    config_changed = Signal(str, object)  # key, value
-
-    def __init__(self, parent=None):
+    def __init__(self, state: "TerminalViewState", parent=None):
         super().__init__(
             parent,
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint,
         )
+        self._state = state
         # Make the window background transparent
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()
         self.position_window()
         self.setup_shortcuts()
         # self.setup_animations()
+        self._bind_state()
 
     def setup_ui(self):
         # Create a container widget to hold the UI; this widget will be
@@ -55,14 +58,12 @@ class TerminalWindow(QWidget):
         right_layout = QVBoxLayout()
 
         # Model settings widget
-        self.model_settings = SettingsWidget()
-        self.model_settings.config_changed.connect(self._on_config_changed)
+        self.model_settings = SettingsWidget(self._state)
         # single_step_clicked is connected in the app
         right_layout.addWidget(self.model_settings, 1)
 
         # Output text area (using QTextBrowser for selectable text)
         self.output_text = QTextBrowser()
-        self.output_text.setText("Model output will appear here")
         self.output_text.setReadOnly(True)
         self.output_text.setFrameShape(QFrame.Shape.Box)
         self.output_text.setFrameShadow(QFrame.Shadow.Sunken)
@@ -128,8 +129,25 @@ class TerminalWindow(QWidget):
         hide_animation.finished.connect(lambda: QWidget.hide(self))
         hide_animation.start()
 
+    def _bind_state(self):
+        self._state.system_prompt_changed.connect(self._apply_system_prompt)
+        self._state.output_text_changed.connect(self._apply_output_text)
+        self._apply_system_prompt(self._state.system_prompt)
+        self._apply_output_text(self._state.output_text)
+
+    def _apply_system_prompt(self, value: str) -> None:
+        if value == self.system_prompt_textedit.toPlainText():
+            return
+        blocker = QSignalBlocker(self.system_prompt_textedit)
+        self.system_prompt_textedit.setPlainText(value)
+
+    def _apply_output_text(self, value: str) -> None:
+        if value == self.output_text.toPlainText():
+            return
+        self.output_text.setText(value)
+
     def set_output_text(self, text):
-        self.output_text.setText(text)
+        self._state.output_text = text
 
     def get_system_prompt(self):
         return self.system_prompt_textedit.toPlainText()
@@ -137,26 +155,11 @@ class TerminalWindow(QWidget):
     def _on_system_prompt_changed(self):
         """Handle system prompt text changes."""
         system_prompt = self.get_system_prompt()
-        self.system_prompt_changed.emit(system_prompt)
-
-    def _on_config_changed(self, key, value):
-        """Handle config changes from the model settings widget."""
-        if key == "system_prompt":
-            # Update the system prompt text edit
-            self.system_prompt_textedit.setPlainText(value)
-
-        # Emit the config changed signal
-        self.config_changed.emit(key, value)
+        self._state.system_prompt = system_prompt
 
     def update_from_config(self, config):
         """Update the UI from the current configuration."""
-        # Update system prompt
-        system_prompt = config.get("system_prompt", "")
-        if system_prompt and system_prompt != self.get_system_prompt():
-            self.system_prompt_textedit.setPlainText(system_prompt)
-
-        # Update model settings widget
-        self.model_settings.update_from_config(config)
+        self._state.update_from_config(config)
 
     def setup_shortcuts(self):
         """Set up keyboard shortcuts."""

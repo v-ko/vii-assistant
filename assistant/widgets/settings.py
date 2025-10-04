@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -13,21 +13,23 @@ from PySide6.QtWidgets import (
 
 from assistant.config import CLIENT_CONFIG
 from assistant.util import encode_client_type
+from assistant.view_states.terminal import TerminalViewState
 
 
 class SettingsWidget(QWidget):
     """Widget for model settings with three columns."""
 
-    config_changed = Signal(str, object)  # key, value
     single_step_clicked = Signal()  # Signal emitted when single step button is clicked
     # Signal emitted when clipboard step button is clicked
     clipboard_step_clicked = Signal()
     # Signal emitted when OCR clipboard button is clicked
     ocr_clipboard_clicked = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, state: "TerminalViewState", parent=None):
         super().__init__(parent)
+        self._state = state
         self.setup_ui()
+        self._bind_state()
 
     def setup_ui(self):
         """Set up the UI with three columns."""
@@ -120,6 +122,17 @@ class SettingsWidget(QWidget):
         """
         )
 
+    def _bind_state(self):
+        self._state.auto_query_changed.connect(self._apply_auto_query)
+        self._state.client_type_changed.connect(self._apply_client_type)
+        self._state.screen_changed.connect(self._apply_screen)
+        self._state.request_in_progress_changed.connect(self._apply_request_in_progress)
+
+        self._apply_auto_query(self._state.auto_query)
+        self._apply_client_type(self._state.client_type)
+        self._apply_screen(self._state.screen)
+        self._apply_request_in_progress(self._state.request_in_progress)
+
     def populate_screen_combo(self):
         """Populate the screen combo box with available screens."""
         self.screen_combo.clear()
@@ -141,42 +154,58 @@ class SettingsWidget(QWidget):
     def on_auto_query_changed(self, state):
         """Handle auto-query checkbox state change."""
         is_checked = state == Qt.CheckState.Checked
-        self.config_changed.emit("auto_query", is_checked)
+        if self._state.auto_query != is_checked:
+            self._state.auto_query = is_checked
 
     def on_screen_changed(self, screen_text):
         """Handle screen selection change."""
         index = self.screen_combo.currentIndex()
         if index >= 0:
             screen_name = self.screen_combo.itemData(index)
-            self.config_changed.emit("screen", screen_name)
+            if self._state.screen != screen_name:
+                self._state.screen = screen_name
 
     def on_client_changed(self, client_text):
         """Handle client selection change."""
         index = self.client_combo.currentIndex()
         if index >= 0:
             client_type = self.client_combo.itemData(index)
-            self.config_changed.emit("client_type", client_type)
+            if self._state.client_type != client_type:
+                self._state.client_type = client_type
 
-    def update_from_config(self, config):
-        """Update widget state from config."""
-        # Update auto-query checkbox
-        auto_query = config.get("auto_query", False)
-        self.auto_query_checkbox.setChecked(auto_query)
+    def _apply_auto_query(self, value: bool) -> None:
+        blocker = QSignalBlocker(self.auto_query_checkbox)
+        self.auto_query_checkbox.setChecked(value)
 
-        # Update screen combo
-        screen_name = config.get("screen", "")
-        if screen_name:
-            for i in range(self.screen_combo.count()):
-                if self.screen_combo.itemData(i) == screen_name:
-                    self.screen_combo.setCurrentIndex(i)
-                    break
-
-        # Update client combo
-        client_type = config.get("client_type", "ollama:moondream")
+    def _apply_client_type(self, client_type: str) -> None:
+        if not client_type:
+            return
         for i in range(self.client_combo.count()):
             if self.client_combo.itemData(i) == client_type:
+                blocker = QSignalBlocker(self.client_combo)
                 self.client_combo.setCurrentIndex(i)
                 break
+
+    def _apply_screen(self, screen_name: str) -> None:
+        if not screen_name:
+            return
+        for i in range(self.screen_combo.count()):
+            if self.screen_combo.itemData(i) == screen_name:
+                blocker = QSignalBlocker(self.screen_combo)
+                self.screen_combo.setCurrentIndex(i)
+                break
+
+    def _apply_request_in_progress(self, value: bool) -> None:
+        if self._request_in_progress == value:
+            return
+        self._request_in_progress = value
+        self._set_request_in_progress_ui(value)
+
+    def _set_request_in_progress_ui(self, value: bool) -> None:
+        self.single_step_button.setEnabled(not value)
+        self.clipboard_step_button.setEnabled(not value)
+        self.ocr_clipboard_button.setEnabled(not value)
+        self.loading_icon.setVisible(value)
 
     def on_single_step_clicked(self):
         """Handle single step button click."""
@@ -201,11 +230,12 @@ class SettingsWidget(QWidget):
     @request_in_progress.setter
     def request_in_progress(self, value: bool):
         """Set the request in progress flag and update UI accordingly."""
+        if self._request_in_progress == value:
+            return
         self._request_in_progress = value
-        self.single_step_button.setEnabled(not value)
-        self.clipboard_step_button.setEnabled(not value)
-        self.ocr_clipboard_button.setEnabled(not value)
-        self.loading_icon.setVisible(value)
+        self._set_request_in_progress_ui(value)
+        if self._state.request_in_progress != value:
+            self._state.request_in_progress = value
 
     def set_image(self, pixmap: QPixmap):
         """Set the image in the image placeholder."""

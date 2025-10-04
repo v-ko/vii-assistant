@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from assistant.app_actions import toggle_terminal
 from assistant.util import get_logger
+from assistant.view_states.terminal import TerminalViewState
 from assistant.widgets.overlay import ModelVisionOverlay
 from assistant.widgets.terminal import TerminalWindow
 
@@ -19,7 +20,8 @@ class AssistantQtApp(QApplication):
         self.setQuitOnLastWindowClosed(False)
 
         # Initialize components
-        self.terminal_window = TerminalWindow()
+        self.terminal_state = TerminalViewState()
+        self.terminal_window = TerminalWindow(self.terminal_state)
 
         # Create the overlay and show it
         # The screen will be set properly in facade.py when apply_config is called

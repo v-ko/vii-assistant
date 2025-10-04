@@ -128,12 +128,20 @@ class Facade:
     def setQtApp(self, app: "AssistantQtApp"):
         self._qt_app = app
 
-        # Connect signals from terminal window
-        self._qt_app.terminal_window.system_prompt_changed.connect(
+        terminal_state = self._qt_app.terminal_state
+
+        # Connect state changes from the terminal to the config manager
+        terminal_state.system_prompt_changed.connect(
             lambda prompt: self.config.set("system_prompt", prompt)
         )
-        self._qt_app.terminal_window.config_changed.connect(
-            lambda key, value: self.config.set(key, value)
+        terminal_state.auto_query_changed.connect(
+            lambda value: self.config.set("auto_query", value)
+        )
+        terminal_state.client_type_changed.connect(
+            lambda value: self.config.set("client_type", value)
+        )
+        terminal_state.screen_changed.connect(
+            lambda value: self.config.set("screen", value)
         )
         self._qt_app.terminal_window.model_settings.single_step_clicked.connect(
             lambda: self.single_step(source="screen")
@@ -146,7 +154,7 @@ class Facade:
         )
 
         # Update terminal window with current config
-        self._qt_app.terminal_window.update_from_config(self.config._config)
+        terminal_state.update_from_config(self.config._config)
 
     def start_desktop_server(self, port: int):
         """Start the desktop server."""
@@ -201,7 +209,7 @@ class Facade:
                     )  # Set to default screen
                     self._qt_app.overlay._setup_full_screen()  # Resize to fit screen
 
-        self.qt_app.terminal_window.update_from_config(config)
+        self.qt_app.terminal_state.update_from_config(config)
 
     def get_screen_by_name(self, name: str) -> Optional[QScreen]:
         """Get a QScreen object by its name."""
@@ -271,6 +279,7 @@ class Facade:
         """
         # Get the settings widget
         settings_widget = self.qt_app.terminal_window.model_settings
+        terminal_state = self.qt_app.terminal_state
 
         # Get image first to check if it's available
         if source == "screen":
@@ -278,26 +287,26 @@ class Facade:
             if not pixmap:
                 error_msg = "Failed to take screenshot"
                 print(error_msg)
-                self.qt_app.terminal_window.set_output_text(error_msg)
+                terminal_state.output_text = error_msg
                 return
         elif source == "clipboard":
             pixmap = self.get_clipboard_image()
             if not pixmap:
                 error_msg = "No image found in clipboard"
                 print(error_msg)
-                self.qt_app.terminal_window.set_output_text(error_msg)
+                terminal_state.output_text = error_msg
                 return
         else:
             error_msg = f"Unknown source: {source}"
             print(error_msg)
-            self.qt_app.terminal_window.set_output_text(error_msg)
+            terminal_state.output_text = error_msg
             return
 
         # Update the image in the settings widget (on main thread)
         settings_widget.set_image(pixmap)
 
         # Set request in progress BEFORE starting worker thread
-        settings_widget.request_in_progress = True
+        terminal_state.request_in_progress = True
 
         # Create and start worker thread with the pixmap
         self.worker = VLMWorker(self, source, pixmap)
@@ -314,12 +323,12 @@ class Facade:
         if not pixmap:
             msg = "No image found in clipboard for OCR"
             print(msg)
-            self.qt_app.terminal_window.set_output_text(msg)
+            self.qt_app.terminal_state.output_text = msg
             return
 
         # Indicate progress
         settings_widget = self.qt_app.terminal_window.model_settings
-        settings_widget.request_in_progress = True
+        self.qt_app.terminal_state.request_in_progress = True
 
         self.ocr_worker = OCRWorker(pixmap)
         self.ocr_worker.finished.connect(self._on_ocr_finished)
@@ -327,9 +336,8 @@ class Facade:
         self.ocr_worker.start()
 
     def _on_ocr_finished(self, text: str):
-        settings_widget = self.qt_app.terminal_window.model_settings
-        settings_widget.request_in_progress = False
-        self.qt_app.terminal_window.set_output_text(text)
+        self.qt_app.terminal_state.request_in_progress = False
+        self.qt_app.terminal_state.output_text = text
 
     # --- Getter API for external callers ---
     def get_clipboard_ocr_text(self, lang: str = "eng") -> str:
@@ -362,20 +370,19 @@ class Facade:
 
     def _on_worker_finished(self, result):
         """Handle successful completion of VLM processing."""
-        settings_widget = self.qt_app.terminal_window.model_settings
-        settings_widget.request_in_progress = False
+        self.qt_app.terminal_state.request_in_progress = False
 
         response, system_prompt, image_width, image_height = result
 
         # Check if response starts with "Error:" which indicates an error
         if response.startswith("Error:"):
             print(f"API error: {response}")
-            self.qt_app.terminal_window.set_output_text(response)
+            self.qt_app.terminal_state.output_text = response
         else:
             # Format and print the response
             formatted_response = self.client.format_response(system_prompt, response)
             print(f"Model response: {formatted_response}")
-            self.qt_app.terminal_window.set_output_text(formatted_response)
+            self.qt_app.terminal_state.output_text = formatted_response
 
             # Use the client's extract_shapes method
             shapes = self.client.extract_shapes(response, image_width, image_height)
@@ -388,10 +395,9 @@ class Facade:
 
     def _on_worker_error(self, error_msg):
         """Handle error from VLM processing."""
-        settings_widget = self.qt_app.terminal_window.model_settings
-        settings_widget.request_in_progress = False
+        self.qt_app.terminal_state.request_in_progress = False
         print(error_msg)
-        self.qt_app.terminal_window.set_output_text(error_msg)
+        self.qt_app.terminal_state.output_text = error_msg
         self.qt_app.overlay.hide()
 
 

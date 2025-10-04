@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn",
   "qwen-vl-utils",
   "pytesseract",
+  "python-fusion",
 ]
 
 [project.scripts]
