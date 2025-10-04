@@ -1,7 +1,20 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-                               QLabel, QFrame, QTextBrowser)
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPoint, QCoreApplication, Signal
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QTextBrowser,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from assistant.widgets.settings import SettingsWidget
 
@@ -13,8 +26,9 @@ class TerminalWindow(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(
-            parent, Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint)
+            parent,
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint,
+        )
         # Make the window background transparent
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()
@@ -31,10 +45,8 @@ class TerminalWindow(QWidget):
 
         # Left side: system prompt text edit
         self.system_prompt_textedit = QTextEdit()
-        self.system_prompt_textedit.setPlaceholderText(
-            "Enter system prompt here...")
-        self.system_prompt_textedit.textChanged.connect(
-            self._on_system_prompt_changed)
+        self.system_prompt_textedit.setPlaceholderText("Enter system prompt here...")
+        self.system_prompt_textedit.textChanged.connect(self._on_system_prompt_changed)
         # Set to accept only plain text (no formatting)
         self.system_prompt_textedit.setAcceptRichText(False)
         container_layout.addWidget(self.system_prompt_textedit, 1)
@@ -60,7 +72,8 @@ class TerminalWindow(QWidget):
         container_layout.addLayout(right_layout, 1)
 
         # Apply styling to the container only (the window is transparent)
-        self.container.setStyleSheet("""
+        self.container.setStyleSheet(
+            """
             QWidget {
                 background-color: #2d2d2d;
                 border: 1px solid #444;
@@ -74,7 +87,8 @@ class TerminalWindow(QWidget):
                 padding: 5px;
                 color: #e0e0e0;
             }
-        """)
+        """
+        )
 
     def position_window(self):
         """
@@ -105,7 +119,7 @@ class TerminalWindow(QWidget):
     def hide(self):
         # Prevent immediate hiding; animate slide-up instead.
         # event.ignore()
-        print('At hideEvent')
+        print("At hideEvent")
         hide_animation = QPropertyAnimation(self.container, b"pos", self)
         hide_animation.setDuration(300)
         hide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)

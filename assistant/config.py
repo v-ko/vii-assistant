@@ -1,6 +1,6 @@
 import json
 import pathlib
-from typing import Callable, Dict, Any, Optional, List
+from typing import Any, Callable, Dict, List, Optional
 
 from assistant.services import qwen25_preprocess
 
@@ -28,8 +28,7 @@ class Config:
     def __init__(self):
         self.config_dir = pathlib.Path.home() / ".config" / "vii-assistant"
         self.config_file = self.config_dir / "config.json"
-        self.config_changed_callback: Optional[Callable[[Dict[str, Any]],
-                                                        None]] = None
+        self.config_changed_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
         # Default configuration
         self._config = {
@@ -88,7 +87,6 @@ class Config:
         if self.config_changed_callback:
             self.config_changed_callback(self._config)
 
-    def set_config_changed_callback(self, callback: Callable[[Dict[str, Any]],
-                                                             None]):
+    def set_config_changed_callback(self, callback: Callable[[Dict[str, Any]], None]):
         """Set the callback to be called when the configuration changes."""
         self.config_changed_callback = callback

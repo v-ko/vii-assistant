@@ -24,14 +24,12 @@ vii-assistant = "assistant.main:main"
 
 
 [project.optional-dependencies]
-dev = ["black>=24.0.0", "ruff>=0.5.0"]
+dev = ["black>=24.0.0", "isort>=5.12.0", "pre-commit>=3.5.0"]
 
 [tool.black]
 line-length = 88
-# target-version = ["py311"]
 
-[tool.ruff]
-line-length = 88
-# target-version = "py311"
-select = ["E", "F", "W", "I", "RUF"] # , "B", "UP", "SIM",
-ignore = ["E203"]
+[tool.isort]
+profile = "black"
+line_length = 88
+combine_as_imports = true

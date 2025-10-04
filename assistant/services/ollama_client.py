@@ -1,6 +1,7 @@
-import requests
-from typing import Optional, Union, List, cast
 import io
+from typing import List, Optional, Union, cast
+
+import requests
 from PIL import Image
 
 from assistant.config import MODEL_EXTRACTOR_MAP
@@ -40,9 +41,7 @@ class OllamaClient(BaseClient):
             "prompt": prompt,
             "stream": False,
             # Limit output to prevent hanging
-            "options": {
-                "num_predict": 1000
-            },
+            "options": {"num_predict": 1000},
         }
         # Remember last-used model for extractor routing
         self._last_model = model
@@ -104,8 +103,7 @@ class OllamaClient(BaseClient):
         Falls back to BaseClient.extract_shapes when no mapping exists.
         """
         log.info(
-            f"Extracting shapes via routing. "
-            f"Image: {image_width}x{image_height}"
+            f"Extracting shapes via routing. " f"Image: {image_width}x{image_height}"
         )
 
         # Require image dims for bbox-based extractors

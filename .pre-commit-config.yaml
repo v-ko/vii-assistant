@@ -1,0 +1,17 @@
+# Pre-commit configuration for the assistant repository.
+# Runs isort (imports) followed by Black (formatting) on all Python files.
+
+repos:
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: isort
+        # Let isort read pyproject.toml (profile=black) and use default line-length there.
+
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        name: black
+        # Black will pick up line-length and config from pyproject.toml.

@@ -1,9 +1,10 @@
 import base64
 import io
-from typing import Optional, Union, List
+from typing import List, Optional, Union
+
 from PIL import Image
 
-from assistant.util import extract_coordinates, Shape
+from assistant.util import Shape, extract_coordinates
 
 
 class BaseClient:
@@ -17,7 +18,7 @@ class BaseClient:
         self,
         model: str,
         prompt: str,
-        image_data: Optional[Union[bytes, io.BytesIO, Image.Image]] = None
+        image_data: Optional[Union[bytes, io.BytesIO, Image.Image]] = None,
     ) -> str:
         """Call the Vision Language Model with a prompt and optional image.
 
@@ -72,7 +73,7 @@ class BaseClient:
             if isinstance(image_data, Image.Image):
                 # Convert PIL Image to bytes
                 img_byte_arr = io.BytesIO()
-                image_data.save(img_byte_arr, format='PNG')
+                image_data.save(img_byte_arr, format="PNG")
                 return base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
             elif isinstance(image_data, io.BytesIO):
                 # BytesIO object
@@ -84,8 +85,12 @@ class BaseClient:
             print(f"Error encoding image: {e}")
             raise
 
-    def extract_shapes(self, text: str, image_width: Optional[int] = None,
-                      image_height: Optional[int] = None) -> List[Shape]:
+    def extract_shapes(
+        self,
+        text: str,
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
+    ) -> List[Shape]:
         """Extract shapes from model response text.
 
         This default implementation uses the extract_coordinates function from util.py.

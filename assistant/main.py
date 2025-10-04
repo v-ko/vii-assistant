@@ -1,46 +1,46 @@
 import signal
 import sys
+
 import click
+
 from assistant.registries.actions import execute_action
-from assistant.server.util import send_command
-from assistant.server.util import port_is_taken
-from PySide6.QtGui import QGuiApplication
+from assistant.server.util import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
 
 
 @click.command()
-@click.option('--command', help='Command to send to the running instance')
+@click.option("--command", help="Command to send to the running instance")
 def main(command):
     """Screenshot Assistant with HTTP API support."""
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # If a command is specified, try to send it to a running instance
-
     # Check if an instance is already running
     if port_is_taken(DEFAULT_DESKTOP_SERVER_PORT):
-        print(f"An instance is already running on port "
-              f"{DEFAULT_DESKTOP_SERVER_PORT}.")
+        print(f"An instance is already running on port {DEFAULT_DESKTOP_SERVER_PORT}.")
 
         if command:
             success = send_command(DEFAULT_DESKTOP_SERVER_PORT, command)
             sys.exit(0 if success else 1)
 
         else:
-            from PySide6.QtWidgets import QMessageBox
-            from PySide6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication, QMessageBox
+
             tmp_app = QApplication(sys.argv)
             messageBox = QMessageBox()
             messageBox.critical(
-                messageBox, "Error",
-                f"An instance is already running on port "
-                f"{DEFAULT_DESKTOP_SERVER_PORT}.")
+                messageBox,
+                "Error",
+                "An instance is already running on port "
+                f"{DEFAULT_DESKTOP_SERVER_PORT}.",
+            )
             tmp_app.exec()
 
         sys.exit(1)
 
-    from assistant.qt_app import AssistantQtApp
     from assistant.facade import facade
+    from assistant.qt_app import AssistantQtApp
 
     # Start a new instance
     qt_app = AssistantQtApp()

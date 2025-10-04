@@ -10,12 +10,13 @@ log = get_logger(__name__)
 
 # Mirror defaults from qwen_vl_utils/src/qwen_vl_utils/vision_process.py
 IMAGE_FACTOR = 28
-MIN_PIXELS = 4 * 28 * 28           # 3136
-MAX_PIXELS = 16384 * 28 * 28       # 12,845,056
+MIN_PIXELS = 4 * 28 * 28  # 3136
+MAX_PIXELS = 16384 * 28 * 28  # 12,845,056
 MAX_RATIO = 200
 
 # Ollama-specific constraints for Qwen2.5-VL preprocessing
 MAX_PIXELS_OLLAMA = 1_000_000
+
 
 def _round_by_factor(number: float, factor: int) -> int:
     return int(round(number / factor) * factor)
@@ -48,9 +49,7 @@ def smart_resize_ollama(
         raise ValueError(f"Invalid size {width}x{height}")
     ratio = max(height, width) / min(height, width)
     if ratio > MAX_RATIO:
-        raise ValueError(
-            f"absolute aspect ratio must be < {MAX_RATIO}, got {ratio}"
-        )
+        raise ValueError(f"absolute aspect ratio must be < {MAX_RATIO}, got {ratio}")
 
     area = height * width
     target_area = max_pixels - (1 if strictly_less else 0)
@@ -103,11 +102,13 @@ def smart_resize_ollama(
     return int(h_bar), int(w_bar)
 
 
-def smart_resize(height: int,
-                 width: int,
-                 factor: int = IMAGE_FACTOR,
-                 min_pixels: int = MIN_PIXELS,
-                 max_pixels: int = MAX_PIXELS) -> Tuple[int, int]:
+def smart_resize(
+    height: int,
+    width: int,
+    factor: int = IMAGE_FACTOR,
+    min_pixels: int = MIN_PIXELS,
+    max_pixels: int = MAX_PIXELS,
+) -> Tuple[int, int]:
     """
     Reimplementation of qwen_vl_utils.smart_resize(height, width).
 
@@ -160,11 +161,12 @@ def smart_resize(height: int,
 _bbox_pattern = re.compile(
     (
         r'["\']?bbox_2d["\']?\s*:\s*\['
-        r'\s*(?P<x1>-?\d+(?:\.\d+)?)\s*,\s*(?P<y1>-?\d+(?:\.\d+)?)'
-        r'\s*,\s*(?P<x2>-?\d+(?:\.\d+)?)\s*,\s*(?P<y2>-?\d+(?:\.\d+)?)\s*\]'
+        r"\s*(?P<x1>-?\d+(?:\.\d+)?)\s*,\s*(?P<y1>-?\d+(?:\.\d+)?)"
+        r"\s*,\s*(?P<x2>-?\d+(?:\.\d+)?)\s*,\s*(?P<y2>-?\d+(?:\.\d+)?)\s*\]"
     ),
     re.IGNORECASE | re.DOTALL,
 )
+
 
 def parse_qwen25_bboxes(text: str) -> List[Tuple[float, float, float, float]]:
     """
@@ -181,8 +183,10 @@ def parse_qwen25_bboxes(text: str) -> List[Tuple[float, float, float, float]]:
         bboxes.append((x1, y1, x2, y2))
     return bboxes
 
+
 def _clip(val: float, lo: int, hi: int) -> int:
     return int(max(lo, min(hi, round(val))))
+
 
 def scale_bbox_from_resized_to_orig(
     bbox_xyxy: Tuple[float, float, float, float],
@@ -228,10 +232,7 @@ def scale_bbox_from_resized_to_orig(
     y1_o = y1 * sy
     x2_o = x2 * sx
     y2_o = y2 * sy
-    log.debug(
-        f"Scaled to original space (float): "
-        f"[{x1_o}, {y1_o}, {x2_o}, {y2_o}]"
-    )
+    log.debug(f"Scaled to original space (float): " f"[{x1_o}, {y1_o}, {x2_o}, {y2_o}]")
 
     # Clip to bounds and produce integer xywh
     final_x1 = _clip(x1_o, 0, orig_w)
@@ -244,6 +245,7 @@ def scale_bbox_from_resized_to_orig(
 
     log.debug(f"Final (x, y, w, h): [{final_x1}, {final_y1}, {w}, {h}]")
     return final_x1, final_y1, w, h
+
 
 def extract_qwen25_shapes(
     text: str,
@@ -286,8 +288,12 @@ def extract_qwen25_shapes(
     shapes: List[dict] = []
     for xyxy in bboxes_xyxy:
         x, y, w, h = scale_bbox_from_resized_to_orig(
-            xyxy, input_w, input_h, orig_w, orig_h,
-            coords_are_qwen_grid=True,   # Qwen emits 0..1000 by default
+            xyxy,
+            input_w,
+            input_h,
+            orig_w,
+            orig_h,
+            coords_are_qwen_grid=True,  # Qwen emits 0..1000 by default
             qwen_grid_size=1000.0,
         )
         if w <= 0 or h <= 0:

@@ -1,12 +1,14 @@
 import logging
 import re
-from typing import Optional, Tuple, List, Dict, Any, Literal, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union
+
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice
 
 
 class BaseShape(TypedDict, total=False):
     """Base shape type with common properties."""
+
     type: str
     geometry: Any
     color: Optional[str]  # Color in hex format (e.g., '#FF0000')
@@ -14,13 +16,15 @@ class BaseShape(TypedDict, total=False):
 
 class RectShape(BaseShape):
     """Rectangle shape type."""
-    type: Literal['rect']
+
+    type: Literal["rect"]
     geometry: Tuple[int, int, int, int]  # x, y, width, height
 
 
 class PointShape(BaseShape):
     """Point shape type."""
-    type: Literal['point']
+
+    type: Literal["point"]
     geometry: Tuple[int, int]  # x, y
 
 
@@ -79,15 +83,15 @@ def extract_coordinates(text: str) -> List[Shape]:
     shapes: List[Shape] = []
 
     # Pattern for (x,y) or (x, y)
-    pattern = r'\((\d+)\s*,\s*(\d+)\)'
+    pattern = r"\((\d+)\s*,\s*(\d+)\)"
     matches = re.findall(pattern, text)
 
     for match in matches:
         x, y = int(match[0]), int(match[1])
         # Create a point shape
         point_shape: PointShape = {
-            'type': 'point',
-            'geometry': (x, y),
+            "type": "point",
+            "geometry": (x, y),
         }
         shapes.append(point_shape)
 

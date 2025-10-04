@@ -1,11 +1,11 @@
 import requests
 
-LOCALHOST = 'http://localhost'
+LOCALHOST = "http://localhost"
 
 
 def port_is_taken(port: int) -> bool:
     try:
-        requests.get(f'{LOCALHOST}:{port}/health', timeout=0.5)
+        requests.get(f"{LOCALHOST}:{port}/health", timeout=0.5)
         return True
     except requests.ConnectionError:
         return False
@@ -14,7 +14,7 @@ def port_is_taken(port: int) -> bool:
 def send_command(port: int, command_name: str) -> bool:
     try:
         if command_name == "toggle_terminal":
-            response = requests.post(f'{LOCALHOST}:{port}/toggle_terminal')
+            response = requests.post(f"{LOCALHOST}:{port}/toggle_terminal")
             return response.status_code == 200
         else:
             print(f"Unknown command: {command_name}")

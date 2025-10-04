@@ -1,11 +1,12 @@
-import requests
-import re
-from typing import Optional, Union, List
 import io
+import re
+from typing import List, Optional, Union
+
+import requests
 from PIL import Image
 
 from assistant.services.base_client import BaseClient
-from assistant.util import Shape, PointShape
+from assistant.util import PointShape, Shape
 
 
 class VLLMClient(BaseClient):
@@ -21,8 +22,8 @@ class VLLMClient(BaseClient):
         self,
         model: str,  # This parameter is kept for compatibility with BaseClient
         prompt: str,
-        image_data: Optional[Union[bytes, io.BytesIO,
-                                   Image.Image]] = None) -> str:
+        image_data: Optional[Union[bytes, io.BytesIO, Image.Image]] = None,
+    ) -> str:
         """Call the visual language model with a system prompt and an optional image.
 
         Args:
@@ -45,18 +46,15 @@ class VLLMClient(BaseClient):
         # Format messages according to the provided template
         messages = [
             {
-                "role":
-                "user",
+                "role": "user",
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}"
-                        },
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
                     },
                     {
                         "type": "text",
-                        "text": prompt  # Use the prompt parameter directly
+                        "text": prompt,  # Use the prompt parameter directly
                     },
                 ],
             },
@@ -77,7 +75,8 @@ class VLLMClient(BaseClient):
             response = requests.post(
                 f"{self.api_url}/chat/completions",
                 json=payload,
-                headers={"Content-Type": "application/json"})
+                headers={"Content-Type": "application/json"},
+            )
             print(f"VLLM Response status: {response.status_code}")
 
             if response.status_code == 200:
@@ -85,9 +84,11 @@ class VLLMClient(BaseClient):
                 # print(f"VLLM Response: {result}")
 
                 # Extract the response content
-                content = result.get("choices",
-                                     [{}])[0].get("message", {}).get(
-                                         "content", "No response from model")
+                content = (
+                    result.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "No response from model")
+                )
 
                 print(f"VLLM Content: {content}")
 
@@ -123,10 +124,12 @@ class VLLMClient(BaseClient):
             return [self.model]
         return []
 
-    def extract_shapes(self,
-                       text: str,
-                       image_width: Optional[int] = None,
-                       image_height: Optional[int] = None) -> List[Shape]:
+    def extract_shapes(
+        self,
+        text: str,
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
+    ) -> List[Shape]:
         """Extract shapes from model response text for UGround model.
 
         The UGround model returns coordinates in the range [0,1000),
@@ -146,17 +149,17 @@ class VLLMClient(BaseClient):
         # Then adjust the coordinates for UGround model if image dimensions are provided
         if image_width is not None and image_height is not None:
             for shape in shapes:
-                if shape['type'] == 'point':
+                if shape["type"] == "point":
                     # Get the original coordinates
-                    orig_x, orig_y = shape['geometry']
+                    orig_x, orig_y = shape["geometry"]
 
                     # Scale coordinates from [0,1000) range to image dimensions
                     scaled_x = int(orig_x / 1000 * image_width)
                     scaled_y = int(orig_y / 1000 * image_height)
 
                     # Update the shape with scaled coordinates
-                    shape['geometry'] = (scaled_x, scaled_y)
+                    shape["geometry"] = (scaled_x, scaled_y)
 
-        print('args:', text, image_width, image_height)
+        print("args:", text, image_width, image_height)
         print(f"Extracted shapes: {shapes}")
         return shapes

@@ -1,9 +1,10 @@
 import threading
-import uvicorn
 
+import uvicorn
 from fastapi import FastAPI
-from assistant.server.util import port_is_taken
+
 from assistant.server.routes import router
+from assistant.server.util import port_is_taken
 
 
 class DesktopServer:
@@ -28,10 +29,7 @@ class DesktopServer:
 
         # Configure the server
         config = uvicorn.Config(
-            app=app,
-            host="127.0.0.1",
-            port=self.port,
-            log_level="info"
+            app=app, host="127.0.0.1", port=self.port, log_level="info"
         )
         self.server = uvicorn.Server(config=config)
 
