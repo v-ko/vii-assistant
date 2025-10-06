@@ -1,14 +1,17 @@
 import json
-import pathlib
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from assistant.services import qwen25_preprocess
+from assistant.util import decode_client_type
 
 # Client configuration mapping backends to available models
 CLIENT_CONFIG = {
     "ollama": ["moondream", "gemma3", "qwen2.5vl"],
     "vllm": ["osunlp/UGround-V1-2B"],
 }
+DEFAULT_CLIENT_TYPE = "ollama:moondream"
+
 
 # Hardcoded model-to-extractor key routing per backend (no regex)
 # Keys in the inner dict must exactly match model names in CLIENT_CONFIG.
@@ -25,14 +28,14 @@ MODEL_EXTRACTOR_MAP = {
 class Config:
     """Configuration manager for the assistant application."""
 
-    def __init__(self):
-        self.config_dir = pathlib.Path.home() / ".config" / "vii-assistant"
+    def __init__(self, config_path: Optional[str] = None):
+        self.config_dir = Path(config_path or Path.home() / ".config" / "vii-assistant")
         self.config_file = self.config_dir / "config.json"
+
         self.config_changed_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
         # Default configuration
         self._config = {
-            "auto_query": False,
             "screen": "",  # Will be set to actual screen in init
             "system_prompt": "",
             "client_type": "ollama:moondream",  # Default client type with model
@@ -79,11 +82,8 @@ class Config:
         """Set a configuration value and save the configuration."""
         if key in self._config and self._config[key] == value:
             return  # No change
-
         self._config[key] = value
         self.save_config()
-
-        # Notify about the change
         if self.config_changed_callback:
             self.config_changed_callback(self._config)
 

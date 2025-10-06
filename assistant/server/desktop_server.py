@@ -3,8 +3,8 @@ import threading
 import uvicorn
 from fastapi import FastAPI
 
+from assistant.server.client import port_is_taken
 from assistant.server.routes import router
-from assistant.server.util import port_is_taken
 
 
 class DesktopServer:

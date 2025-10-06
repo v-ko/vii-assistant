@@ -6,13 +6,15 @@ from fusion.platform.qt_widgets import Property
 from fusion.platform.qt_widgets.view_state import QtViewState
 from PySide6.QtCore import Signal
 
+_VALID_SESSION_STATES = {"new-session", "started", "paused"}
+
 
 class TerminalViewState(QtViewState):
     """Qt-backed state for the assistant terminal window."""
 
     system_prompt_changed = Signal(str)
     output_text_changed = Signal(str)
-    auto_query_changed = Signal(bool)
+    session_state_changed = Signal(str)
     client_type_changed = Signal(str)
     screen_changed = Signal(str)
     request_in_progress_changed = Signal(bool)
@@ -21,7 +23,7 @@ class TerminalViewState(QtViewState):
         super().__init__(parent=parent)
         self._system_prompt = ""
         self._output_text = "Model output will appear here"
-        self._auto_query = False
+        self._session_state = "new-session"
         self._client_type = "ollama:moondream"
         self._screen = ""
         self._request_in_progress = False
@@ -50,17 +52,22 @@ class TerminalViewState(QtViewState):
         self._output_text = value
         self.output_text_changed.emit(value)
 
-    # --- auto_query ---
-    @Property(bool, notify=auto_query_changed)
-    def auto_query(self) -> bool:
-        return self._auto_query
+    # --- session_state ---
+    @Property(str, notify=session_state_changed)
+    def session_state(self) -> str:
+        return self._session_state
 
-    @auto_query.setter
-    def auto_query(self, value: bool) -> None:
-        if self._auto_query == value:
+    @session_state.setter
+    def session_state(self, value: str) -> None:
+        if value not in _VALID_SESSION_STATES:
+            raise ValueError(
+                f"Invalid session state '{value}'. Expected one of"
+                f" {_VALID_SESSION_STATES}."
+            )
+        if self._session_state == value:
             return
-        self._auto_query = value
-        self.auto_query_changed.emit(value)
+        self._session_state = value
+        self.session_state_changed.emit(value)
 
     # --- client_type ---
     @Property(str, notify=client_type_changed)
@@ -101,6 +108,5 @@ class TerminalViewState(QtViewState):
     # --- Helpers ---
     def update_from_config(self, config: Dict[str, Any]) -> None:
         self.system_prompt = config.get("system_prompt", self._system_prompt)
-        self.auto_query = config.get("auto_query", self._auto_query)
         self.client_type = config.get("client_type", self._client_type)
         self.screen = config.get("screen", self._screen)

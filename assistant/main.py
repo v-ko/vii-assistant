@@ -36,7 +36,9 @@ def main(command):
         else:
             from PySide6.QtWidgets import QApplication, QMessageBox
 
-            tmp_app = QApplication(sys.argv)
+            tmp_app = QApplication(
+                sys.argv
+            )  # Must be present for the message box to work
             messageBox = QMessageBox()
             messageBox.critical(
                 messageBox,
@@ -44,7 +46,6 @@ def main(command):
                 "An instance is already running on port "
                 f"{DEFAULT_DESKTOP_SERVER_PORT}.",
             )
-            tmp_app.exec()
 
         sys.exit(1)
 

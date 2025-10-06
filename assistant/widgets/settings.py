@@ -1,12 +1,12 @@
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -24,10 +24,16 @@ class SettingsWidget(QWidget):
     clipboard_step_clicked = Signal()
     # Signal emitted when OCR clipboard button is clicked
     ocr_clipboard_clicked = Signal()
+    # Session control signals
+    start_session_clicked = Signal()
+    stop_session_clicked = Signal()
+    new_session_clicked = Signal()
+    open_sessions_folder_clicked = Signal()
 
     def __init__(self, state: "TerminalViewState", parent=None):
         super().__init__(parent)
         self._state = state
+        self._session_state = state.session_state
         self.setup_ui()
         self._bind_state()
 
@@ -37,14 +43,42 @@ class SettingsWidget(QWidget):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(20)
 
-        # First column: Auto-query checkbox and Single step button
+        # First column: Session controls and capture actions
         first_column = QVBoxLayout()
+        first_column.setSpacing(8)
 
-        # Auto-query checkbox
-        self.auto_query_checkbox = QCheckBox("Auto-query")
-        self.auto_query_checkbox.setToolTip("Enable automatic querying")
-        self.auto_query_checkbox.stateChanged.connect(self.on_auto_query_changed)
-        first_column.addWidget(self.auto_query_checkbox)
+        # Session control buttons
+        session_controls_layout = QHBoxLayout()
+        session_controls_layout.setSpacing(6)
+        session_controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.start_session_button = QPushButton("▶")
+        self.start_session_button.setToolTip("Begin recording a new session")
+        self.start_session_button.clicked.connect(self.on_start_session_clicked)
+        self.start_session_button.setAccessibleName("Start session")
+        session_controls_layout.addWidget(self.start_session_button)
+
+        self.stop_session_button = QPushButton("⏹")
+        self.stop_session_button.setToolTip("Stop the current session")
+        self.stop_session_button.clicked.connect(self.on_stop_session_clicked)
+        self.stop_session_button.setAccessibleName("Stop session")
+        session_controls_layout.addWidget(self.stop_session_button)
+
+        self.new_session_button = QPushButton("New session")
+        self.new_session_button.setToolTip("Create a new session workspace")
+        self.new_session_button.clicked.connect(self.on_new_session_clicked)
+        self.new_session_button.setAccessibleName("New session")
+        session_controls_layout.addWidget(self.new_session_button)
+
+        first_column.addLayout(session_controls_layout)
+
+        for button in (
+            self.start_session_button,
+            self.stop_session_button,
+            self.new_session_button,
+        ):
+            button.setMinimumWidth(48)
+            button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         # Single step button with loading label
         step_layout = QHBoxLayout()
@@ -81,6 +115,16 @@ class SettingsWidget(QWidget):
 
         # Second column: Screen selector and Client selector
         second_column = QVBoxLayout()
+
+        # Open sessions folder helper
+        self.open_sessions_folder_button = QPushButton("Open sessions folder")
+        self.open_sessions_folder_button.setToolTip(
+            "Open the directory containing recorded sessions"
+        )
+        self.open_sessions_folder_button.clicked.connect(
+            self.on_open_sessions_folder_clicked
+        )
+        second_column.addWidget(self.open_sessions_folder_button)
 
         # Screen selector
         self.screen_combo = QComboBox()
@@ -122,13 +166,15 @@ class SettingsWidget(QWidget):
         """
         )
 
+        self._update_session_controls()
+
     def _bind_state(self):
-        self._state.auto_query_changed.connect(self._apply_auto_query)
+        self._state.session_state_changed.connect(self._apply_session_state)
         self._state.client_type_changed.connect(self._apply_client_type)
         self._state.screen_changed.connect(self._apply_screen)
         self._state.request_in_progress_changed.connect(self._apply_request_in_progress)
 
-        self._apply_auto_query(self._state.auto_query)
+        self._apply_session_state(self._state.session_state)
         self._apply_client_type(self._state.client_type)
         self._apply_screen(self._state.screen)
         self._apply_request_in_progress(self._state.request_in_progress)
@@ -151,11 +197,27 @@ class SettingsWidget(QWidget):
                 display_name = f"{backend.capitalize()} - {model}"
                 self.client_combo.addItem(display_name, client_type)
 
-    def on_auto_query_changed(self, state):
-        """Handle auto-query checkbox state change."""
-        is_checked = state == Qt.CheckState.Checked
-        if self._state.auto_query != is_checked:
-            self._state.auto_query = is_checked
+    def on_start_session_clicked(self):
+        """Handle start session button click."""
+        if self._session_state == "started":
+            return
+        self.start_session_clicked.emit()
+
+    def on_stop_session_clicked(self):
+        """Handle stop session button click."""
+        if self._session_state != "started":
+            return
+        self.stop_session_clicked.emit()
+
+    def on_new_session_clicked(self):
+        """Handle new session button click."""
+        if self._session_state == "started":
+            return
+        self.new_session_clicked.emit()
+
+    def on_open_sessions_folder_clicked(self):
+        """Handle open sessions folder button click."""
+        self.open_sessions_folder_clicked.emit()
 
     def on_screen_changed(self, screen_text):
         """Handle screen selection change."""
@@ -173,9 +235,26 @@ class SettingsWidget(QWidget):
             if self._state.client_type != client_type:
                 self._state.client_type = client_type
 
-    def _apply_auto_query(self, value: bool) -> None:
-        blocker = QSignalBlocker(self.auto_query_checkbox)
-        self.auto_query_checkbox.setChecked(value)
+    def _apply_session_state(self, value: str) -> None:
+        if self._session_state == value:
+            return
+        self._session_state = value
+        self._update_session_controls()
+
+    def _update_session_controls(self) -> None:
+        state = self._session_state
+        self.start_session_button.setEnabled(state in {"new-session", "paused"})
+        self.start_session_button.setToolTip(
+            "Resume the current session"
+            if state == "paused"
+            else "Begin recording a new session"
+        )
+        self.stop_session_button.setEnabled(state == "started")
+        self.new_session_button.setEnabled(state != "started")
+
+        config_locked = state in {"started", "paused"}
+        self.screen_combo.setEnabled(not config_locked)
+        self.client_combo.setEnabled(not config_locked)
 
     def _apply_client_type(self, client_type: str) -> None:
         if not client_type:

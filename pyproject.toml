@@ -18,6 +18,7 @@ dependencies = [
   "qwen-vl-utils",
   "pytesseract",
   "python-fusion",
+  "pynput",
 ]
 
 [project.scripts]

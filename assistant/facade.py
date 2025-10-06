@@ -5,18 +5,19 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import pytesseract
 from PIL import Image
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThread, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap, QScreen
 
-from assistant.config import CLIENT_CONFIG
+from assistant.config import CLIENT_CONFIG, DEFAULT_CLIENT_TYPE, Config
 from assistant.services.automation import AutomationService
 from assistant.services.base_client import BaseClient
 from assistant.services.ollama_client import OllamaClient
+from assistant.services.project_manager import SessionManager, ViiProjectManager
+from assistant.services.session_recorder import SessionRecorderConfig
 from assistant.services.vllm_client import VLLMClient
 from assistant.util import decode_client_type
 
 if TYPE_CHECKING:
-    from assistant.config import Config
     from assistant.qt_app import AssistantQtApp
 
 
@@ -25,13 +26,24 @@ class Facade:
     _desktop_server = None
     _config = None
     _automation_service = None
-    _client: Optional[BaseClient] = None
-    _client_type: str = "ollama:moondream"
+    _model_client: Optional[BaseClient] = None
     _watched_screen = None
+    # Track (backend, model) to avoid unnecessary client re-inits
+    _model_signature: Optional[Tuple[str, str]] = None
+    _project_manager: Optional[ViiProjectManager] = None
+    _session_manager: Optional[SessionManager] = None
 
     def __init__(self):
+        # Setup config
+        self._config = Config()
+        self._config.set_config_changed_callback(self.apply_config)
+
         self._automation_service = AutomationService()
-        self._init_client()
+        # Initialize client from current config (source of truth)
+        self.set_model_client(self._config.get("client_type", DEFAULT_CLIENT_TYPE))
+        # Initialize project storage in the configuration directory by default
+        self._project_manager = ViiProjectManager(self._config.config_dir)
+        self._session_manager = None
 
     @property
     def qt_app(self) -> "AssistantQtApp":
@@ -42,10 +54,7 @@ class Facade:
     @property
     def config(self) -> "Config":
         if self._config is None:
-            from assistant.config import Config
-
-            self._config = Config()
-            self._config.set_config_changed_callback(self.apply_config)
+            raise RuntimeError("Config instance not initialized")
         return self._config
 
     @property
@@ -54,71 +63,48 @@ class Facade:
             raise RuntimeError("Automation service not initialized")
         return self._automation_service
 
-    def _parse_client_type(self) -> Tuple[str, str]:
-        """Parse the client_type string into backend and model.
+    @property
+    def model_client(self) -> BaseClient:
+        if self._model_client is None:
+            raise RuntimeError("Client not initialized")
+        return self._model_client
 
-        Validates that the backend and model are valid according to CLIENT_CONFIG.
-        If not, defaults to a known good configuration.
+    @property
+    def project_manager(self) -> ViiProjectManager:
+        if self._project_manager is None:
+            raise RuntimeError("Project manager not initialized")
+        return self._project_manager
 
-        Returns:
-            A tuple of (backend, model)
-        """
-        # Default values
-        default_backend = "ollama"
-        default_model = "moondream"
+    def set_model_client(self, client_type: Optional[str] = None) -> None:
+        """Initialize the appropriate client based on the client_type from config/state."""
+        if client_type is None:
+            client_type = DEFAULT_CLIENT_TYPE
 
         # Parse the client_type string
-        backend, model = decode_client_type(self._client_type)
+        backend, model = decode_client_type(client_type)
 
         # Validate backend
         if backend not in CLIENT_CONFIG:
-            print(f"Unknown backend: {backend}, using default")
-            return default_backend, default_model
+            raise ValueError(f"Unknown backend type: {backend}")
 
         # Validate model
         if model not in CLIENT_CONFIG[backend]:
-            print(f"Model {model} not available for backend {backend}, using default")
-            # Use the first model in the list for this backend
-            model = CLIENT_CONFIG[backend][0]
+            raise ValueError(f"Unknown model '{model}' for backend '{backend}'")
 
-        return backend, model
-
-    def _init_client(self) -> None:
-        """Initialize the appropriate client based on the client_type."""
-        backend, model = self._parse_client_type()
+        # No-op if signature hasn't changed
+        if self._model_signature == (backend, model) and self._model_client is not None:
+            return
 
         if backend == "ollama":
-            self._client = OllamaClient("http://desk:11434")
+            self._model_client = OllamaClient("http://desk:11434")
         elif backend == "vllm":
-            self._client = VLLMClient("http://desk:8000", model)
+            self._model_client = VLLMClient("http://desk:8000", model)
         else:
             raise ValueError(f"Unknown backend type: {backend}")
 
-    @property
-    def client(self) -> BaseClient:
-        if self._client is None:
-            raise RuntimeError("Client not initialized")
-        return self._client
+        self._model_signature = (backend, model)
 
-    @property
-    def client_type(self) -> str:
-        return self._client_type
-
-    @property
-    def backend(self) -> str:
-        """Get the backend part of the client_type."""
-        return self._parse_client_type()[0]
-
-    @property
-    def model(self) -> str:
-        """Get the model part of the client_type."""
-        return self._parse_client_type()[1]
-
-    def set_client_type(self, client_type: str) -> None:
-        """Set the client type and initialize the appropriate client."""
-        if client_type != self._client_type:
-            self._client_type = client_type
-            self._init_client()
+    # Facade no longer stores client_type; use config/terminal state instead.
 
     @property
     def watched_screen(self) -> Optional[QScreen]:
@@ -134,24 +120,24 @@ class Facade:
         terminal_state.system_prompt_changed.connect(
             lambda prompt: self.config.set("system_prompt", prompt)
         )
-        terminal_state.auto_query_changed.connect(
-            lambda value: self.config.set("auto_query", value)
-        )
         terminal_state.client_type_changed.connect(
             lambda value: self.config.set("client_type", value)
         )
         terminal_state.screen_changed.connect(
             lambda value: self.config.set("screen", value)
         )
-        self._qt_app.terminal_window.model_settings.single_step_clicked.connect(
+        model_settings = self._qt_app.terminal_window.model_settings
+        model_settings.single_step_clicked.connect(
             lambda: self.single_step(source="screen")
         )
-        self._qt_app.terminal_window.model_settings.clipboard_step_clicked.connect(
+        model_settings.clipboard_step_clicked.connect(
             lambda: self.single_step(source="clipboard")
         )
-        self._qt_app.terminal_window.model_settings.ocr_clipboard_clicked.connect(
-            self.ocr_clipboard_action
-        )
+        model_settings.ocr_clipboard_clicked.connect(self.ocr_clipboard_action)
+        model_settings.start_session_clicked.connect(self.start_session)
+        model_settings.stop_session_clicked.connect(self.stop_session)
+        model_settings.new_session_clicked.connect(self.new_session)
+        model_settings.open_sessions_folder_clicked.connect(self.open_sessions_folder)
 
         # Update terminal window with current config
         terminal_state.update_from_config(self.config._config)
@@ -166,24 +152,21 @@ class Facade:
 
     def apply_config(self, config: Dict[str, Any]):
         """Apply configuration changes."""
-        # Check if service is running
-        was_running = self.automation.is_running()
-
-        # Handle auto_query setting
-        auto_query = config.get("auto_query", False)
-        if auto_query and not was_running:
-            self.automation.start()
-        elif not auto_query and was_running:
-            self.automation.stop()
+        # Session state is no longer persisted in config; control via explicit methods
 
         # Handle system_prompt setting
         system_prompt = config.get("system_prompt", "")
         self.automation.set_system_prompt(system_prompt)
 
         # Handle client_type setting
-        client_type = config.get("client_type", "ollama:moondream")
-        if client_type != self._client_type:
-            self.set_client_type(client_type)
+        client_type = config.get("client_type", DEFAULT_CLIENT_TYPE)
+        try:
+            backend, model = decode_client_type(client_type)
+        except Exception:
+            backend = model = None  # Invalid client_type; ignore
+        else:
+            if self._model_signature != (backend, model):
+                self.set_model_client(client_type)
 
         # Handle screen setting
         screen_name = config.get("screen", "")
@@ -210,6 +193,100 @@ class Facade:
                     self._qt_app.overlay._setup_full_screen()  # Resize to fit screen
 
         self.qt_app.terminal_state.update_from_config(config)
+
+    def start_session(self) -> None:
+        """Start or resume the automation-backed session."""
+        state = self.qt_app.terminal_state.session_state
+        if state == "started":
+            return
+
+        if self._session_manager is None:
+            self._session_manager = self.project_manager.create_session()
+            metadata = self._session_manager.metadata
+            message = f"Session directory ready: {metadata.session_id}\n{metadata.path}"
+            print(message)
+            self.qt_app.terminal_state.output_text = message
+
+        session_config: SessionRecorderConfig = {}
+        screen_name = self.qt_app.terminal_state.screen
+        if screen_name:
+            session_config["screen"] = screen_name
+
+        target_screen: Optional[QScreen] = None
+        if screen_name:
+            target_screen = self.get_screen_by_name(screen_name)
+        if target_screen is None:
+            target_screen = self.watched_screen
+        if target_screen is None:
+            try:
+                target_screen = self.get_default_screen()
+            except Exception:
+                target_screen = None
+
+        if target_screen is not None:
+            geometry = target_screen.geometry()
+            session_config["window_geometry"] = (
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+            )
+        client_type = self.qt_app.terminal_state.client_type
+        if client_type:
+            session_config["client_type"] = client_type
+
+        config_arg: Optional[SessionRecorderConfig] = session_config or None
+        self._session_manager.start_recording(config_arg)
+
+        if not self.automation.is_running():
+            self.automation.start()
+
+        self.qt_app.terminal_state.session_state = "started"
+
+    def pause_session(self) -> None:
+        """Pause the active session without resetting state."""
+        if self.qt_app.terminal_state.session_state != "started":
+            return
+        if self.automation.is_running():
+            self.automation.stop()
+        if self._session_manager and self._session_manager.is_recording:
+            self._session_manager.stop_recording()
+        self.qt_app.terminal_state.session_state = "paused"
+
+    def stop_session(self) -> None:
+        """Stop the current session entirely."""
+        if self.qt_app.terminal_state.session_state != "started":
+            return
+        if self.automation.is_running():
+            self.automation.stop()
+        if self._session_manager and self._session_manager.is_recording:
+            self._session_manager.stop_recording()
+        self.qt_app.terminal_state.session_state = "paused"
+
+    def new_session(self) -> None:
+        """Create a fresh session workspace on disk."""
+        if self._session_manager and self._session_manager.is_recording:
+            self._session_manager.stop_recording()
+        if self.automation.is_running():
+            self.automation.stop()
+
+        self._session_manager = self.project_manager.create_session()
+        metadata = self._session_manager.metadata
+
+        message = f"New session directory ready: {metadata.session_id}\n{metadata.path}"
+        print(message)
+        self.qt_app.terminal_state.session_state = "new-session"
+        self.qt_app.terminal_state.output_text = message
+
+    def open_sessions_folder(self) -> None:
+        """Open the sessions directory in the system file browser."""
+        sessions_dir = self.project_manager.sessions_root
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+        url = QUrl.fromLocalFile(str(sessions_dir))
+        opened = QDesktopServices.openUrl(url)
+        if not opened:
+            print(f"Failed to open sessions directory: {sessions_dir}")
 
     def get_screen_by_name(self, name: str) -> Optional[QScreen]:
         """Get a QScreen object by its name."""
@@ -380,12 +457,16 @@ class Facade:
             self.qt_app.terminal_state.output_text = response
         else:
             # Format and print the response
-            formatted_response = self.client.format_response(system_prompt, response)
+            formatted_response = self.model_client.format_response(
+                system_prompt, response
+            )
             print(f"Model response: {formatted_response}")
             self.qt_app.terminal_state.output_text = formatted_response
 
             # Use the client's extract_shapes method
-            shapes = self.client.extract_shapes(response, image_width, image_height)
+            shapes = self.model_client.extract_shapes(
+                response, image_width, image_height
+            )
 
             # Update the overlay with the shapes
             if shapes:
@@ -428,8 +509,11 @@ class VLMWorker(QThread):
                 self.pixmap.save(buffer, "PNG")
 
                 # Call the VLM with the image
-                response = self.facade.client.call_vlm(
-                    self.facade.model, system_prompt, bytes(buffer.data().data())
+                # Derive model from config's client_type
+                client_type = self.facade.config.get("client_type", DEFAULT_CLIENT_TYPE)
+                _, model = decode_client_type(client_type)
+                response = self.facade.model_client.call_vlm(
+                    model, system_prompt, bytes(buffer.data().data())
                 )
 
                 # Get image dimensions for coordinate scaling
