@@ -1,12 +1,21 @@
 import signal
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 import click
 
 from assistant.registries.actions import execute_action
-from assistant.server.util import port_is_taken, send_command
+from assistant.server.client import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
+
+
+try:
+    fusion_pkg_version = version("python-fusion")
+except PackageNotFoundError:
+    fusion_pkg_version = None
+if not fusion_pkg_version or not fusion_pkg_version.startswith("0.9"):
+    raise RuntimeError("Required fusion version >=0.9")
 
 
 @click.command()
