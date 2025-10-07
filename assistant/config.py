@@ -7,7 +7,11 @@ from assistant.util import decode_client_type
 
 # Client configuration mapping backends to available models
 CLIENT_CONFIG = {
-    "ollama": ["moondream", "gemma3", "qwen2.5vl"],
+    "ollama": [
+        "moondream",
+        "gemma3",
+        "qwen2.5vl",
+    ],
     "vllm": ["osunlp/UGround-V1-2B"],
 }
 DEFAULT_CLIENT_TYPE = "ollama:moondream"

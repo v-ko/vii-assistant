@@ -64,7 +64,7 @@ class Facade:
         return self._automation_service
 
     @property
-    def model_client(self) -> BaseClient:
+    def inference_client(self) -> BaseClient:
         if self._model_client is None:
             raise RuntimeError("Client not initialized")
         return self._model_client
@@ -457,14 +457,14 @@ class Facade:
             self.qt_app.terminal_state.output_text = response
         else:
             # Format and print the response
-            formatted_response = self.model_client.format_response(
+            formatted_response = self.inference_client.format_response(
                 system_prompt, response
             )
             print(f"Model response: {formatted_response}")
             self.qt_app.terminal_state.output_text = formatted_response
 
             # Use the client's extract_shapes method
-            shapes = self.model_client.extract_shapes(
+            shapes = self.inference_client.extract_shapes(
                 response, image_width, image_height
             )
 
@@ -488,19 +488,17 @@ class VLMWorker(QThread):
     finished = Signal(tuple)  # (response, system_prompt, screen_width, screen_height)
     error = Signal(str)  # error message
 
-    def __init__(self, facade, source, pixmap):
+    def __init__(self, facade: Facade, source, pixmap: QPixmap):
         super().__init__()
         self.facade = facade
-        self.source = source
+        # self.source = source
         self.pixmap = pixmap
 
     def run(self):
         """Run VLM processing in background thread."""
         try:
             # Get the system prompt
-            system_prompt = (
-                self.facade.automation.get_system_prompt() or "What's in this image?"
-            )
+            system_prompt = self.facade.automation.get_system_prompt()
 
             # Convert pixmap to bytes
             buffer = QBuffer()
@@ -511,24 +509,27 @@ class VLMWorker(QThread):
                 # Call the VLM with the image
                 # Derive model from config's client_type
                 client_type = self.facade.config.get("client_type", DEFAULT_CLIENT_TYPE)
-                _, model = decode_client_type(client_type)
-                response = self.facade.model_client.call_vlm(
-                    model, system_prompt, bytes(buffer.data().data())
+                _, model_name = decode_client_type(client_type)
+                print(f"Calling VLM model '{model_name}' with prompt: {system_prompt}")
+                response = self.facade.inference_client.call_vlm(
+                    model_name, system_prompt, bytes(buffer.data().data())
                 )
 
-                # Get image dimensions for coordinate scaling
-                # For screen source, use screen dimensions
-                # For clipboard source, use actual image dimensions
-                if self.source == "screen" and self.facade.watched_screen:
-                    image_width = self.facade.watched_screen.size().width()
-                    image_height = self.facade.watched_screen.size().height()
-                else:
-                    # Use pixmap dimensions for clipboard images
-                    image_width = self.pixmap.width()
-                    image_height = self.pixmap.height()
+                # # Get image dimensions for coordinate scaling
+                # # For screen source, use screen dimensions
+                # # For clipboard source, use actual image dimensions
+                # if self.source == "screen" and self.facade.watched_screen:
+                #     image_width = self.facade.watched_screen.size().width()
+                #     image_height = self.facade.watched_screen.size().height()
+                # else:
+                #     # Use pixmap dimensions for clipboard images
+                #     image_width = self.pixmap.width()
+                #     image_height = self.pixmap.height()
 
                 # Emit success signal with results
-                self.finished.emit((response, system_prompt, image_width, image_height))
+                self.finished.emit(
+                    (response, system_prompt, self.pixmap.height(), self.pixmap.width())
+                )
             finally:
                 # Always close the buffer
                 buffer.close()
