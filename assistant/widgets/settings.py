@@ -41,16 +41,18 @@ class SettingsWidget(QWidget):
         """Set up the UI with three columns."""
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(20)
+        # Slightly tighter spacing between the three columns
+        main_layout.setSpacing(12)
 
         # First column: Session controls and capture actions
         first_column = QVBoxLayout()
+        # Tighter vertical spacing for a denser layout
         first_column.setSpacing(8)
 
         # Session control buttons
         session_controls_layout = QHBoxLayout()
         session_controls_layout.setSpacing(6)
-        session_controls_layout.setContentsMargins(0, 0, 0, 0)
+        # session_controls_layout.setContentsMargins(0, 0, 0, 0)
 
         self.start_session_button = QPushButton("▶")
         self.start_session_button.setToolTip("Begin recording a new session")
@@ -72,12 +74,15 @@ class SettingsWidget(QWidget):
 
         first_column.addLayout(session_controls_layout)
 
+        # Normalize button heights
+        uniform_button_height = 30
         for button in (
             self.start_session_button,
             self.stop_session_button,
             self.new_session_button,
         ):
             button.setMinimumWidth(48)
+            button.setFixedHeight(uniform_button_height)
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         # Single step button with loading label
@@ -85,6 +90,7 @@ class SettingsWidget(QWidget):
         self.single_step_button = QPushButton("Single step")
         self.single_step_button.setToolTip("Take a single screenshot and process it")
         self.single_step_button.clicked.connect(self.on_single_step_clicked)
+        self.single_step_button.setFixedHeight(uniform_button_height)
         step_layout.addWidget(self.single_step_button)
 
         # Loading indicator icon (hidden by default)
@@ -99,6 +105,7 @@ class SettingsWidget(QWidget):
         self.clipboard_step_button = QPushButton("Clipboard step")
         self.clipboard_step_button.setToolTip("Process image from clipboard")
         self.clipboard_step_button.clicked.connect(self.on_clipboard_step_clicked)
+        self.clipboard_step_button.setFixedHeight(uniform_button_height)
         first_column.addWidget(self.clipboard_step_button)
 
         # OCR Clipboard button
@@ -107,6 +114,7 @@ class SettingsWidget(QWidget):
             "Run OCR (Tesseract) on clipboard image and show text output"
         )
         self.ocr_clipboard_button.clicked.connect(self.on_ocr_clipboard_clicked)
+        self.ocr_clipboard_button.setFixedHeight(uniform_button_height)
         first_column.addWidget(self.ocr_clipboard_button)
         first_column.addStretch()
 
@@ -115,6 +123,7 @@ class SettingsWidget(QWidget):
 
         # Second column: Screen selector and Client selector
         second_column = QVBoxLayout()
+        second_column.setSpacing(8)
 
         # Open sessions folder helper
         self.open_sessions_folder_button = QPushButton("Open sessions folder")
@@ -124,24 +133,28 @@ class SettingsWidget(QWidget):
         self.open_sessions_folder_button.clicked.connect(
             self.on_open_sessions_folder_clicked
         )
+        self.open_sessions_folder_button.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.open_sessions_folder_button)
 
         # Screen selector
         self.screen_combo = QComboBox()
         self.populate_screen_combo()
         self.screen_combo.currentTextChanged.connect(self.on_screen_changed)
+        self.screen_combo.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.screen_combo)
 
         # Client selector
         self.client_combo = QComboBox()
         self.populate_client_combo()
         self.client_combo.currentTextChanged.connect(self.on_client_changed)
+        self.client_combo.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.client_combo)
 
         second_column.addStretch()
 
         # Third column: Image placeholder
         third_column = QVBoxLayout()
+        third_column.setSpacing(6)
         self.image_placeholder = QLabel("No image")
         self.image_placeholder.setFrameShape(QFrame.Shape.Box)
         self.image_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)

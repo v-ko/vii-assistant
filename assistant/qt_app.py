@@ -19,6 +19,45 @@ class AssistantQtApp(QApplication):
         # Prevent app from closing when all windows are closed
         self.setQuitOnLastWindowClosed(False)
 
+        # Minimal global styling for buttons (adds depth & focus without heavy theming)
+        self.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #444;
+                border: 1px solid #666;
+                border-radius: 4px;
+                padding: 4px 10px; /* more hit area */
+                color: #f0f0f0;
+                font-weight: 500;
+                min-height: 26px; /* avoid slim buttons */
+            }
+            QPushButton:hover {
+                background-color: #515151;
+                border-color: #7a7a7a;
+            }
+            QPushButton:pressed {
+                background-color: #3a3a3a;
+                border-color: #555;
+                padding-top: 5px;  /* subtle pressed shift */
+                padding-bottom: 3px;
+            }
+            QPushButton:disabled {
+                background-color: #2f2f2f;
+                color: #777;
+                border-color: #444;
+            }
+            /* Keep combos consistent */
+            QComboBox {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+            QComboBox:hover { background-color: #444; }
+            """
+        )
+
         # Initialize components
         self.terminal_state = TerminalViewState()
         self.terminal_window = TerminalWindow(self.terminal_state)
