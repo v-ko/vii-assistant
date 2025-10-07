@@ -157,13 +157,13 @@ def _manual_forward(
     inputs_embeds = model.model.embed_tokens(input_ids)
 
     if pixel_values is not None:
-        pixel_values = pixel_values.to(model.visual.get_dtype())
+        pixel_values = pixel_values.to(_infer_visual_dtype(model))
         image_embeds = model.visual(pixel_values, grid_thw=image_grid_thw)
         image_token_mask = input_ids == model.config.image_token_id
         _scatter_modal_embeds(inputs_embeds, image_embeds, image_token_mask)
 
     if pixel_values_videos is not None:
-        pixel_values_videos = pixel_values_videos.to(model.visual.get_dtype())
+        pixel_values_videos = pixel_values_videos.to(_infer_visual_dtype(model))
         video_embeds = model.visual(pixel_values_videos, grid_thw=video_grid_thw)
         video_token_mask = input_ids == model.config.video_token_id
         _scatter_modal_embeds(inputs_embeds, video_embeds, video_token_mask)
@@ -206,6 +206,12 @@ def _scatter_modal_embeds(
     mask = token_mask.unsqueeze(-1).expand_as(inputs_embeds)
     modal_embeds = modal_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
     inputs_embeds.masked_scatter_(mask, modal_embeds)
+
+
+def _infer_visual_dtype(model: Qwen2_5_VLForConditionalGeneration) -> torch.dtype:
+    for param in model.visual.parameters():
+        return param.dtype
+    return model.model.embed_tokens.weight.dtype
 
 
 if __name__ == "__main__":
