@@ -59,7 +59,7 @@ class TerminalWindow(QWidget):
 
         # Model settings widget
         self.model_settings = SettingsWidget(self._state)
-        # single_step_clicked is connected in the app
+        # single_step_clicked is connected in the facade
         right_layout.addWidget(self.model_settings, 1)
 
         # Output text area (using QTextBrowser for selectable text)
