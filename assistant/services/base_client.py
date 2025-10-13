@@ -4,7 +4,37 @@ from typing import List, Optional, Union
 
 from PIL import Image
 
+from assistant.services import qwen25_preprocess
 from assistant.util import Shape, extract_coordinates
+
+# Centralized client/model defaults (previously in config.py)
+DEFAULT_OLLAMA_URL = "http://desk:11434"
+DEFAULT_VLLM_URL = "http://desk:8000"
+DEFAULT_MODEL = "qwen2.5vl"  # Primary vision model in use
+
+
+# Client configuration mapping backends to available models
+CLIENT_CONFIG = {
+    "ollama": [
+        "moondream",
+        "gemma3",
+        "qwen2.5vl",
+    ],
+    "vllm": ["osunlp/UGround-V1-2B"],
+}
+DEFAULT_CLIENT_TYPE = "ollama:moondream"
+
+
+# Hardcoded model-to-extractor key routing per backend (no regex)
+# Keys in the inner dict must exactly match model names in CLIENT_CONFIG.
+MODEL_EXTRACTOR_MAP = {
+    "ollama": {
+        "qwen2.5vl": qwen25_preprocess.extract_qwen25_shapes_ollama_policy,
+    },
+    "vllm": {
+        # Add vLLM model-specific extractors here if needed
+    },
+}
 
 
 class BaseClient:

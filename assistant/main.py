@@ -56,24 +56,8 @@ def main(command):
     qt_app = AssistantQtApp()
     facade.setQtApp(qt_app)
 
-    # Initialize config and set screen
-    config = facade.config
-    print(f"Config: {config}")
-
-    # If screen is not set or not available, set to default
-    screen_name = config.get("screen", "")
-    screen = None
-    if screen_name:
-        screen = facade.get_screen_by_name(screen_name)
-
-    if not screen:
-        # Set default screen
-        default_screen = facade.get_default_screen()
-        if default_screen:
-            config.set("screen", default_screen.name())
-
-    # Update terminal window from config
-    facade.apply_config(facade.config.data())
+    # Config already loaded; facade ensures screen is set during setQtApp
+    print(f"Config: {facade.config}")
 
     # Start desktop server
     facade.start_desktop_server(DEFAULT_DESKTOP_SERVER_PORT)

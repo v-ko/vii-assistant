@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vii-assistant"
 version = "0.1.0"
 # readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 
 dependencies = [
   "PySide6",
@@ -18,9 +18,11 @@ dependencies = [
   "uvicorn",
   "qwen-vl-utils",
   "transformers",
+  "torch",
   "pytesseract",
   "python-fusion",
   "pynput",
+  "websockets",
 ]
 
 [project.scripts]

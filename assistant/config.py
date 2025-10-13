@@ -2,31 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from assistant.services import qwen25_preprocess
-from assistant.util import decode_client_type
-
-# Client configuration mapping backends to available models
-CLIENT_CONFIG = {
-    "ollama": [
-        "moondream",
-        "gemma3",
-        "qwen2.5vl",
-    ],
-    "vllm": ["osunlp/UGround-V1-2B"],
-}
-DEFAULT_CLIENT_TYPE = "ollama:moondream"
-
-
-# Hardcoded model-to-extractor key routing per backend (no regex)
-# Keys in the inner dict must exactly match model names in CLIENT_CONFIG.
-MODEL_EXTRACTOR_MAP = {
-    "ollama": {
-        "qwen2.5vl": qwen25_preprocess.extract_qwen25_shapes_ollama_policy,
-    },
-    "vllm": {
-        # Add vLLM model-specific extractors here if needed
-    },
-}
+from assistant.services import qwen25_preprocess  # kept for potential future use
 
 
 class Config:
@@ -42,7 +18,7 @@ class Config:
         self._config = {
             "screen": "",  # Will be set to actual screen in init
             "system_prompt": "",
-            "client_type": "ollama:moondream",  # Default client type with model
+            # legacy key client_type removed; single hardcoded client now
         }
 
         self._init_config()
@@ -94,3 +70,21 @@ class Config:
     def set_config_changed_callback(self, callback: Callable[[Dict[str, Any]], None]):
         """Set the callback to be called when the configuration changes."""
         self.config_changed_callback = callback
+
+    # --- bulk update API (no per-key callbacks) -------------------
+    def update_bulk(self, values: Dict[str, Any], *, notify: bool = True) -> None:
+        """Apply multiple key/value updates with a single disk write.
+
+        Existing keys are only written if changed. Keys not present in values are untouched.
+        If nothing changes, no save or callback.
+        """
+        changed = False
+        for k, v in values.items():
+            if k not in self._config or self._config[k] != v:
+                self._config[k] = v
+                changed = True
+        if not changed:
+            return
+        self.save_config()
+        if notify and self.config_changed_callback:
+            self.config_changed_callback(self._config)

@@ -1,26 +1,40 @@
 """Standalone script to probe Qwen2.5-VL manual multimodal conditioning.
 
-The script downloads the specified checkpoint, runs the vision encoder to
+The script downloads the configured checkpoint, runs the vision encoder to
 produce image embeddings, scatters them into the token stream alongside a text
 prompt, and executes the decoder to generate logits. The resulting logits are
 compared with the model's regular forward pass to confirm parity.
 
-Example usage:
-    python -m assistant.qwen_manual_demo --model-id Qwen/Qwen2.5-VL-3B-Instruct
+Configuration is via hardcoded globals below (no CLI arguments / env vars).
+Edit the constants if you want to change the model or generation behaviour.
 """
 
 from __future__ import annotations
 
-import argparse
-import os
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import torch
 from PIL import Image
-from qwen_vl_utils import smart_resize
+from torch import nn
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+from assistant.inference.image_ops import resize_like_processor
+
+# pyright: ignore-all
+
+
+###################################################################################################
+# Hardcoded demo configuration (edit as needed)
+###################################################################################################
+MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Ordered variety of image sizes to stress resizing & positional embedding logic
+IMAGE_SIZES = [32, 224, 512, 1024]
+# None => auto select (fp16 on CUDA, fp32 on CPU). Explicit options: "bf16", "fp16", "fp32"
+PRECISION: str | None = None
+MAX_NEW_TOKENS = 128
 
 
 @dataclass
@@ -32,8 +46,24 @@ class DemoConfig:
     max_new_tokens: int
 
 
+@dataclass
+class PreparedInputs:
+    input_ids: torch.Tensor
+    attention_mask: Optional[torch.Tensor]
+    pixel_values: Optional[torch.Tensor]
+    pixel_values_videos: Optional[torch.Tensor]
+    image_grid_thw: Optional[torch.Tensor]
+    video_grid_thw: Optional[torch.Tensor]
+
+
 def main() -> None:
-    config = _parse_args()
+    config = DemoConfig(
+        model_id=MODEL_ID,
+        device=DEVICE,
+        image_sizes=IMAGE_SIZES,
+        precision=PRECISION,
+        max_new_tokens=MAX_NEW_TOKENS,
+    )
     device = torch.device(config.device)
     dtype = _select_dtype(device, config.precision)
 
@@ -42,7 +72,7 @@ def main() -> None:
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         config.model_id, torch_dtype=dtype
     )
-    model.to(device)
+    model.to(device)  # type: ignore[call-arg]
     model.eval()
 
     messages = [
@@ -64,7 +94,7 @@ def main() -> None:
     for size in config.image_sizes:
         print("\n" + "=" * 10 + f" Processing image {size}x{size} " + "=" * 10)
         image = _build_gradient_image(size)
-        manual_resized_image, resize_meta = _resize_image_like_processor(
+        manual_resized_image, resize_meta = resize_like_processor(
             image, processor.image_processor
         )
 
@@ -82,32 +112,32 @@ def main() -> None:
         _assert_same_pixels(manual_pixel_values, inputs["pixel_values"])
         inputs["pixel_values"] = manual_pixel_values
 
-        with torch.no_grad():
-            model.rope_deltas = None
-            manual_logits = _manual_forward(model, inputs)
+        prepared = _prepare_inputs(inputs, manual_pixel_values)
+        model_kwargs = _build_model_kwargs(prepared)
 
-            model.rope_deltas = None
-            forward_inputs = {
-                key: value.clone() if isinstance(value, torch.Tensor) else value
-                for key, value in inputs.items()
-            }
-            reference = model(**forward_inputs)
+        with torch.no_grad():
+            _reset_rope_state(model)
+            manual_logits = _manual_forward(model, prepared)
+
+            _reset_rope_state(model)
+            reference = model(return_dict=True, **model_kwargs)
             reference_logits = reference.logits
 
         max_diff = (manual_logits - reference_logits).abs().max().item()
         print(
-            f"Max absolute difference between manual and reference logits: {max_diff:.6e}"
+            "Max absolute difference between manual and reference logits:"
+            f" {max_diff:.6e}"
         )
         print(
-            "Manual resize produced "
-            f"{resize_meta['width']}x{resize_meta['height']} pixels; processor tensor shape: "
-            f"{tuple(int(dim) for dim in manual_pixel_values.shape)}"
+            "Manual resize produced"
+            f" {resize_meta['width']}x{resize_meta['height']} pixels; processor tensor"
+            f" shape: {tuple(int(dim) for dim in manual_pixel_values.shape)}"
         )
 
         print("Generating model response...")
-        model.rope_deltas = None
+        _reset_rope_state(model)
         generation = model.generate(
-            **forward_inputs,
+            **model_kwargs,
             max_new_tokens=config.max_new_tokens,
             do_sample=False,
         )
@@ -116,66 +146,6 @@ def main() -> None:
         decoded = processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
         print("Model output:")
         print(decoded.strip())
-
-
-def _parse_args() -> DemoConfig:
-    parser = argparse.ArgumentParser(
-        description="Manually probe Qwen2.5-VL multimodal context assembly"
-    )
-    parser.add_argument(
-        "--model-id",
-        default=os.getenv("QWEN_VL_MODEL_ID", "Qwen/Qwen2.5-VL-3B-Instruct"),
-        help="HF hub identifier for the checkpoint",
-    )
-    parser.add_argument(
-        "--device",
-        default=os.getenv(
-            "QWEN_VL_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
-        ),
-        help="Inference device (e.g. cuda, cpu, cuda:1)",
-    )
-    parser.add_argument(
-        "--image-size",
-        dest="image_sizes",
-        type=int,
-        action="append",
-        help="Gradient image size (repeat flag for multiple sizes)",
-    )
-    parser.add_argument(
-        "--precision",
-        choices=("auto", "bf16", "fp16", "fp32"),
-        default=os.getenv("QWEN_VL_PRECISION", "auto"),
-        help="Optional dtype override",
-    )
-    parser.add_argument(
-        "--max-new-tokens",
-        type=int,
-        default=int(os.getenv("QWEN_VL_MAX_NEW_TOKENS", "128")),
-        help="Number of tokens to generate after the prompt",
-    )
-    args = parser.parse_args()
-    return DemoConfig(
-        model_id=args.model_id,
-        device=args.device,
-        image_sizes=_resolve_image_sizes(args.image_sizes),
-        precision=None if args.precision == "auto" else args.precision,
-        max_new_tokens=args.max_new_tokens,
-    )
-
-
-def _resolve_image_sizes(cli_sizes: List[int] | None) -> List[int]:
-    if cli_sizes:
-        return cli_sizes
-    env_value = os.getenv("QWEN_VL_TEST_IMAGE_SIZE", "32,224,4096")
-    candidates: List[int] = []
-    for part in env_value.replace(";", ",").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        candidates.append(int(part))
-    if not candidates:
-        candidates = [224]
-    return candidates
 
 
 def _select_dtype(device: torch.device, precision: str | None) -> torch.dtype:
@@ -196,22 +166,41 @@ def _build_gradient_image(size: int) -> Image.Image:
     return Image.fromarray(gradient, mode="RGB")
 
 
-def _resize_image_like_processor(
-    image: Image.Image, image_processor: Any
-) -> tuple[Image.Image, Dict[str, int]]:
-    factor = getattr(image_processor, "patch_size", 28)
-    min_pixels = getattr(image_processor, "min_pixels", 4 * factor * factor)
-    max_pixels = getattr(image_processor, "max_pixels", 16384 * factor * factor)
+def _optional_tensor(data: Dict[str, Any], key: str) -> Optional[torch.Tensor]:
+    value = data.get(key)
+    if value is None:
+        return None
+    return cast(torch.Tensor, value)
 
-    resized_height, resized_width = smart_resize(
-        image.height,
-        image.width,
-        factor=factor,
-        min_pixels=min_pixels,
-        max_pixels=max_pixels,
+
+def _prepare_inputs(raw: Dict[str, Any], pixel_values: torch.Tensor) -> PreparedInputs:
+    return PreparedInputs(
+        input_ids=cast(torch.Tensor, raw["input_ids"]),
+        attention_mask=_optional_tensor(raw, "attention_mask"),
+        pixel_values=pixel_values,
+        pixel_values_videos=_optional_tensor(raw, "pixel_values_videos"),
+        image_grid_thw=_optional_tensor(raw, "image_grid_thw"),
+        video_grid_thw=_optional_tensor(raw, "video_grid_thw"),
     )
-    resized_image = image.resize((resized_width, resized_height))
-    return resized_image, {"width": resized_width, "height": resized_height}
+
+
+def _build_model_kwargs(prepared: PreparedInputs) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {"input_ids": prepared.input_ids}
+    if prepared.attention_mask is not None:
+        kwargs["attention_mask"] = prepared.attention_mask
+    if prepared.pixel_values is not None:
+        kwargs["pixel_values"] = prepared.pixel_values
+    if prepared.pixel_values_videos is not None:
+        kwargs["pixel_values_videos"] = prepared.pixel_values_videos
+    if prepared.image_grid_thw is not None:
+        kwargs["image_grid_thw"] = prepared.image_grid_thw
+    if prepared.video_grid_thw is not None:
+        kwargs["video_grid_thw"] = prepared.video_grid_thw
+    return kwargs
+
+
+def _reset_rope_state(model: Qwen2_5_VLForConditionalGeneration) -> None:
+    setattr(model, "rope_deltas", None)  # type: ignore[attr-defined]
 
 
 def _move_to_device(data: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
@@ -222,16 +211,18 @@ def _move_to_device(data: Dict[str, Any], device: torch.device) -> Dict[str, Any
 
 
 def _manual_forward(
-    model: Qwen2_5_VLForConditionalGeneration, inputs: Dict[str, Any]
+    model: Qwen2_5_VLForConditionalGeneration, prepared: PreparedInputs
 ) -> torch.Tensor:
-    input_ids = inputs["input_ids"]
-    attention_mask = inputs.get("attention_mask")
-    pixel_values = inputs.get("pixel_values")
-    pixel_values_videos = inputs.get("pixel_values_videos")
-    image_grid_thw = inputs.get("image_grid_thw")
-    video_grid_thw = inputs.get("video_grid_thw")
+    input_ids = prepared.input_ids
+    attention_mask = prepared.attention_mask
+    pixel_values = prepared.pixel_values
+    pixel_values_videos = prepared.pixel_values_videos
+    image_grid_thw = prepared.image_grid_thw
+    video_grid_thw = prepared.video_grid_thw
 
-    inputs_embeds = model.model.embed_tokens(input_ids)
+    # embed_tokens is an nn.Embedding but not perfectly typed in generated stubs
+    embed_tokens = cast(nn.Embedding, model.model.embed_tokens)
+    inputs_embeds = embed_tokens(input_ids)
 
     if pixel_values is not None:
         pixel_values = pixel_values.to(_infer_visual_dtype(model))
@@ -245,7 +236,7 @@ def _manual_forward(
         video_token_mask = input_ids == model.config.video_token_id
         _scatter_modal_embeds(inputs_embeds, video_embeds, video_token_mask)
 
-    position_ids, rope_deltas = model.get_rope_index(
+    position_ids, rope_deltas = cast(Any, model).get_rope_index(  # type: ignore[attr-defined]
         input_ids=input_ids,
         image_grid_thw=image_grid_thw,
         video_grid_thw=video_grid_thw,
@@ -286,9 +277,15 @@ def _scatter_modal_embeds(
 
 
 def _infer_visual_dtype(model: Qwen2_5_VLForConditionalGeneration) -> torch.dtype:
-    for param in model.visual.parameters():
-        return param.dtype
-    return model.model.embed_tokens.weight.dtype
+    first_visual = next(model.visual.parameters(), None)
+    if first_visual is not None:
+        return first_visual.dtype
+    embed_tokens = getattr(model.model, "embed_tokens", None)
+    if embed_tokens is not None and hasattr(embed_tokens, "parameters"):
+        first_text = next(embed_tokens.parameters(), None)
+        if first_text is not None:
+            return first_text.dtype
+    return torch.float32
 
 
 def _assert_same_pixels(reference: torch.Tensor, candidate: torch.Tensor) -> None:

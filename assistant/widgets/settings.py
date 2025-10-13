@@ -1,36 +1,34 @@
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtCore import QSignalBlocker, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
-    QFrame,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from assistant.config import CLIENT_CONFIG
-from assistant.util import encode_client_type
-from assistant.view_states.terminal import TerminalViewState
+from assistant.view_states.settings import SettingsViewState
 
 
 class SettingsWidget(QWidget):
     """Widget for model settings with three columns."""
 
-    single_step_clicked = Signal()  # Signal emitted when single step button is clicked
-    # Signal emitted when clipboard step button is clicked
-    clipboard_step_clicked = Signal()
-    # Signal emitted when OCR clipboard button is clicked
+    # Capture/action signals
     ocr_clipboard_clicked = Signal()
+    attach_screen_clicked = Signal()
+    attach_clipboard_clicked = Signal()
     # Session control signals
     start_session_clicked = Signal()
     stop_session_clicked = Signal()
     new_session_clicked = Signal()
     open_sessions_folder_clicked = Signal()
 
-    def __init__(self, state: "TerminalViewState", parent=None):
+    def __init__(self, state: SettingsViewState, parent=None):
         super().__init__(parent)
         self._state = state
         self._session_state = state.session_state
@@ -85,29 +83,6 @@ class SettingsWidget(QWidget):
             button.setFixedHeight(uniform_button_height)
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        # Single step button with loading label
-        step_layout = QHBoxLayout()
-        self.single_step_button = QPushButton("Single step")
-        self.single_step_button.setToolTip("Take a single screenshot and process it")
-        self.single_step_button.clicked.connect(self.on_single_step_clicked)
-        self.single_step_button.setFixedHeight(uniform_button_height)
-        step_layout.addWidget(self.single_step_button)
-
-        # Loading indicator icon (hidden by default)
-        self.loading_icon = QLabel("⏳")  # Using hourglass emoji as static icon
-        self.loading_icon.setVisible(False)
-        self.loading_icon.setStyleSheet("font-size: 16px;")
-        step_layout.addWidget(self.loading_icon)
-
-        first_column.addLayout(step_layout)
-
-        # Clipboard step button
-        self.clipboard_step_button = QPushButton("Clipboard step")
-        self.clipboard_step_button.setToolTip("Process image from clipboard")
-        self.clipboard_step_button.clicked.connect(self.on_clipboard_step_clicked)
-        self.clipboard_step_button.setFixedHeight(uniform_button_height)
-        first_column.addWidget(self.clipboard_step_button)
-
         # OCR Clipboard button
         self.ocr_clipboard_button = QPushButton("OCR clipboard")
         self.ocr_clipboard_button.setToolTip(
@@ -116,12 +91,29 @@ class SettingsWidget(QWidget):
         self.ocr_clipboard_button.clicked.connect(self.on_ocr_clipboard_clicked)
         self.ocr_clipboard_button.setFixedHeight(uniform_button_height)
         first_column.addWidget(self.ocr_clipboard_button)
+
+        self.attach_screen_button = QPushButton("Attach screen")
+        self.attach_screen_button.setToolTip(
+            "Capture the watched screen and add it to context"
+        )
+        self.attach_screen_button.clicked.connect(self.on_attach_screen_clicked)
+        self.attach_screen_button.setFixedHeight(uniform_button_height)
+        first_column.addWidget(self.attach_screen_button)
+
+        self.attach_clipboard_button = QPushButton("Attach clipboard")
+        self.attach_clipboard_button.setToolTip(
+            "Add the current clipboard image to context"
+        )
+        self.attach_clipboard_button.clicked.connect(self.on_attach_clipboard_clicked)
+        self.attach_clipboard_button.setFixedHeight(uniform_button_height)
+        first_column.addWidget(self.attach_clipboard_button)
+
         first_column.addStretch()
 
         # Request in progress flag
         self._request_in_progress = False
 
-        # Second column: Screen selector and Client selector
+        # Second column: Screen selector (client selection removed for now)
         second_column = QVBoxLayout()
         second_column.setSpacing(8)
 
@@ -143,29 +135,35 @@ class SettingsWidget(QWidget):
         self.screen_combo.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.screen_combo)
 
-        # Client selector
-        self.client_combo = QComboBox()
-        self.populate_client_combo()
-        self.client_combo.currentTextChanged.connect(self.on_client_changed)
-        self.client_combo.setFixedHeight(uniform_button_height)
-        second_column.addWidget(self.client_combo)
+        # Client selector removed (single hardcoded backend). Placeholder retained for layout spacing if needed.
 
         second_column.addStretch()
 
-        # Third column: Image placeholder
+        # Third column: Project documents tabs
         third_column = QVBoxLayout()
         third_column.setSpacing(6)
-        self.image_placeholder = QLabel("No image")
-        self.image_placeholder.setFrameShape(QFrame.Shape.Box)
-        self.image_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_placeholder.setMinimumSize(100, 100)
-        third_column.addWidget(self.image_placeholder)
-        third_column.addStretch()
+
+        self.prompt_tabs = QTabWidget()
+        self.prompt_tabs.setDocumentMode(True)
+
+        self.user_query_edit = QPlainTextEdit()
+        self.user_query_edit.setPlaceholderText("Describe the user request (markdown)")
+        self.user_query_edit.textChanged.connect(self.on_user_query_changed)
+        self.prompt_tabs.addTab(self.user_query_edit, "User Query")
+
+        self.system_prompt_edit = QPlainTextEdit()
+        self.system_prompt_edit.setPlaceholderText(
+            "Define the system prompt (markdown)"
+        )
+        self.system_prompt_edit.textChanged.connect(self.on_system_prompt_changed)
+        self.prompt_tabs.addTab(self.system_prompt_edit, "System Prompt")
+
+        third_column.addWidget(self.prompt_tabs)
 
         # Add columns to main layout
         main_layout.addLayout(first_column)
         main_layout.addLayout(second_column)
-        main_layout.addLayout(third_column)
+        main_layout.addLayout(third_column, 2)
 
         # Apply styling
         self.setStyleSheet(
@@ -176,6 +174,13 @@ class SettingsWidget(QWidget):
                 border: 1px solid #555;
                 padding: 5px;
             }
+            QPlainTextEdit {
+                background-color: #1f1f1f;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px;
+                font-family: 'Fira Code', monospace;
+            }
         """
         )
 
@@ -183,14 +188,16 @@ class SettingsWidget(QWidget):
 
     def _bind_state(self):
         self._state.session_state_changed.connect(self._apply_session_state)
-        self._state.client_type_changed.connect(self._apply_client_type)
         self._state.screen_changed.connect(self._apply_screen)
         self._state.request_in_progress_changed.connect(self._apply_request_in_progress)
+        self._state.user_query_changed.connect(self._apply_user_query)
+        self._state.system_prompt_changed.connect(self._apply_system_prompt)
 
         self._apply_session_state(self._state.session_state)
-        self._apply_client_type(self._state.client_type)
         self._apply_screen(self._state.screen)
         self._apply_request_in_progress(self._state.request_in_progress)
+        self._apply_user_query(self._state.user_query_markdown)
+        self._apply_system_prompt(self._state.system_prompt_markdown)
 
     def populate_screen_combo(self):
         """Populate the screen combo box with available screens."""
@@ -201,14 +208,9 @@ class SettingsWidget(QWidget):
             name = f"Screen {i+1}: {geometry.width()}x{geometry.height()}"
             self.screen_combo.addItem(name, screen.name())
 
-    def populate_client_combo(self):
-        """Populate the client combo with all available client:model combos."""
-        self.client_combo.clear()
-        for backend, models in CLIENT_CONFIG.items():
-            for model in models:
-                client_type = encode_client_type(backend, model)
-                display_name = f"{backend.capitalize()} - {model}"
-                self.client_combo.addItem(display_name, client_type)
+    def populate_client_combo(self):  # pragma: no cover - placeholder
+        """Client selection disabled; placeholder for future reintroduction."""
+        return
 
     def on_start_session_clicked(self):
         """Handle start session button click."""
@@ -240,13 +242,8 @@ class SettingsWidget(QWidget):
             if self._state.screen != screen_name:
                 self._state.screen = screen_name
 
-    def on_client_changed(self, client_text):
-        """Handle client selection change."""
-        index = self.client_combo.currentIndex()
-        if index >= 0:
-            client_type = self.client_combo.itemData(index)
-            if self._state.client_type != client_type:
-                self._state.client_type = client_type
+    def on_client_changed(self, client_text):  # pragma: no cover - placeholder
+        return
 
     def _apply_session_state(self, value: str) -> None:
         if self._session_state == value:
@@ -267,16 +264,13 @@ class SettingsWidget(QWidget):
 
         config_locked = state in {"started", "paused"}
         self.screen_combo.setEnabled(not config_locked)
-        self.client_combo.setEnabled(not config_locked)
 
-    def _apply_client_type(self, client_type: str) -> None:
-        if not client_type:
-            return
-        for i in range(self.client_combo.count()):
-            if self.client_combo.itemData(i) == client_type:
-                blocker = QSignalBlocker(self.client_combo)
-                self.client_combo.setCurrentIndex(i)
-                break
+    # client combo removed
+
+    def _apply_client_type(
+        self, client_type: str
+    ) -> None:  # pragma: no cover - placeholder
+        return
 
     def _apply_screen(self, screen_name: str) -> None:
         if not screen_name:
@@ -294,25 +288,34 @@ class SettingsWidget(QWidget):
         self._set_request_in_progress_ui(value)
 
     def _set_request_in_progress_ui(self, value: bool) -> None:
-        self.single_step_button.setEnabled(not value)
-        self.clipboard_step_button.setEnabled(not value)
         self.ocr_clipboard_button.setEnabled(not value)
-        self.loading_icon.setVisible(value)
-
-    def on_single_step_clicked(self):
-        """Handle single step button click."""
-        if not self._request_in_progress:
-            self.single_step_clicked.emit()
-
-    def on_clipboard_step_clicked(self):
-        """Handle clipboard step button click."""
-        if not self._request_in_progress:
-            self.clipboard_step_clicked.emit()
+        self.attach_screen_button.setEnabled(not value)
+        self.attach_clipboard_button.setEnabled(not value)
 
     def on_ocr_clipboard_clicked(self):
         """Handle OCR clipboard button click."""
         if not self._request_in_progress:
             self.ocr_clipboard_clicked.emit()
+
+    def on_attach_screen_clicked(self):
+        if not self._request_in_progress:
+            self.attach_screen_clicked.emit()
+
+    def on_attach_clipboard_clicked(self):
+        if not self._request_in_progress:
+            self.attach_clipboard_clicked.emit()
+
+    def on_user_query_changed(self):
+        text = self.user_query_edit.toPlainText()
+        if text == self._state.user_query_markdown:
+            return
+        self._state.user_query_markdown = text
+
+    def on_system_prompt_changed(self):
+        text = self.system_prompt_edit.toPlainText()
+        if text == self._state.system_prompt_markdown:
+            return
+        self._state.system_prompt_markdown = text
 
     @property
     def request_in_progress(self) -> bool:
@@ -329,15 +332,14 @@ class SettingsWidget(QWidget):
         if self._state.request_in_progress != value:
             self._state.request_in_progress = value
 
-    def set_image(self, pixmap: QPixmap):
-        """Set the image in the image placeholder."""
-        if pixmap:
-            # Scale the pixmap to fit the placeholder while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(
-                self.image_placeholder.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.image_placeholder.setPixmap(scaled_pixmap)
-        else:
-            self.image_placeholder.setText("No image")
+    def _apply_user_query(self, value: str) -> None:
+        if value == self.user_query_edit.toPlainText():
+            return
+        blocker = QSignalBlocker(self.user_query_edit)
+        self.user_query_edit.setPlainText(value)
+
+    def _apply_system_prompt(self, value: str) -> None:
+        if value == self.system_prompt_edit.toPlainText():
+            return
+        blocker = QSignalBlocker(self.system_prompt_edit)
+        self.system_prompt_edit.setPlainText(value)

@@ -1,9 +1,12 @@
 import sys
 
+from fusion.loop import set_main_loop
+from fusion.platform.qt_widgets.qt_main_loop import QtMainLoop
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from assistant.app_actions import toggle_terminal
+from assistant.app_state import AppState
 from assistant.util import get_logger
 from assistant.view_states.terminal import TerminalViewState
 from assistant.widgets.overlay import ModelVisionOverlay
@@ -16,6 +19,7 @@ class AssistantQtApp(QApplication):
 
     def __init__(self):
         super().__init__(sys.argv)
+        set_main_loop(QtMainLoop(self))
         # Prevent app from closing when all windows are closed
         self.setQuitOnLastWindowClosed(False)
 
@@ -59,7 +63,8 @@ class AssistantQtApp(QApplication):
         )
 
         # Initialize components
-        self.terminal_state = TerminalViewState()
+        self.app_state = AppState(parent=self)
+        self.terminal_state = TerminalViewState(self.app_state)
         self.terminal_window = TerminalWindow(self.terminal_state)
 
         # Create the overlay and show it

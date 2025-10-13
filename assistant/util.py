@@ -117,7 +117,8 @@ def pixmap_to_base64(pixmap: QPixmap) -> Optional[str]:
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
 
         # Save the image to the buffer in PNG format
-        image.save(buffer, b"PNG")
+        if not image.save(buffer, b"PNG"):
+            raise RuntimeError("Failed to save image to buffer")
 
         # Convert to base64
         base64_data = bytes(byte_array.toBase64().data()).decode("utf-8")

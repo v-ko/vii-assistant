@@ -1,26 +1,24 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+from uuid import uuid4
 
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
-    QSignalBlocker,
     Qt,
 )
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QTextBrowser,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QHBoxLayout, QWidget
 
+from assistant.inference.context import ContextItem
+from assistant.util import pixmap_to_base64
+from assistant.utils.capture_utils import clipboard_image, take_screenshot
+from assistant.widgets.context_viewer import ContextViewerWidget
 from assistant.widgets.settings import SettingsWidget
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
+    from assistant.facade import Facade
     from assistant.view_states.terminal import TerminalViewState
 
 
@@ -31,6 +29,7 @@ class TerminalWindow(QWidget):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint,
         )
         self._state = state
+        self._facade: Optional["Facade"] = None
         # Make the window background transparent
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()
@@ -46,31 +45,15 @@ class TerminalWindow(QWidget):
         container_layout = QHBoxLayout(self.container)
         container_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Left side: system prompt text edit
-        self.system_prompt_textedit = QTextEdit()
-        self.system_prompt_textedit.setPlaceholderText("Enter system prompt here...")
-        self.system_prompt_textedit.textChanged.connect(self._on_system_prompt_changed)
-        # Set to accept only plain text (no formatting)
-        self.system_prompt_textedit.setAcceptRichText(False)
-        container_layout.addWidget(self.system_prompt_textedit, 1)
-
-        # Right side: output label and model settings
-        right_layout = QVBoxLayout()
+        # Left side: context viewer widget
+        self.context_viewer = ContextViewerWidget(self._state.context_view)
+        container_layout.addWidget(self.context_viewer, 1)
 
         # Model settings widget
-        self.model_settings = SettingsWidget(self._state)
-        # single_step_clicked is connected in the facade
-        right_layout.addWidget(self.model_settings, 1)
-
-        # Output text area (using QTextBrowser for selectable text)
-        self.output_text = QTextBrowser()
-        self.output_text.setReadOnly(True)
-        self.output_text.setFrameShape(QFrame.Shape.Box)
-        self.output_text.setFrameShadow(QFrame.Shadow.Sunken)
-        self.output_text.setOpenExternalLinks(False)
-        right_layout.addWidget(self.output_text, 2)
-
-        container_layout.addLayout(right_layout, 1)
+        self.model_settings = SettingsWidget(self._state.settings)
+        container_layout.addWidget(self.model_settings, 1)
+        container_layout.setStretch(0, 1)
+        container_layout.setStretch(1, 1)
 
         # Apply styling to the container only (the window is transparent)
         self.container.setStyleSheet(
@@ -81,15 +64,11 @@ class TerminalWindow(QWidget):
                 border-radius: 5px;
                 color: #e0e0e0;
             }
-            QTextEdit, QTextBrowser {
-                background-color: #3a3a3a;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 5px;
-                color: #e0e0e0;
-            }
         """
         )
+
+    def set_facade(self, facade: "Facade") -> None:
+        self._facade = facade
 
     def position_window(self):
         """
@@ -130,36 +109,49 @@ class TerminalWindow(QWidget):
         hide_animation.start()
 
     def _bind_state(self):
-        self._state.system_prompt_changed.connect(self._apply_system_prompt)
-        self._state.output_text_changed.connect(self._apply_output_text)
-        self._apply_system_prompt(self._state.system_prompt)
-        self._apply_output_text(self._state.output_text)
+        settings_state = self._state.settings
+        settings_state.request_in_progress_changed.connect(
+            self.context_viewer.set_request_in_progress
+        )
+        self.context_viewer.set_request_in_progress(settings_state.request_in_progress)
 
-    def _apply_system_prompt(self, value: str) -> None:
-        if value == self.system_prompt_textedit.toPlainText():
+    def attach_screen(self) -> None:
+        if not self._facade:
             return
-        blocker = QSignalBlocker(self.system_prompt_textedit)
-        self.system_prompt_textedit.setPlainText(value)
-
-    def _apply_output_text(self, value: str) -> None:
-        if value == self.output_text.toPlainText():
+        screen = self._facade.watched_screen or self._facade.get_default_screen()
+        pixmap = take_screenshot(screen)
+        if pixmap is None:
+            print("Failed to capture screenshot for attachment.")
             return
-        self.output_text.setText(value)
+        self._add_image_item(pixmap, "screenshot")
 
-    def set_output_text(self, text):
-        self._state.output_text = text
+    def attach_clipboard(self) -> None:
+        if not self._facade:
+            return
+        pixmap = clipboard_image()
+        if pixmap is None:
+            print("No image found in clipboard.")
+            return
+        self._add_image_item(pixmap, "clipboard")
 
-    def get_system_prompt(self):
-        return self.system_prompt_textedit.toPlainText()
-
-    def _on_system_prompt_changed(self):
-        """Handle system prompt text changes."""
-        system_prompt = self.get_system_prompt()
-        self._state.system_prompt = system_prompt
-
-    def update_from_config(self, config):
-        """Update the UI from the current configuration."""
-        self._state.update_from_config(config)
+    def _add_image_item(self, pixmap, source: str) -> None:
+        if not self._facade:
+            return
+        encoded = pixmap_to_base64(pixmap)
+        if not encoded:
+            print("Failed to encode captured image.")
+            return
+        manager = self._facade.context_manager
+        position = manager.next_position()
+        item = ContextItem(
+            id=uuid4().hex,
+            position=position,
+            size=(pixmap.width(), pixmap.height()),
+            content={"image": encoded},
+            request=None,
+            metadata={"origin": "user", "source": source},
+        )
+        self._facade.add_context_item(item)
 
     def setup_shortcuts(self):
         """Set up keyboard shortcuts."""

@@ -4,8 +4,7 @@ from typing import List, Optional, Union, cast
 import requests
 from PIL import Image
 
-from assistant.config import MODEL_EXTRACTOR_MAP
-from assistant.services.base_client import BaseClient
+from assistant.services.base_client import MODEL_EXTRACTOR_MAP, BaseClient
 from assistant.util import Shape, get_logger
 
 log = get_logger(__name__)
