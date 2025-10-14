@@ -50,17 +50,28 @@ def main(command):
         sys.exit(1)
 
     from assistant.facade import facade
+    from assistant.inference.context import ContextManager
     from assistant.qt_app import AssistantQtApp
+    from assistant.server.desktop_server import DesktopServer
+    from assistant.services.ollama_client import OllamaClient
+    from assistant.services.project_manager import ViiProjectManager
 
-    # Start a new instance
+    # Instantiate services first then inject into facade to avoid circular imports
+    ctx_manager = ContextManager()
+    facade.set_project_manager(
+        ViiProjectManager(facade.config.config_dir, context_manager=ctx_manager)
+    )
+
+    # Start a new instance (after services injected so set_qt_app can wire them)
     qt_app = AssistantQtApp()
-    facade.setQtApp(qt_app)
+    facade.set_qt_app(qt_app)
 
-    # Config already loaded; facade ensures screen is set during setQtApp
+    # Config already loaded; facade ensures screen is set during set_qt_app
     print(f"Config: {facade.config}")
 
-    # Start desktop server
-    facade.start_desktop_server(DEFAULT_DESKTOP_SERVER_PORT)
+    # Start desktop server as independent service
+    desktop_server = DesktopServer(DEFAULT_DESKTOP_SERVER_PORT)
+    desktop_server.start()
 
     # If this is a first start and --command was provided,
     # show the terminal directly

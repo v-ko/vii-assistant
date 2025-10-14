@@ -123,7 +123,7 @@ class SessionRecorder:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            print(f"[SessionRecorder] {event_type}: {json.dumps(payload)}")
+            # print(f"[SessionRecorder] {event_type}: {json.dumps(payload)}")
             if self._event_callback:
                 self._event_callback(event)
 

@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from fusion.libs.channel import Channel
+
+from assistant.facade import apply_context_event, facade
+from assistant.inference.context import ContextManager
+from assistant.services.inference_client import InferenceClient
+from assistant.services.session_recorder import SessionRecorderConfig
+
 from .session_recorder import SessionRecorder, SessionRecorderConfig
 
 TASK_FILENAME = "task.md"
@@ -114,11 +121,20 @@ class SessionManager:
 
 
 class ViiProjectManager:
-    """Persist project-level assistant state to disk."""
+    """Project + automation manager (merged former AutomationService responsibilities).
+
+    Responsibilities:
+    - Persist task & system prompt
+    - Manage sessions (create/start/stop/new)
+    - Own context manager reference (facade delegates through here)
+    - Host websocket inference client + channels (client_updates / inference_updates)
+    - Provide publish_client_change for outbound user-originated updates
+    - Provide current_system_prompt accessor
+    - Wire inference updates to reducer (apply_context_event)
+    """
 
     def __init__(
-        self,
-        project_root: Path | str,
+        self, project_root: Path | str, *, context_manager: ContextManager
     ) -> None:
         self.project_root = Path(project_root)
         self.project_root.mkdir(parents=True, exist_ok=True)
@@ -126,6 +142,19 @@ class ViiProjectManager:
         self._task_path = self.project_root / TASK_FILENAME
         self._system_prompt_path = self.project_root / SYSTEM_PROMPT_FILENAME
         self._sessions_root = self.project_root / SESSIONS_DIRNAME
+
+        # Context + channels
+        self.context_manager = context_manager
+        self.client_updates: Channel = Channel("client-updates")
+        self.inference_updates: Channel = Channel("inference-updates")
+
+        # Session & inference runtime
+        self._session_manager: Optional[SessionManager] = None
+        self._inference_client: Optional[InferenceClient] = None
+        self._running = False
+
+        # Subscribe reducer for inference updates (client changes applied inline before publish)
+        self.inference_updates.subscribe(lambda evt: apply_context_event(evt))
 
     # Task/system prompt -------------------------------------------------
     def set_task(self, task: str) -> None:
@@ -151,10 +180,93 @@ class ViiProjectManager:
         *,
         recorder_config: Optional[SessionRecorderConfig] = None,
         manager: Optional[SessionManager] = None,
+        screen_name: str | None = None,
     ) -> SessionManager:
-        session_manager = manager or self.create_session()
-        session_manager.start_recording(recorder_config)
-        return session_manager
+        settings_state = facade.app_state.settings
+        if settings_state.session_state == "started":
+            return self._session_manager or self.create_session()
+
+        # Ensure session manager
+        if self._session_manager is None:
+            self._session_manager = manager or self.create_session()
+            meta = self._session_manager.metadata
+            try:
+                facade.qt_app.terminal_state.output_text = (
+                    f"Session directory ready: {meta.session_id}\n{meta.path}"
+                )
+            except Exception:
+                pass
+
+        # Build recorder config dynamically (screen geometry etc)
+        config: SessionRecorderConfig = recorder_config or {}
+        if screen_name:
+            config["screen"] = screen_name
+        target_screen = None
+        if screen_name:
+            target_screen = facade.get_screen_by_name(screen_name)
+        if target_screen is None:
+            try:
+                target_screen = facade.current_watched_screen()
+            except Exception:
+                target_screen = None
+        if target_screen is not None and hasattr(target_screen, "geometry"):
+            geom = target_screen.geometry()  # type: ignore[call-arg]
+            config["window_geometry"] = (
+                geom.x(),
+                geom.y(),
+                geom.width(),
+                geom.height(),
+            )
+
+        if self._session_manager is not None:
+            self._session_manager.start_recording(config or None)
+
+        # Ensure inference client
+        if self._inference_client is None:
+            self._inference_client = InferenceClient(
+                client_updates=self.client_updates,
+                inference_updates=self.inference_updates,
+            )
+            self._inference_client.start()
+        if not self._running:
+            self._running = True
+            try:
+                prompt_preview = self.current_system_prompt().strip().splitlines()[0:1]
+            except Exception:
+                prompt_preview = []
+            preview = (
+                f" | prompt: {prompt_preview[0][:60]}…"
+                if prompt_preview and prompt_preview[0]
+                else ""
+            )
+            print(f"Project manager started automation (session + inference){preview}")
+        settings_state.session_state = "started"
+        return self._session_manager
+
+    def pause_session(self, *, new_state: str = "paused") -> None:
+        settings_state = facade.app_state.settings
+        if settings_state.session_state != "started":
+            return
+        if self._session_manager and self._session_manager.is_recording:
+            self._session_manager.stop_recording()
+        self._running = False
+        settings_state.session_state = new_state
+        print("Project manager paused session")
+
+    def new_session(self) -> None:
+        settings_state = facade.app_state.settings
+        if self._session_manager and self._session_manager.is_recording:
+            self._session_manager.stop_recording()
+        self._session_manager = self.create_session()
+        meta = self._session_manager.metadata
+        try:
+            facade.qt_app.terminal_state.output_text = (
+                f"New session directory ready: {meta.session_id}\n{meta.path}"
+            )
+        except Exception:
+            pass
+        settings_state.session_state = "new-session"
+        print("Project manager prepared new session")
 
     @property
     def sessions_root(self) -> Path:
@@ -170,3 +282,16 @@ class ViiProjectManager:
         if not path.exists():
             return None
         return path.read_text(encoding="utf-8")
+
+    # --- Automation helpers -------------------------------------------
+    def current_system_prompt(self) -> str:
+        return facade.app_state.settings.system_prompt_markdown or ""
+
+    def publish_client_change(self, change):
+        # Apply locally first (idempotent create guard inside reducer)
+        apply_context_event(change)
+        # Push outbound
+        self.client_updates.push(change)
+
+    def is_running(self) -> bool:
+        return self._running

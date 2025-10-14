@@ -67,11 +67,9 @@ class AssistantQtApp(QApplication):
         self.terminal_state = TerminalViewState(self.app_state)
         self.terminal_window = TerminalWindow(self.terminal_state)
 
-        # Create the overlay and show it
-        # The screen will be set properly in facade.py when apply_config is called
+        # Defer overlay full-screen setup until screen selection applied by facade
         self.overlay = ModelVisionOverlay()
-        # Show the overlay immediately
-        self.overlay.show()
+        self.overlay.hide()  # hide until screen assigned
 
         # Set up the tray icon
         self.setup_tray_icon()
@@ -104,3 +102,36 @@ class AssistantQtApp(QApplication):
 
         # Show the tray icon
         self.tray_icon.show()
+
+    # Helper to show overlay after screen configured
+    def show_overlay_on_screen(self, screen):
+        try:
+            if screen is not None:
+                self.overlay.setScreen(screen)
+            self.overlay._setup_full_screen()
+            self.overlay.show()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to show overlay: {exc}")
+
+    # --- Screen change binding (moved from facade) ------------------
+    def bind_screen_overlay(self):
+        """Connect settings screen_changed signal to overlay update once."""
+        try:
+            settings_state = self.terminal_state.app_state.settings
+        except Exception:
+            return
+        # Avoid duplicate connections: Qt doesn't give an easy handle, so we use an attr flag
+        if getattr(self, "_overlay_bound", False):
+            return
+        settings_state.screen_changed.connect(self._on_screen_changed)
+        self._overlay_bound = True
+
+    def _on_screen_changed(self, screen_name: str) -> None:
+        if not screen_name:
+            return
+        from assistant.facade import facade  # local import to avoid circular
+
+        screen = facade.get_screen_by_name(screen_name)
+        if screen is None:
+            raise RuntimeError(f"Selected screen '{screen_name}' not found")
+        self.show_overlay_on_screen(screen)

@@ -12,7 +12,7 @@ class ModelVisionOverlay(QWidget):
     A transparent overlay widget that displays shapes on top of the screen.
 
     The widget is transparent to user events (click-through) and displays
-    shapes based on the configuration provided through setShapes.
+    shapes based on the configuration provided through set_shapes.
 
     Currently supports 'rect' and 'point' shape types.
     """
@@ -70,7 +70,7 @@ class ModelVisionOverlay(QWidget):
 
             print("Overlay should now be transparent for mouse events")
 
-    def setShapes(self, shapes: list[Shape]):
+    def set_shapes(self, shapes: list[Shape]):
         """
         Set the shapes to be drawn on the overlay.
 

@@ -11,6 +11,15 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QWidget
 
+from assistant.actions import (
+    handle_message_submitted,
+    new_session,
+    ocr_clipboard,
+    open_sessions_folder,
+    pause_or_stop_session,
+    start_session,
+)
+from assistant.facade import facade  # module-level singleton
 from assistant.inference.context import ContextItem
 from assistant.util import pixmap_to_base64
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
@@ -29,7 +38,8 @@ class TerminalWindow(QWidget):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint,
         )
         self._state = state
-        self._facade: Optional["Facade"] = None
+        # direct access through imported singleton
+        self._facade: Optional["Facade"] = facade
         # Make the window background transparent
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()
@@ -37,6 +47,25 @@ class TerminalWindow(QWidget):
         self.setup_shortcuts()
         # self.setup_animations()
         self._bind_state()
+        # Wire view signals to actions using facade singleton
+        self.model_settings.ocr_clipboard_clicked.connect(
+            lambda: ocr_clipboard(self._facade)
+        )
+        self.model_settings.attach_screen_clicked.connect(self.attach_screen)
+        self.model_settings.attach_clipboard_clicked.connect(self.attach_clipboard)
+        self.model_settings.start_session_clicked.connect(
+            lambda: start_session(facade, screen_name=facade.app_state.settings.screen)
+        )
+        self.model_settings.stop_session_clicked.connect(
+            lambda: pause_or_stop_session(facade, new_state="paused")
+        )
+        self.model_settings.new_session_clicked.connect(lambda: new_session(facade))
+        self.model_settings.open_sessions_folder_clicked.connect(
+            lambda: open_sessions_folder(facade)
+        )
+        self.context_viewer.message_submitted.connect(
+            lambda txt: handle_message_submitted(facade, txt)
+        )
 
     def setup_ui(self):
         # Create a container widget to hold the UI; this widget will be
@@ -67,8 +96,7 @@ class TerminalWindow(QWidget):
         """
         )
 
-    def set_facade(self, facade: "Facade") -> None:
-        self._facade = facade
+    # set_facade removed; widgets access facade singleton directly
 
     def position_window(self):
         """
@@ -118,7 +146,11 @@ class TerminalWindow(QWidget):
     def attach_screen(self) -> None:
         if not self._facade:
             return
-        screen = self._facade.watched_screen or self._facade.get_default_screen()
+        try:
+            screen = self._facade.current_watched_screen()
+        except Exception as e:
+            print(f"Cannot attach screen: {e}")
+            return
         pixmap = take_screenshot(screen)
         if pixmap is None:
             print("Failed to capture screenshot for attachment.")
@@ -143,15 +175,23 @@ class TerminalWindow(QWidget):
             return
         manager = self._facade.context_manager
         position = manager.next_position()
-        item = ContextItem(
-            id=uuid4().hex,
-            position=position,
-            size=(pixmap.width(), pixmap.height()),
-            content={"image": encoded},
-            request=None,
-            metadata={"origin": "user", "source": source},
-        )
-        self._facade.add_context_item(item)
+        item = ContextItem()
+        item.id = uuid4().hex
+        item.position = position
+        item.size = pixmap.width() * pixmap.height()
+        item.content = {"image": encoded}
+        item.request = None
+        item.metadata = {"origin": "user", "source": source}
+        # Inline of previous facade.add_context_item logic
+        manager.insert(item)
+        from fusion.libs.entity.change import Change  # local to avoid top-level dep
+
+        change = Change.CREATE(item)
+        self._facade.app_state.context.apply_change(change)
+        try:
+            self._facade.project_manager.publish_client_change(change)
+        except Exception:
+            pass
 
     def setup_shortcuts(self):
         """Set up keyboard shortcuts."""

@@ -1,51 +1,35 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
-from uuid import uuid4
 
-from fusion.libs.entity.change import Change
-from PySide6.QtGui import QGuiApplication, QPixmap, QScreen
+from PySide6.QtGui import QGuiApplication, QScreen
 
 from assistant.app_state import AppState
 from assistant.config import Config
-from assistant.inference.context import ContextItem, ContextManager
-from assistant.services.automation import AutomationService
-from assistant.services.base_client import BaseClient
+from assistant.inference.context import ContextManager
 from assistant.services.config_persistence_service import ConfigPersistenceService
-from assistant.services.ocr import ocr_sync, start_ocr
-from assistant.services.ollama_client import OllamaClient
-from assistant.services.project_manager import SessionManager, ViiProjectManager
-from assistant.services.session_recorder import SessionRecorderConfig
-from assistant.utils.capture_utils import clipboard_image
 
 if TYPE_CHECKING:
     from assistant.qt_app import AssistantQtApp
+    from assistant.services.project_manager import SessionManager, ViiProjectManager
 
 
 class Facade:
     _qt_app = None
-    _desktop_server = None
     _config = None
-    _automation_service = None
-    _model_client: Optional[BaseClient] = None
-    _watched_screen = None
-    _project_manager: Optional[ViiProjectManager] = None
-    _session_manager: Optional[SessionManager] = None
+    _project_manager: Optional["ViiProjectManager"] = None
+    _session_manager: Optional["SessionManager"] = None
     _app_state: Optional["AppState"] = None
-    _context_manager: Optional[ContextManager] = None
     _config_persistence: Optional[ConfigPersistenceService] = None
 
     def __init__(self):
-        # Setup config
+        # Minimal setup; external services injected from main to avoid circular deps
         self._config = Config()
-
-        self._automation_service = AutomationService()
-        # Initialize single hardcoded client (Ollama by default)
-        self._model_client = OllamaClient()
-        # Initialize project storage in the configuration directory by default
-        self._project_manager = ViiProjectManager(self._config.config_dir)
         self._session_manager = None
-        self._context_manager = ContextManager()
+
+    # --- explicit service setters (must be called early in main) ---------
+    def set_project_manager(self, manager: ViiProjectManager):
+        self._project_manager = manager
 
     @property
     def qt_app(self) -> "AssistantQtApp":
@@ -60,27 +44,17 @@ class Facade:
         return self._config
 
     @property
-    def automation(self) -> AutomationService:
-        if self._automation_service is None:
-            raise RuntimeError("Automation service not initialized")
-        return self._automation_service
-
-    @property
     def context_manager(self) -> ContextManager:
-        if self._context_manager is None:
-            self._context_manager = ContextManager()
-        return self._context_manager
-
-    @property
-    def inference_client(self) -> BaseClient:
-        if self._model_client is None:
-            raise RuntimeError("Client not initialized")
-        return self._model_client
+        if self._project_manager is None:
+            raise RuntimeError("Project manager not set")
+        return self._project_manager.context_manager
 
     @property
     def project_manager(self) -> ViiProjectManager:
         if self._project_manager is None:
-            raise RuntimeError("Project manager not initialized")
+            raise RuntimeError(
+                "Project manager not set; call setProjectManager in main"
+            )
         return self._project_manager
 
     @property
@@ -91,14 +65,22 @@ class Facade:
 
     # Model/client selection removed; single client in use.
 
-    @property
-    def watched_screen(self) -> Optional[QScreen]:
-        """Get the watched screen."""
-        return self._watched_screen
+    def current_watched_screen(self) -> Optional[QScreen]:
+        """Return the currently selected screen or raise if unavailable.
 
-    def setQtApp(self, app: "AssistantQtApp"):
+        No silent defaulting; caller must ensure a valid selection exists.
+        """
+        screen_name = self.app_state.settings.screen
+        if not screen_name:
+            raise RuntimeError("No screen selected in settings")
+        scr = self.get_screen_by_name(screen_name)
+        if scr is None:
+            raise RuntimeError(f"Configured screen '{screen_name}' not found")
+        return scr
+
+    def set_qt_app(self, app: "AssistantQtApp"):
         if self._qt_app is not None:
-            raise RuntimeError("setQtApp called more than once")
+            raise RuntimeError("set_qt_app called more than once")
         self._qt_app = app
 
         terminal_state = self._qt_app.terminal_state
@@ -127,73 +109,8 @@ class Facade:
         # Bind config persistence AFTER settings initialized so initial apply_config does not trigger writes
         self._config_persistence = ConfigPersistenceService()
         self._config_persistence.bind(self.config, settings_state)
-        # React to runtime changes (screen updates only)
-        settings_state.screen_changed.connect(self._on_screen_changed)
-
-        settings_state.system_prompt_changed.connect(
-            lambda prompt: self.automation.set_system_prompt(prompt)
-        )
-        self.automation.set_system_prompt(settings_state.system_prompt_markdown)
-
-        terminal_window = self._qt_app.terminal_window
-        terminal_window.set_facade(self)
-        context_widget = terminal_window.context_viewer
-        context_widget.message_submitted.connect(self._handle_message_submitted)
-
-        # UI signal wiring moved to app layer; only manual context submission retained here.
-
-    def start_desktop_server(self, port: int):
-        """Start the desktop server."""
-        from assistant.server.desktop_server import DesktopServer
-
-        server = DesktopServer(port)
-        server.start()
-        self._desktop_server = server
-
-    def _on_screen_changed(self, screen_name: str) -> None:
-        if not screen_name:
-            return
-        screen = self.get_screen_by_name(screen_name)
-        if not screen:
-            try:
-                screen = self.get_default_screen()
-            except Exception:
-                return
-        self._watched_screen = screen
-        if self._qt_app and self._qt_app.overlay:
-            self._qt_app.overlay.setScreen(screen)
-            self._qt_app.overlay._setup_full_screen()
-
-    # Session control moved to actions module.
-
-    def add_context_item(self, item: ContextItem) -> None:
-        manager = self.context_manager
-        manager.insert(item)
-        change = Change.CREATE(item)
-        self.app_state.context.apply_change(change)
-
-    def _handle_message_submitted(self, text: str) -> None:
-        manager = self.context_manager
-        cleaned = text.strip()
-        if cleaned:
-            text_item = ContextItem()
-            text_item.position = manager.next_position()
-            text_item.size = 0
-            text_item.content = {"text": cleaned}
-            text_item.metadata = {"origin": "user"}
-            self.add_context_item(text_item)
-
-        request_item = ContextItem()
-        request_item.position = manager.next_position()
-        request_item.size = 0
-        request_item.content = {"text": ""}
-        request_item.request = {
-            "stream": True,
-            "max_new_tokens": 256,
-            "temperature": 0.0,
-        }
-        request_item.metadata = {"origin": "user", "trigger": "manual-send"}
-        self.add_context_item(request_item)
+        # Attach facade to automation service if already injected
+        self._qt_app.bind_screen_overlay()
 
     def get_screen_by_name(self, name: str) -> Optional[QScreen]:
         """Get a QScreen object by its name."""
@@ -211,57 +128,43 @@ class Facade:
             screens.remove(primary)
         return screens[0]  # First non-primary screen
 
-    def ocr_clipboard_action(self):
-        """OCR clipboard image and copy recognized text to clipboard.
 
-        Still updates terminal output for user visibility.
-        Uses local Tesseract via pytesseract (non-blocking worker thread).
-        """
-        pixmap = clipboard_image()
-        if not pixmap:
-            msg = "No image found in clipboard for OCR"
-            print(msg)
-            self.qt_app.terminal_state.output_text = msg
+from fusion.libs.entity.change import Change
+
+from assistant.inference.context import ContextItem
+
+
+def apply_context_event(evt):
+    ctx_mgr = facade.context_manager
+    app_ctx_view = facade.app_state.context
+    if isinstance(evt, Change):
+        if evt.is_create() and isinstance(evt.new_state, ContextItem):
+            repo_change = ctx_mgr.insert(evt.new_state)
+        elif evt.is_delete() and isinstance(evt.old_state, ContextItem):
+            repo_change = ctx_mgr.remove(evt.old_state)
+        elif evt.new_state and isinstance(evt.new_state, ContextItem):
+            repo_change = ctx_mgr.update(evt.new_state)
+        else:
             return
-
-        # Indicate progress
-        self.app_state.settings.request_in_progress = True
-
-        self._ocr_worker = start_ocr(
-            pixmap,
-            on_finished=self._on_ocr_finished_copy,
-            on_error=lambda m: self._on_ocr_finished_copy(m),
-        )
-
-    def _on_ocr_finished_copy(self, text: str):
-        self.app_state.settings.request_in_progress = False
-        # Copy result to system clipboard (even if it's an error or <No text...>)
-        try:
-            cb = QGuiApplication.clipboard()
-            cb.setText(text)
-        except Exception as e:  # pragma: no cover - clipboard failure rare
-            text = f"{text}\n(Clipboard copy failed: {e})"
-        self.qt_app.terminal_state.output_text = text
-
-    # --- Getter API for external callers ---
-    def get_clipboard_ocr_text(self, lang: str = "eng") -> str:
-        """Get OCR text from the current clipboard image synchronously.
-
-        Args:
-            lang: Tesseract language code (default "eng").
-
-        Returns:
-            Recognized text, or an error message starting with "Error:".
-        """
-        pixmap = clipboard_image()
-        if not pixmap:
-            return "Error: No image in clipboard"
-        try:
-            return ocr_sync(pixmap, lang=lang)
-        except Exception as e:  # pragma: no cover
-            return f"Error: OCR failed: {e}"
-
-    # Removed trivial clipboard wrapper; use clipboard_image() directly.
+        app_ctx_view.apply_change(repo_change)
+    elif isinstance(evt, dict) and evt.get("__stream_fragment__"):
+        item_id = evt.get("item_id")
+        text = evt.get("text", "")
+        if not item_id:
+            return
+        for existing in ctx_mgr.list_items():
+            if str(existing.id) == str(item_id):
+                if not isinstance(existing.content, dict):
+                    existing.content = {}
+                prior = existing.content.get("text", "")
+                existing.content["text"] = f"{prior}{text}"
+                repo_change = ctx_mgr.update(existing)
+                app_ctx_view.apply_change(repo_change)
+                break
+    else:
+        return
 
 
 facade = Facade()
+
+__all__ = ["facade", "apply_context_event"]
