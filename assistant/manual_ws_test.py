@@ -16,6 +16,8 @@ from fusion.libs.entity import load_from_dict
 from fusion.libs.entity.change import Change
 from PIL import Image
 
+from assistant.inference.context import ContextItem  # needed to init registry
+
 # --- Configuration (hard-coded) ---
 STREAM = True  # set False to test non-streaming
 WAIT_SECONDS = 10.0

@@ -9,21 +9,21 @@ Overhauled to:
 from __future__ import annotations
 
 import asyncio
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fusion import get_logger
-from fusion.libs.channel import Channel
 from fusion.libs.entity.change import Change
 from fusion.loop import AsyncioMainLoop, set_main_loop
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from assistant.inference.context import ContextManager
 from assistant.inference.interface import (
-    unwrap_message,
-    wrap_append_item_content_text,
+    AppendItemContentTextMessage,
+    ChangeMessage,
+    parse_message,
     wrap_change,
 )
 from assistant.inference.service import InferenceService, ModelConfig
@@ -36,12 +36,6 @@ async def lifespan(app: FastAPI):
     # Initialize shared services
     # Ensure fusion uses asyncio loop
     set_main_loop(AsyncioMainLoop())
-
-    ctx = ContextManager()
-    app.state.context_manager = ctx
-    # Channels
-    app.state.client_updates = Channel("client-updates")
-    app.state.inference_updates = Channel("inference-updates")
 
     # Configure model from env if needed (kept simple for now)
     model_config = ModelConfig()
@@ -66,20 +60,13 @@ async def lifespan(app: FastAPI):
     )
     _to = getattr(model, "to")
     _to(device)
-    service = InferenceService(ctx, processor, model, model_config)
-    app.state.inference_service = service
-    service.inference_updates = app.state.inference_updates
-
-    # Subscribe inference service to client-originated updates
-    def _on_client_update(change: Change):
-        asyncio.create_task(service.handle_change(change))
-
-    client_sub = app.state.client_updates.subscribe(_on_client_update)
+    app.state.model_config = model_config
+    app.state.processor = processor
+    app.state.model = model
     try:
         yield
     finally:
-        # Teardown: unsubscribe
-        client_sub.unsubscribe()
+        pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -93,9 +80,21 @@ async def health() -> dict[str, Any]:
 @app.websocket("/ws/context")
 async def context_ws(websocket: WebSocket) -> None:
     await websocket.accept()
-    ctx: ContextManager = app.state.context_manager
-    client_updates: Channel = app.state.client_updates
-    inference_updates: Channel = app.state.inference_updates
+    model_config: ModelConfig = app.state.model_config
+    processor: AutoProcessor = app.state.processor
+    model: Qwen2_5_VLForConditionalGeneration = app.state.model
+    session_id = secrets.token_hex(4)
+    service = InferenceService(
+        processor,
+        model,
+        model_config,
+        session_id=session_id,
+    )
+
+    def _on_client_update(change: Change) -> None:
+        asyncio.create_task(service.handle_change(change))
+
+    client_sub = service.client_updates.subscribe(_on_client_update)
 
     async def _safe_send_json(payload: Any) -> None:
         try:
@@ -104,26 +103,22 @@ async def context_ws(websocket: WebSocket) -> None:
             log.error(f"Failed to send WS message: {exc}", exc_info=True)
 
     # Send current state as a series of CREATE changes
-    for item in ctx.list_items():
+    for item in service.context.list_items():
         await _safe_send_json(wrap_change(Change.CREATE(item)))
 
     # Subscribe to inference updates and forward to websocket
-    def _on_inference_update(evt):  # evt can be Change or streaming fragment dict
+    def _on_inference_update(evt):  # evt: Change | AppendItemContentTextMessage
         async def _forward() -> None:
             if isinstance(evt, Change):
                 await _safe_send_json(wrap_change(evt))
-            elif isinstance(evt, dict) and evt.get("__stream_fragment__"):
-                item_id = evt.get("item_id")
-                text = evt.get("text", "")
-                await _safe_send_json(
-                    wrap_append_item_content_text(str(item_id), str(text))
-                )
+            elif isinstance(evt, dict) and evt.get("type") == "AppendItemContentText":
+                await _safe_send_json(evt)
             else:
                 log.warning(f"Unknown inference update event type: {evt!r}")
 
         asyncio.create_task(_forward())
 
-    sub = inference_updates.subscribe(_on_inference_update)
+    inference_sub = service.inference_updates.subscribe(_on_inference_update)
 
     try:
         while True:
@@ -142,21 +137,24 @@ async def context_ws(websocket: WebSocket) -> None:
                 break
             # Accept both wrapped protocol and legacy raw Change safe-delta
             try:
-                mtype, payload = unwrap_message(raw)
-                if mtype != "Change":
+                inbound = parse_message(raw)
+                if inbound["type"] != "Change":
                     raise Exception("Unsupported message type received")
-                change = Change.from_safe_delta_dict(payload)
+                change = Change.from_safe_delta_dict(
+                    inbound["payload"]
+                )  # payload guaranteed dict
             except Exception as exc:  # noqa: BLE001
                 log.error(f"Invalid message wrapper: {exc}", exc_info=True)
                 await _safe_send_json({"error": str(exc)})
                 continue
 
             try:
-                repo_change = await ctx.apply_change(change)
-                client_updates.push(repo_change)
+                repo_change = await service.context.apply_change(change)
+                service.client_updates.push(repo_change)
             except Exception as exc:  # noqa: BLE001
                 log.error(f"Failed to apply change: {exc}", exc_info=True)
                 await _safe_send_json({"error": f"apply_change: {exc}"})
                 continue
     finally:
-        sub.unsubscribe()
+        inference_sub.unsubscribe()
+        client_sub.unsubscribe()

@@ -1,23 +1,30 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fusion.libs.channel import Channel
-
-from assistant.facade import apply_context_event, facade
+from assistant.facade import facade
 from assistant.inference.context import ContextManager
 from assistant.services.inference_client import InferenceClient
-from assistant.services.session_recorder import SessionRecorderConfig
 
 from .session_recorder import SessionRecorder, SessionRecorderConfig
 
 TASK_FILENAME = "task.md"
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 SESSIONS_DIRNAME = "sessions"
+WEBSOCKET_URL_ENV_VAR = "VII_ASSISTANT_WS_URL"
+# DEFAULT_WEBSOCKET_URL = "ws://desk:8008/ws/context"
+DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/context"
+
+# Resolve inference websocket URL at import time (env override if provided, fallback to default)
+INFERENCE_WS_URL = (
+    os.environ.get(WEBSOCKET_URL_ENV_VAR, DEFAULT_WEBSOCKET_URL).strip()
+    or DEFAULT_WEBSOCKET_URL
+)
 
 
 @dataclass(slots=True)
@@ -128,7 +135,6 @@ class ViiProjectManager:
     - Manage sessions (create/start/stop/new)
     - Own context manager reference (facade delegates through here)
     - Host websocket inference client + channels (client_updates / inference_updates)
-    - Provide publish_client_change for outbound user-originated updates
     - Provide current_system_prompt accessor
     - Wire inference updates to reducer (apply_context_event)
     """
@@ -143,18 +149,15 @@ class ViiProjectManager:
         self._system_prompt_path = self.project_root / SYSTEM_PROMPT_FILENAME
         self._sessions_root = self.project_root / SESSIONS_DIRNAME
 
-        # Context + channels
+        # Context (channels now owned by facade)
         self.context_manager = context_manager
-        self.client_updates: Channel = Channel("client-updates")
-        self.inference_updates: Channel = Channel("inference-updates")
 
         # Session & inference runtime
         self._session_manager: Optional[SessionManager] = None
         self._inference_client: Optional[InferenceClient] = None
         self._running = False
 
-        # Subscribe reducer for inference updates (client changes applied inline before publish)
-        self.inference_updates.subscribe(lambda evt: apply_context_event(evt))
+        # Inference events wired in facade.set_project_manager
 
     # Task/system prompt -------------------------------------------------
     def set_task(self, task: str) -> None:
@@ -182,7 +185,7 @@ class ViiProjectManager:
         manager: Optional[SessionManager] = None,
         screen_name: str | None = None,
     ) -> SessionManager:
-        settings_state = facade.app_state.settings
+        settings_state = facade.app_state.settings_VS
         if settings_state.session_state == "started":
             return self._session_manager or self.create_session()
 
@@ -223,10 +226,11 @@ class ViiProjectManager:
 
         # Ensure inference client
         if self._inference_client is None:
-            self._inference_client = InferenceClient(
-                client_updates=self.client_updates,
-                inference_updates=self.inference_updates,
+            ws_url = INFERENCE_WS_URL
+            settings_state.post_info_message(
+                f"Connecting to inference websocket at {ws_url}..."
             )
+            self._inference_client = InferenceClient(url=ws_url)
             self._inference_client.start()
         if not self._running:
             self._running = True
@@ -244,7 +248,7 @@ class ViiProjectManager:
         return self._session_manager
 
     def pause_session(self, *, new_state: str = "paused") -> None:
-        settings_state = facade.app_state.settings
+        settings_state = facade.app_state.settings_VS
         if settings_state.session_state != "started":
             return
         if self._session_manager and self._session_manager.is_recording:
@@ -254,7 +258,7 @@ class ViiProjectManager:
         print("Project manager paused session")
 
     def new_session(self) -> None:
-        settings_state = facade.app_state.settings
+        settings_state = facade.app_state.settings_VS
         if self._session_manager and self._session_manager.is_recording:
             self._session_manager.stop_recording()
         self._session_manager = self.create_session()
@@ -285,13 +289,7 @@ class ViiProjectManager:
 
     # --- Automation helpers -------------------------------------------
     def current_system_prompt(self) -> str:
-        return facade.app_state.settings.system_prompt_markdown or ""
-
-    def publish_client_change(self, change):
-        # Apply locally first (idempotent create guard inside reducer)
-        apply_context_event(change)
-        # Push outbound
-        self.client_updates.push(change)
+        return facade.app_state.settings_VS.system_prompt_markdown or ""
 
     def is_running(self) -> bool:
         return self._running

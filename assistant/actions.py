@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-from fusion.libs.entity.change import Change
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication, QScreen
+from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
 
+from assistant.facade import facade
 from assistant.inference.context import ContextItem
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.services.session_recorder import (  # noqa: F401 (kept for API compatibility)
@@ -15,7 +14,7 @@ from assistant.services.session_recorder import (  # noqa: F401 (kept for API co
 from assistant.utils.capture_utils import clipboard_image
 
 
-def ocr_clipboard(facade) -> None:
+def ocr_clipboard() -> None:
     """Perform OCR on current clipboard image and update UI + clipboard.
 
     Side effects:
@@ -29,7 +28,7 @@ def ocr_clipboard(facade) -> None:
         facade.qt_app.terminal_state.output_text = msg
         return
 
-    settings = facade.app_state.settings
+    settings = facade.app_state.settings_VS
     settings.request_in_progress = True
 
     def _finished(text: str):
@@ -72,7 +71,7 @@ def ocr_clipboard(facade) -> None:
     )
 
 
-def get_clipboard_ocr_text(facade, lang: str = "eng") -> str:
+def get_clipboard_ocr_text(lang: str = "eng") -> str:
     pixmap = clipboard_image()
     if not pixmap:
         return "Error: No image in clipboard"
@@ -82,32 +81,22 @@ def get_clipboard_ocr_text(facade, lang: str = "eng") -> str:
         return f"Error: OCR failed: {e}"
 
 
-def start_session(facade, *, screen_name: str | None = None) -> None:
+def start_session(*, screen_name: str | None = None) -> None:
     """Delegate to AutomationService to start a session."""
     facade.project_manager.start_session(screen_name=screen_name)
 
 
-def pause_or_stop_session(facade, *, new_state: str) -> None:
+def pause_or_stop_session(*, new_state: str) -> None:
     """Pause (stop recording) the active session."""
     facade.project_manager.pause_session(new_state=new_state)
 
 
-def new_session(facade) -> None:
+def new_session() -> None:
     """Prepare a brand new session directory without starting recording."""
     facade.project_manager.new_session()
 
 
-__all__ = [
-    "start_session",
-    "pause_or_stop_session",
-    "new_session",
-    "ocr_clipboard",
-    "get_clipboard_ocr_text",
-    "handle_message_submitted",
-]
-
-
-def open_sessions_folder(facade) -> None:
+def open_sessions_folder() -> None:
     sessions_dir: Path = facade.project_manager.sessions_root
     sessions_dir.mkdir(parents=True, exist_ok=True)
     url = QUrl.fromLocalFile(str(sessions_dir))
@@ -116,25 +105,19 @@ def open_sessions_folder(facade) -> None:
         print(f"Failed to open sessions directory: {sessions_dir}")
 
 
-def handle_message_submitted(facade, text: str) -> None:
-    manager = facade.context_manager
+def add_user_message(text: str) -> None:
+    controller = facade.context_controller
     cleaned = text.strip()
     if cleaned:
         text_item = ContextItem()
-        text_item.position = manager.next_position()
+        text_item.position = controller.next_position()
         text_item.size = 0
         text_item.content = {"text": cleaned}
         text_item.metadata = {"origin": "user"}
-        manager.insert(text_item)
-        change = Change.CREATE(text_item)
-        facade.app_state.context.apply_change(change)
-        try:
-            facade.project_manager.publish_client_change(change)
-        except Exception:
-            pass
+        controller.create(text_item)
 
     request_item = ContextItem()
-    request_item.position = manager.next_position()
+    request_item.position = controller.next_position()
     request_item.size = 0
     request_item.content = {"text": ""}
     request_item.request = {
@@ -143,10 +126,4 @@ def handle_message_submitted(facade, text: str) -> None:
         "temperature": 0.0,
     }
     request_item.metadata = {"origin": "user", "trigger": "manual-send"}
-    manager.insert(request_item)
-    change = Change.CREATE(request_item)
-    facade.app_state.context.apply_change(change)
-    try:
-        facade.project_manager.publish_client_change(change)
-    except Exception:
-        pass
+    controller.create(request_item)

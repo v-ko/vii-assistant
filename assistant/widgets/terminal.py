@@ -12,7 +12,7 @@ from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QWidget
 
 from assistant.actions import (
-    handle_message_submitted,
+    add_user_message,
     new_session,
     ocr_clipboard,
     open_sessions_folder,
@@ -48,24 +48,18 @@ class TerminalWindow(QWidget):
         # self.setup_animations()
         self._bind_state()
         # Wire view signals to actions using facade singleton
-        self.model_settings.ocr_clipboard_clicked.connect(
-            lambda: ocr_clipboard(self._facade)
-        )
+        self.model_settings.ocr_clipboard_clicked.connect(ocr_clipboard)
         self.model_settings.attach_screen_clicked.connect(self.attach_screen)
         self.model_settings.attach_clipboard_clicked.connect(self.attach_clipboard)
         self.model_settings.start_session_clicked.connect(
-            lambda: start_session(facade, screen_name=facade.app_state.settings.screen)
+            lambda: start_session(screen_name=facade.app_state.settings_VS.screen)
         )
         self.model_settings.stop_session_clicked.connect(
-            lambda: pause_or_stop_session(facade, new_state="paused")
+            lambda: pause_or_stop_session(new_state="paused")
         )
-        self.model_settings.new_session_clicked.connect(lambda: new_session(facade))
-        self.model_settings.open_sessions_folder_clicked.connect(
-            lambda: open_sessions_folder(facade)
-        )
-        self.context_viewer.message_submitted.connect(
-            lambda txt: handle_message_submitted(facade, txt)
-        )
+        self.model_settings.new_session_clicked.connect(new_session)
+        self.model_settings.open_sessions_folder_clicked.connect(open_sessions_folder)
+        self.context_viewer.message_submitted.connect(add_user_message)
 
     def setup_ui(self):
         # Create a container widget to hold the UI; this widget will be
@@ -169,12 +163,12 @@ class TerminalWindow(QWidget):
     def _add_image_item(self, pixmap, source: str) -> None:
         if not self._facade:
             return
+        controller = self._facade.context_controller
         encoded = pixmap_to_base64(pixmap)
         if not encoded:
             print("Failed to encode captured image.")
             return
-        manager = self._facade.context_manager
-        position = manager.next_position()
+        position = controller.next_position()
         item = ContextItem()
         item.id = uuid4().hex
         item.position = position
@@ -182,16 +176,7 @@ class TerminalWindow(QWidget):
         item.content = {"image": encoded}
         item.request = None
         item.metadata = {"origin": "user", "source": source}
-        # Inline of previous facade.add_context_item logic
-        manager.insert(item)
-        from fusion.libs.entity.change import Change  # local to avoid top-level dep
-
-        change = Change.CREATE(item)
-        self._facade.app_state.context.apply_change(change)
-        try:
-            self._facade.project_manager.publish_client_change(change)
-        except Exception:
-            pass
+        controller.create(item)
 
     def setup_shortcuts(self):
         """Set up keyboard shortcuts."""

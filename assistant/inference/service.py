@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, cast
@@ -17,8 +18,9 @@ from transformers import (
     TextIteratorStreamer,
 )
 
-from .context import ContextItem, ContextManager
-from .qwen_tokens import compile_qwen_context
+from assistant.inference.context import ContextItem, ContextManager
+from assistant.inference.interface import wrap_append_item_content_text
+from assistant.inference.qwen_tokens import compile_qwen_context
 
 logger = get_logger(__name__)
 
@@ -34,12 +36,13 @@ class ModelConfig:
 class InferenceService:
     def __init__(
         self,
-        context: ContextManager,
         processor: AutoProcessor,
         model: Qwen2_5_VLForConditionalGeneration,
         config: Optional[ModelConfig] = None,
+        *,
+        session_id: Optional[str] = None,
     ) -> None:
-        self.context = context
+        self.context = ContextManager()
         self.config = config or ModelConfig()
         self.processor: AutoProcessor = processor
         self.model: Qwen2_5_VLForConditionalGeneration = model
@@ -47,8 +50,11 @@ class InferenceService:
         self._lock = asyncio.Lock()
         # Active streaming threads (keyed by item id) for future cancellation support
         self._active_streams: dict[str, threading.Thread] = {}
-        # Channel to publish both full changes and streaming fragments
-        self.inference_updates: Optional[Channel] = None
+        self.session_id = session_id or secrets.token_hex(4)
+        prefix = f"inference-{self.session_id}"
+        # Channels scoped per inference session
+        self.client_updates: Channel = Channel(f"{prefix}-client-updates")
+        self.inference_updates: Channel = Channel(f"{prefix}-inference-updates")
 
     # No startup needed: model and processor are provided via constructor
 
@@ -212,11 +218,18 @@ class InferenceService:
         model = self.model
         model.eval()
 
+        thread_error: list[Exception | None] = [None]
+        drain_error: list[Exception | None] = [None]
+        loop = asyncio.get_running_loop()
+        chunk_queue: asyncio.Queue[str | object] = asyncio.Queue()
+        sentinel = object()
+
         def _run_generate() -> None:
             try:
                 with torch.no_grad():
                     model.generate(**model_kwargs, **gen_params, streamer=streamer)
             except Exception as e:  # noqa: BLE001
+                thread_error[0] = e
                 logger.error(
                     "Streaming generation thread error for %s: %s",
                     updated.id,
@@ -224,35 +237,50 @@ class InferenceService:
                     exc_info=True,
                 )
 
+        def _drain_streamer() -> None:
+            try:
+                for chunk in streamer:
+                    loop.call_soon_threadsafe(chunk_queue.put_nowait, chunk)
+            except Exception as exc:  # noqa: BLE001
+                drain_error[0] = exc
+                logger.error(
+                    "Streamer drain error for %s: %s",
+                    updated.id,
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                loop.call_soon_threadsafe(chunk_queue.put_nowait, sentinel)
+
         thread = threading.Thread(target=_run_generate, daemon=True)
         uid = str(updated.id)
         self._active_streams[uid] = thread
         thread.start()
 
+        drain_thread = threading.Thread(target=_drain_streamer, daemon=True)
+        drain_thread.start()
+
         pieces: list[str] = []
-        loop = asyncio.get_running_loop()
         try:
             while True:
-                if not thread.is_alive() and getattr(streamer, "text_queue").qsize() == 0:  # type: ignore[attr-defined]
+                chunk = await chunk_queue.get()
+                if chunk is sentinel:
                     break
-                try:
-                    chunk = await loop.run_in_executor(None, next, streamer)
-                except StopIteration:
+
+                if chunk is None:
                     await asyncio.sleep(0)
                     continue
-                if not chunk:
+
+                chunk_s = cast(str, chunk)
+                if not chunk_s:
                     await asyncio.sleep(0)
                     continue
-                pieces.append(chunk)
+                pieces.append(chunk_s)
                 if self.inference_updates:
-                    # Streaming fragment event distinguished at websocket layer by wrapper
                     self.inference_updates.push(
-                        {
-                            "__stream_fragment__": True,
-                            "item_id": updated.id,
-                            "text": chunk,
-                        }
+                        wrap_append_item_content_text(str(updated.id), chunk_s)
                     )
+                # Give event loop a chance to process outbound messages / cancellation
                 await asyncio.sleep(0)
         except Exception as exc:  # noqa: BLE001
             logger.error(
@@ -267,28 +295,50 @@ class InferenceService:
             req["completed"] = True
             updated.request = req
         else:
-            full_text = "".join(pieces).strip()
-            content = dict(updated.content or {})
-            content["text"] = full_text
-            updated.content = content
-            req = dict(updated.request or {})
-            req["result"] = "success"
-            req["completed"] = True
-            updated.request = req
-            try:
-                encoded = tokenizer(full_text, add_special_tokens=False)  # type: ignore[call-arg]
-                tokens_len = (
-                    len(encoded["input_ids"])
-                    if isinstance(encoded, dict) and "input_ids" in encoded
-                    else None
-                )
-            except Exception:
-                tokens_len = None
-            if tokens_len is not None:
-                meta = dict(updated.metadata or {})
-                meta["tokens_len"] = tokens_len
-                updated.metadata = meta
+            if thread_error[0] is not None:
+                req = dict(updated.request or {})
+                req["result"] = "error"
+                req["error_message"] = str(thread_error[0])
+                req["completed"] = True
+                updated.request = req
+            else:
+                if drain_error[0] is not None:
+                    req = dict(updated.request or {})
+                    req["result"] = "error"
+                    req["error_message"] = str(drain_error[0])
+                    req["completed"] = True
+                    updated.request = req
+                else:
+                    if thread.is_alive():
+                        thread.join(timeout=0.0)
+                    if drain_thread.is_alive():
+                        drain_thread.join(timeout=0.0)
+                    full_text = "".join(pieces).strip()
+                    content = dict(updated.content or {})
+                    content["text"] = full_text
+                    updated.content = content
+                    req = dict(updated.request or {})
+                req["result"] = "success"
+                req["completed"] = True
+                updated.request = req
+                try:
+                    encoded = tokenizer(full_text, add_special_tokens=False)  # type: ignore[call-arg]
+                    tokens_len = (
+                        len(encoded["input_ids"])
+                        if isinstance(encoded, dict) and "input_ids" in encoded
+                        else None
+                    )
+                except Exception:
+                    tokens_len = None
+                if tokens_len is not None:
+                    meta = dict(updated.metadata or {})
+                    meta["tokens_len"] = tokens_len
+                    updated.metadata = meta
         finally:
+            if thread.is_alive():
+                thread.join(timeout=0.1)
+            if drain_thread.is_alive():
+                drain_thread.join(timeout=0.1)
             self._active_streams.pop(uid, None)
             ch = self.context.update(updated)
             if self.inference_updates:

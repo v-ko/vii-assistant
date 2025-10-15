@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import cast
 
 from fusion.libs.entity.change import Change
 from fusion.platform.qt_widgets import Property
@@ -163,10 +162,12 @@ class ContextItemViewState(QObject):
 
 class ContextViewerState(QObject):
     items_changed = Signal()
+    interactions_enabled_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._items: dict[str, ContextItemViewState] = {}
+        self._interactions_enabled = False
 
     @Property(list, notify=items_changed)
     def items(self) -> list[ContextItemViewState]:
@@ -177,6 +178,17 @@ class ContextViewerState(QObject):
             self._items.values(),
             key=lambda state: (state.position, state.item_id),
         )
+
+    @Property(bool, notify=interactions_enabled_changed)
+    def interactions_enabled(self) -> bool:
+        return self._interactions_enabled
+
+    @interactions_enabled.setter
+    def interactions_enabled(self, value: bool) -> None:
+        if self._interactions_enabled == value:
+            return
+        self._interactions_enabled = value
+        self.interactions_enabled_changed.emit(value)
 
     def get_item(self, item_id: str) -> ContextItemViewState | None:
         return self._items.get(item_id)

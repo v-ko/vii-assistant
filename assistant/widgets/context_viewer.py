@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from typing import Optional
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QCursor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -33,13 +34,6 @@ def _decode_pixmap(b64: str) -> Optional[QPixmap]:
     if image.isNull():
         return None
     return QPixmap.fromImage(image)
-
-
-def _short_text(text: str, limit: int = 280) -> str:
-    clean = text.strip()
-    if len(clean) <= limit:
-        return clean
-    return clean[: limit - 1].rstrip() + "…"
 
 
 class _ImagePreviewPopup(QWidget):
@@ -102,6 +96,8 @@ class _ImagePreviewManager:
 
 
 class _BaseItemWidget(QFrame):
+    size_hint_changed = Signal()
+
     def __init__(self, state: ContextItemViewState):
         super().__init__()
         self._state = state
@@ -131,13 +127,25 @@ class _BaseItemWidget(QFrame):
             parts.append(summary)
         self.setToolTip(" \u2022 ".join(parts) if parts else "")
 
+    def _notify_size_change(self) -> None:
+        self._layout.activate()
+        self.updateGeometry()
+        self.size_hint_changed.emit()
+
 
 class _TextItemWidget(_BaseItemWidget):
     def __init__(self, state: ContextItemViewState):
         super().__init__(state)
         self._body = QLabel()
         self._body.setWordWrap(True)
-        self._body.setMinimumWidth(220)
+        self._body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._body.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._body.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         self._insert_before_footer(self._body)
         self._state.text_changed.connect(self._update_text)
         self._state.request_summary_changed.connect(
@@ -156,8 +164,9 @@ class _TextItemWidget(_BaseItemWidget):
                 self._body.setText("")
                 self._body.setStyleSheet("QLabel { color: #888; }")
         else:
-            self._body.setText(_short_text(trimmed))
+            self._body.setText(trimmed)
             self._body.setStyleSheet("QLabel { color: #f0f0f0; }")
+        self._notify_size_change()
 
 
 class _ToolCallItemWidget(_BaseItemWidget):
@@ -165,6 +174,14 @@ class _ToolCallItemWidget(_BaseItemWidget):
         super().__init__(state)
         self._body = QLabel()
         self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._body.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._body.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         self._insert_before_footer(self._body)
         self._state.tool_call_changed.connect(self._update_tool_call)
         self._update_tool_call(self._state.tool_call)
@@ -176,10 +193,11 @@ class _ToolCallItemWidget(_BaseItemWidget):
                 "QLabel { color: #bfa86a; font-style: italic; font-family: monospace; }"
             )
         else:
-            self._body.setText(_short_text(payload, limit=200))
+            self._body.setText(payload)
             self._body.setStyleSheet(
                 "QLabel { color: #ffd27f; font-family: monospace; }"
             )
+        self._notify_size_change()
 
 
 class _ImageItemWidget(_BaseItemWidget):
@@ -207,6 +225,7 @@ class _ImageItemWidget(_BaseItemWidget):
             self._thumb.setPixmap(QPixmap())
             self._thumb.setText("(invalid image)")
             self._thumb.setMinimumSize(128, 96)
+            self._notify_size_change()
             return
         scaled = pixmap.scaled(
             128,
@@ -217,6 +236,7 @@ class _ImageItemWidget(_BaseItemWidget):
         self._thumb.setText("")
         self._thumb.setPixmap(scaled)
         self._thumb.setMinimumSize(scaled.size())
+        self._notify_size_change()
 
     def enterEvent(self, event):
         cursor_pos = QCursor.pos()
@@ -236,8 +256,14 @@ class ContextViewerWidget(QWidget):
         self._state = state
         self._preview_manager = _ImagePreviewManager()
         self._request_in_progress = False
+        self._interactions_enabled = state.interactions_enabled
+        self._item_widgets: dict[str, tuple[QListWidgetItem, _BaseItemWidget]] = {}
         self._setup_ui()
         self._state.items_changed.connect(self._rebuild)
+        self._state.interactions_enabled_changed.connect(
+            self._apply_interactions_enabled
+        )
+        self._apply_interactions_enabled(self._interactions_enabled)
         self._rebuild()
 
     def _setup_ui(self) -> None:
@@ -264,6 +290,7 @@ class ContextViewerWidget(QWidget):
             }
             """
         )
+        self._list.viewport().installEventFilter(self)
 
         layout.addWidget(self._empty_label)
         layout.addWidget(self._list)
@@ -298,13 +325,16 @@ class ContextViewerWidget(QWidget):
         self._list.show()
         self._list.setUpdatesEnabled(False)
         self._list.clear()
+        self._item_widgets.clear()
         for state in items:
             widget = self._widget_for_state(state)
             list_item = QListWidgetItem()
             list_item.setSizeHint(widget.sizeHint())
             self._list.addItem(list_item)
             self._list.setItemWidget(list_item, widget)
+            self._register_item_widget(state.item_id, list_item, widget)
         self._list.setUpdatesEnabled(True)
+        self._update_all_item_sizes()
 
     def _widget_for_state(self, state: ContextItemViewState) -> QWidget:
         kind = state.content_kind
@@ -314,11 +344,53 @@ class ContextViewerWidget(QWidget):
             return _ToolCallItemWidget(state)
         return _TextItemWidget(state)
 
+    def _register_item_widget(
+        self, item_id: str, list_item: QListWidgetItem, widget: _BaseItemWidget
+    ) -> None:
+        self._item_widgets[item_id] = (list_item, widget)
+        widget.size_hint_changed.connect(
+            lambda item_id=item_id: self._update_item_size(item_id)
+        )
+        self._update_item_size(item_id)
+
+    def _update_item_size(self, item_id: str) -> None:
+        entry = self._item_widgets.get(item_id)
+        if not entry:
+            return
+        list_item, widget = entry
+        width = self._available_item_width()
+        if width <= 0:
+            return
+        widget.setFixedWidth(width)
+        hint_height = widget.sizeHint().height()
+        list_item.setSizeHint(QSize(width, hint_height))
+        self._list.doItemsLayout()
+
+    def _available_item_width(self) -> int:
+        viewport = self._list.viewport()
+        if viewport is None:
+            return 0
+        # subtract a small padding to account for frame/margins
+        return max(viewport.width() - 12, 0)
+
+    def _update_all_item_sizes(self) -> None:
+        for item_id in list(self._item_widgets.keys()):
+            self._update_item_size(item_id)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_all_item_sizes()
+
+    def eventFilter(self, obj, event):
+        if obj is self._list.viewport() and event.type() == QEvent.Type.Resize:
+            self._update_all_item_sizes()
+        return super().eventFilter(obj, event)
+
     def _sync_send_enabled(self, _: str) -> None:
-        self._send_button.setEnabled(not self._request_in_progress)
+        self._refresh_composer_controls()
 
     def _on_submit_clicked(self) -> None:
-        if self._request_in_progress:
+        if self._request_in_progress or not self._interactions_enabled:
             return
         text = self._input_edit.text()
         self.message_submitted.emit(text)
@@ -329,4 +401,15 @@ class ContextViewerWidget(QWidget):
         if self._request_in_progress == value:
             return
         self._request_in_progress = value
-        self._sync_send_enabled(self._input_edit.text())
+        self._refresh_composer_controls()
+
+    def _apply_interactions_enabled(self, enabled: bool) -> None:
+        if self._interactions_enabled != enabled:
+            self._interactions_enabled = enabled
+        self._refresh_composer_controls()
+
+    def _refresh_composer_controls(self) -> None:
+        allow_input = self._interactions_enabled
+        self._input_edit.setEnabled(allow_input)
+        can_send = self._interactions_enabled and not self._request_in_progress
+        self._send_button.setEnabled(can_send)

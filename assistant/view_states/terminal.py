@@ -15,8 +15,8 @@ class TerminalViewState(QObject):
         super().__init__(parent)
         self._output_text = ""
         self.app_state = app_state
-        self.settings = app_state.settings
-        self.context_view = app_state.context
+        self.settings = app_state.settings_VS
+        self.context_view = app_state.context_VS
 
     # --- output_text ---
     @Property(str, notify=output_text_changed)

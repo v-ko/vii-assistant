@@ -117,7 +117,7 @@ class AssistantQtApp(QApplication):
     def bind_screen_overlay(self):
         """Connect settings screen_changed signal to overlay update once."""
         try:
-            settings_state = self.terminal_state.app_state.settings
+            settings_state = self.terminal_state.app_state.settings_VS
         except Exception:
             return
         # Avoid duplicate connections: Qt doesn't give an easy handle, so we use an attr flag

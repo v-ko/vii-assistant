@@ -1,5 +1,5 @@
 from PySide6.QtCore import QSignalBlocker, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -32,6 +32,7 @@ class SettingsWidget(QWidget):
         super().__init__(parent)
         self._state = state
         self._session_state = state.session_state
+        self._context_updates_allowed = state.context_updates_allowed
         self.setup_ui()
         self._bind_state()
 
@@ -91,6 +92,15 @@ class SettingsWidget(QWidget):
         self.ocr_clipboard_button.clicked.connect(self.on_ocr_clipboard_clicked)
         self.ocr_clipboard_button.setFixedHeight(uniform_button_height)
         first_column.addWidget(self.ocr_clipboard_button)
+
+        self.info_messages_edit = QPlainTextEdit()
+        self.info_messages_edit.setReadOnly(True)
+        self.info_messages_edit.setPlaceholderText("Status messages")
+        self.info_messages_edit.setMinimumHeight(80)
+        self.info_messages_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        first_column.addWidget(self.info_messages_edit)
 
         self.attach_screen_button = QPushButton("Attach screen")
         self.attach_screen_button.setToolTip(
@@ -192,12 +202,28 @@ class SettingsWidget(QWidget):
         self._state.request_in_progress_changed.connect(self._apply_request_in_progress)
         self._state.user_query_changed.connect(self._apply_user_query)
         self._state.system_prompt_changed.connect(self._apply_system_prompt)
+        self._state.info_messages_changed.connect(self._apply_info_messages)
+        self._state.context_updates_allowed_changed.connect(
+            self._apply_context_updates_allowed
+        )
 
         self._apply_session_state(self._state.session_state)
         self._apply_screen(self._state.screen)
         self._apply_request_in_progress(self._state.request_in_progress)
         self._apply_user_query(self._state.user_query_markdown)
         self._apply_system_prompt(self._state.system_prompt_markdown)
+        self._apply_info_messages(self._state.info_messages)
+        self._apply_context_updates_allowed(self._state.context_updates_allowed)
+
+    def _apply_info_messages(self, text: str) -> None:
+        blocker = QSignalBlocker(self.info_messages_edit)
+        try:
+            self.info_messages_edit.setPlainText(text)
+        finally:
+            del blocker
+        if text:
+            self.info_messages_edit.moveCursor(QTextCursor.MoveOperation.End)
+            self.info_messages_edit.ensureCursorVisible()
 
     def populate_screen_combo(self):
         """Populate the screen combo box with available screens."""
@@ -289,8 +315,7 @@ class SettingsWidget(QWidget):
 
     def _set_request_in_progress_ui(self, value: bool) -> None:
         self.ocr_clipboard_button.setEnabled(not value)
-        self.attach_screen_button.setEnabled(not value)
-        self.attach_clipboard_button.setEnabled(not value)
+        self._refresh_attachment_buttons()
 
     def on_ocr_clipboard_clicked(self):
         """Handle OCR clipboard button click."""
@@ -298,11 +323,11 @@ class SettingsWidget(QWidget):
             self.ocr_clipboard_clicked.emit()
 
     def on_attach_screen_clicked(self):
-        if not self._request_in_progress:
+        if not self._request_in_progress and self._context_updates_allowed:
             self.attach_screen_clicked.emit()
 
     def on_attach_clipboard_clicked(self):
-        if not self._request_in_progress:
+        if not self._request_in_progress and self._context_updates_allowed:
             self.attach_clipboard_clicked.emit()
 
     def on_user_query_changed(self):
@@ -343,3 +368,13 @@ class SettingsWidget(QWidget):
             return
         blocker = QSignalBlocker(self.system_prompt_edit)
         self.system_prompt_edit.setPlainText(value)
+
+    def _apply_context_updates_allowed(self, allowed: bool) -> None:
+        if self._context_updates_allowed != allowed:
+            self._context_updates_allowed = allowed
+        self._refresh_attachment_buttons()
+
+    def _refresh_attachment_buttons(self) -> None:
+        enabled = (not self._request_in_progress) and self._context_updates_allowed
+        self.attach_screen_button.setEnabled(enabled)
+        self.attach_clipboard_button.setEnabled(enabled)

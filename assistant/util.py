@@ -108,22 +108,19 @@ def pixmap_to_base64(pixmap: QPixmap) -> Optional[str]:
         A base64-encoded string, or None if conversion fails
     """
     try:
-        # Convert QPixmap to QImage
-        image = pixmap.toImage()
-
-        # Create a byte array to store the image data
+        if pixmap.isNull():
+            return None
         byte_array = QByteArray()
         buffer = QBuffer(byte_array)
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-
-        # Save the image to the buffer in PNG format
-        if not image.save(buffer, b"PNG"):
-            raise RuntimeError("Failed to save image to buffer")
-
-        # Convert to base64
-        base64_data = bytes(byte_array.toBase64().data()).decode("utf-8")
-
-        return base64_data
+        if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+            return None
+        # Use QPixmap.save directly; pass format as str (PySide6 expects str overload).
+        ok = pixmap.save(buffer, "PNG")
+        buffer.close()
+        if not ok:
+            return None
+        # Ensure we convert memoryview -> bytes before decoding (helps type checkers)
+        return bytes(byte_array.toBase64().data()).decode("utf-8")
     except Exception as e:
         print(f"Error converting QPixmap to base64: {e}")
         return None

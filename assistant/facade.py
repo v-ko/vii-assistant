@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from fusion.libs.channel import Channel
+from fusion.libs.entity.change import Change
 from PySide6.QtGui import QGuiApplication, QScreen
 
 from assistant.app_state import AppState
@@ -12,6 +14,10 @@ from assistant.services.config_persistence_service import ConfigPersistenceServi
 if TYPE_CHECKING:
     from assistant.qt_app import AssistantQtApp
     from assistant.services.project_manager import SessionManager, ViiProjectManager
+
+from fusion import get_logger
+
+log = get_logger(__name__)
 
 
 class Facade:
@@ -26,10 +32,16 @@ class Facade:
         # Minimal setup; external services injected from main to avoid circular deps
         self._config = Config()
         self._session_manager = None
+        # Channels for context sync
+        self.client_updates = Channel("client-updates")
+        self.inference_updates = Channel("inference-updates")
+        self.context_controller = ContextController(self)
 
     # --- explicit service setters (must be called early in main) ---------
     def set_project_manager(self, manager: ViiProjectManager):
         self._project_manager = manager
+        # Wire inference updates to reducer
+        self.inference_updates.subscribe(apply_inference_event)
 
     @property
     def qt_app(self) -> "AssistantQtApp":
@@ -70,7 +82,7 @@ class Facade:
 
         No silent defaulting; caller must ensure a valid selection exists.
         """
-        screen_name = self.app_state.settings.screen
+        screen_name = self.app_state.settings_VS.screen
         if not screen_name:
             raise RuntimeError("No screen selected in settings")
         scr = self.get_screen_by_name(screen_name)
@@ -87,7 +99,7 @@ class Facade:
         app_state = terminal_state.app_state
         self._app_state = app_state
 
-        settings_state = app_state.settings
+        settings_state = app_state.settings_VS
         # Ensure a valid screen value exists in config BEFORE initializing settings state
         try:
             screen_name = self.config.get("screen", "")
@@ -129,14 +141,51 @@ class Facade:
         return screens[0]  # First non-primary screen
 
 
-from fusion.libs.entity.change import Change
-
 from assistant.inference.context import ContextItem
 
 
-def apply_context_event(evt):
+class ContextController:
+    """Handles context item CRUD for client operations and publishes updates on client-updates."""
+
+    def __init__(self, facade_ref: "Facade") -> None:
+        self._facade = facade_ref
+
+    def next_position(self) -> int:
+        self._ensure_session_started()
+        return self._facade.context_manager.next_position()
+
+    def create(self, item: ContextItem) -> Change:
+        self._ensure_session_started()
+        change = self._facade.context_manager.insert(item)
+        self._broadcast(change)
+        return change
+
+    def update(self, item: ContextItem) -> Change:
+        self._ensure_session_started()
+        change = self._facade.context_manager.update(item)
+        self._broadcast(change)
+        return change
+
+    def delete(self, item: ContextItem) -> Change:
+        self._ensure_session_started()
+        change = self._facade.context_manager.remove(item)
+        self._broadcast(change)
+        return change
+
+    def _broadcast(self, change: Change) -> None:
+        self._facade.app_state.context_VS.apply_change(change)
+        self._facade.client_updates.push(change)
+
+    def _ensure_session_started(self) -> None:
+        session_state = self._facade.app_state.settings_VS.session_state
+        if session_state != "started":
+            raise RuntimeError("Cannot modify context without an active session.")
+
+
+def apply_inference_event(evt):
+    log.info(f"Applying inference event: {evt}")
     ctx_mgr = facade.context_manager
-    app_ctx_view = facade.app_state.context
+    app_ctx_view = facade.app_state.context_VS
     if isinstance(evt, Change):
         if evt.is_create() and isinstance(evt.new_state, ContextItem):
             repo_change = ctx_mgr.insert(evt.new_state)
@@ -147,12 +196,11 @@ def apply_context_event(evt):
         else:
             return
         app_ctx_view.apply_change(repo_change)
-    elif isinstance(evt, dict) and evt.get("__stream_fragment__"):
-        item_id = evt.get("item_id")
-        text = evt.get("text", "")
-        if not item_id:
-            return
-        for existing in ctx_mgr.list_items():
+    elif isinstance(evt, dict) and evt.get("type") == "AppendItemContentText":
+        payload = evt["payload"]
+        item_id = payload["item_id"]
+        text = payload["text"]
+        for existing in ctx_mgr.list_items():  # TODO: optimize lookup
             if str(existing.id) == str(item_id):
                 if not isinstance(existing.content, dict):
                     existing.content = {}
@@ -166,5 +214,3 @@ def apply_context_event(evt):
 
 
 facade = Facade()
-
-__all__ = ["facade", "apply_context_event"]

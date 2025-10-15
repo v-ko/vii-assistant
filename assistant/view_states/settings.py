@@ -24,6 +24,9 @@ class SettingsViewState(QObject):
     request_in_progress_changed = Signal(bool)
     user_query_changed = Signal(str)
     system_prompt_changed = Signal(str)
+    info_messages_changed = Signal(str)
+    _info_message_enqueued = Signal(str)
+    context_updates_allowed_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -38,6 +41,9 @@ class SettingsViewState(QObject):
         self._request_in_progress = False
         self._user_query = ""
         self._system_prompt = ""
+        self._info_messages: list[str] = []
+        self._context_updates_allowed = False
+        self._info_message_enqueued.connect(self._append_info_message)
 
     # --- lifecycle -------------------------------------------------
     def initialize(
@@ -78,6 +84,7 @@ class SettingsViewState(QObject):
             return
         self._session_state = value
         self.session_state_changed.emit(value)
+        self.context_updates_allowed = value == "started"
 
     # client_type removed
 
@@ -157,3 +164,36 @@ class SettingsViewState(QObject):
             return
         self._system_prompt = value
         self.system_prompt_changed.emit(value)
+
+    @Property(str, notify=info_messages_changed)
+    def info_messages(self) -> str:
+        return "\n".join(self._info_messages)
+
+    def post_info_message(self, message: str) -> None:
+        self._info_message_enqueued.emit(message)
+
+    def clear_info_messages(self) -> None:
+        if not self._info_messages:
+            return
+        self._info_messages.clear()
+        self.info_messages_changed.emit("")
+
+    def _append_info_message(self, message: str) -> None:
+        msg = (message or "").strip()
+        if not msg:
+            return
+        self._info_messages.append(msg)
+        if len(self._info_messages) > 20:
+            self._info_messages = self._info_messages[-20:]
+        self.info_messages_changed.emit("\n".join(self._info_messages))
+
+    @Property(bool, notify=context_updates_allowed_changed)
+    def context_updates_allowed(self) -> bool:
+        return self._context_updates_allowed
+
+    @context_updates_allowed.setter
+    def context_updates_allowed(self, value: bool) -> None:
+        if self._context_updates_allowed == value:
+            return
+        self._context_updates_allowed = value
+        self.context_updates_allowed_changed.emit(value)
