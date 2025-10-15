@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import json
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, TypedDict
 
+from fusion.logging import get_logger
 from pynput import keyboard, mouse
+
+log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -94,6 +98,9 @@ class SessionRecorder:
         def emit(
             event_type: str, payload: dict[str, Any], *, force: bool = False
         ) -> None:
+            # If recorder has been stopped, drop incoming events (unless force) to prevent late emissions
+            if not self._active and not force:
+                return
             should_gate = self._window_geometry is not None and not force
             if should_gate and not self._focus.inside:
                 return
@@ -157,13 +164,13 @@ class SessionRecorder:
                 return
             update_focus(int(px), int(py))
 
-        def on_press(key: keyboard.Key | keyboard.KeyCode) -> None:
+        def on_press(key: keyboard.Key | keyboard.KeyCode | None) -> None:
             refresh_focus_from_pointer()
             if not self._focus.inside:
                 return
             emit("keyboard_press", {"key": self._key_to_str(key)})
 
-        def on_release(key: keyboard.Key | keyboard.KeyCode) -> None:
+        def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
             refresh_focus_from_pointer()
             if not self._focus.inside:
                 return
@@ -218,20 +225,80 @@ class SessionRecorder:
     def stop(self) -> None:
         if not self._active:
             return
-        for listener in (self._keyboard_listener, self._mouse_listener):
+        # Mark inactive so new events are ignored
+        self._active = False
+        listener_entries: list[tuple[str, keyboard.Listener | mouse.Listener]] = []
+        stop_errors: list[str] = []
+        t0 = time.perf_counter()
+        for label, listener in (
+            ("keyboard", self._keyboard_listener),
+            ("mouse", self._mouse_listener),
+        ):
             if listener is None:
                 continue
-            listener.stop()
-            listener.join()
+            listener_entries.append((label, listener))
+            try:
+                listener.stop()
+            except RuntimeError as e:
+                log.warning(f"Listener stop runtime error {e}")
+                pass
+            except Exception as e:  # pragma: no cover - rare unexpected backend errors
+                stop_errors.append(f"stop:{label}:{type(e).__name__}:{e}")
+        dispatch_ms = (time.perf_counter() - t0) * 1000
         self._keyboard_listener = None
         self._mouse_listener = None
-        self._active = False
         self._focus = _FocusState(inside=self._window_geometry is None)
+        print(
+            f"[SessionRecorder] stop dispatched in {dispatch_ms:.2f} ms (async cleanup)"
+        )
+        if stop_errors:
+            raise RuntimeError(
+                "SessionRecorder.stop encountered errors: " + ", ".join(stop_errors)
+            )
+        if listener_entries:
+            threading.Thread(
+                target=self._finalize_listener_threads,
+                args=(listener_entries,),
+                daemon=True,
+            ).start()
 
     def _key_to_str(self, key: Any) -> str:
         if hasattr(key, "char") and key.char is not None:
             return key.char
         return str(key)
+
+    def _finalize_listener_threads(
+        self, listeners: list[tuple[str, keyboard.Listener | mouse.Listener]]
+    ) -> None:
+        join_slice = 0.1
+        errors: list[str] = []
+        t0 = time.perf_counter()
+        for label, listener in listeners:
+            try:
+                join_deadline = time.perf_counter() + 2.0
+                while listener.is_alive():
+                    remaining = join_deadline - time.perf_counter()
+                    if remaining <= 0:
+                        errors.append(f"join_timeout:{label}")
+                        break
+                    listener.join(timeout=min(join_slice, max(remaining, 0.0)))
+                # Ensure the thread resources release even if already dead
+                listener.join(timeout=0.0)
+            except RuntimeError:
+                # Thread not started or already finished
+                pass
+            except Exception as e:  # pragma: no cover
+                errors.append(f"join:{label}:{type(e).__name__}:{e}")
+        total_ms = (time.perf_counter() - t0) * 1000
+        if not errors:
+            print(f"[SessionRecorder] listener cleanup completed in {total_ms:.2f} ms")
+            return
+        timeouts = [err for err in errors if err.startswith("join_timeout:")]
+        others = [err for err in errors if not err.startswith("join_timeout:")]
+        if timeouts:
+            print("[SessionRecorder] listener cleanup warning: " + ", ".join(timeouts))
+        if others:
+            print("[SessionRecorder] listener cleanup errors: " + ", ".join(others))
 
     def _coerce_geometry(self, value: Any) -> _WindowGeometry | None:
         if value is None:
