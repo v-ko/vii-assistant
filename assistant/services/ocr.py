@@ -8,6 +8,8 @@ from PIL import Image
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThread, Signal
 from PySide6.QtGui import QPixmap
 
+_ACTIVE_WORKERS: set["_OCRWorker"] = set()
+
 
 class _OCRWorker(QThread):
     finished = Signal(str)
@@ -42,12 +44,41 @@ def start_ocr(
     on_error: Optional[Callable[[str], None]] = None,
     lang: str = "eng",
 ) -> QThread:
+    # Keep a strong reference to the worker until it has emitted finished/error.
     worker = _OCRWorker(pixmap, lang=lang)
-    worker.finished.connect(on_finished)
+    _ACTIVE_WORKERS.add(worker)
+
+    def _finalize():
+        _ACTIVE_WORKERS.discard(worker)
+        # Schedule object deletion in Qt event loop after thread finished.
+        worker.deleteLater()
+
+    def _wrapped_finished(text: str):
+        try:
+            on_finished(text)
+        finally:
+            _finalize()
+
     if on_error:
-        worker.error.connect(on_error)
-    else:  # default: forward error as finished message prefixed
-        worker.error.connect(lambda msg: on_finished(f"Error: {msg}"))
+
+        def _wrapped_error(msg: str):
+            try:
+                on_error(msg)
+            finally:
+                _finalize()
+
+        worker.error.connect(_wrapped_error)
+    else:
+
+        def _wrapped_error_forward(msg: str):
+            try:
+                on_finished(f"Error: {msg}")
+            finally:
+                _finalize()
+
+        worker.error.connect(_wrapped_error_forward)
+
+    worker.finished.connect(_wrapped_finished)
     worker.start()
     return worker
 

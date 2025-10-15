@@ -26,6 +26,18 @@ def ocr_clipboard() -> None:
     if not pixmap:
         msg = "No image found in clipboard for OCR"
         facade.qt_app.terminal_state.output_text = msg
+        # Attempt desktop notification mirroring success path UX
+        try:  # pragma: no cover (depends on notify-send availability)
+            from subprocess import DEVNULL, Popen  # local import
+
+            Popen(
+                ["notify-send", "Assistant OCR", msg],
+                start_new_session=True,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
+        except Exception:
+            pass
         return
 
     settings = facade.app_state.settings_VS
