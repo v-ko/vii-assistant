@@ -264,9 +264,34 @@ class ViiProjectManager:
         self._session_manager = self.create_session()
         meta = self._session_manager.metadata
         try:
-            facade.qt_app.terminal_state.output_text = (
+            # --- Reset UI + context state ---
+            app_state = facade.app_state
+            terminal_state = facade.qt_app.terminal_state
+
+            # Clear context repository and propagate deletions to view + client channel
+            try:
+                deletions = self.context_manager.clear()
+                if deletions:
+                    for ch in deletions:
+                        # Apply to in-memory view + broadcast to client channel
+                        app_state.context_VS.apply_change(ch)
+                        facade.client_updates.push(ch)
+            except Exception as e:  # pragma: no cover - defensive
+                print(f"Failed to clear context on new session: {e}")
+
+            # Clear info/status messages
+            try:
+                settings_state.clear_info_messages()
+            except Exception:
+                pass
+
+            # Reset terminal output
+            terminal_state.output_text = (
                 f"New session directory ready: {meta.session_id}\n{meta.path}"
             )
+            # Reset request/progress & disallow context edits until session started
+            settings_state.request_in_progress = False
+            settings_state.context_updates_allowed = False
         except Exception:
             pass
         settings_state.session_state = "new-session"

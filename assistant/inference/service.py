@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class ModelConfig:
-    model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    model_id: str = "Qwen/Qwen3-VL-4B-Instruct"  # "Qwen/Qwen2.5-VL-3B-Instruct"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     precision: Optional[str] = None  # one of: bf16, fp16, fp32, or None for auto
     default_generation_params: Dict[str, Any] | None = None

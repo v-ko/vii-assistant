@@ -164,5 +164,18 @@ class ContextManager:
     def remove(self, item: ContextItem) -> Change:
         return self._repo.remove_one(item)
 
+    def clear(self) -> list[Change]:
+        """Remove all context items and return the list of deletion Change objects.
+
+        The caller is responsible for propagating these deletions to any view state
+        or downstream consumers (e.g., pushing over channels). This keeps the
+        manager ignorant of UI concerns.
+        """
+        changes: list[Change] = []
+        # Collect current items (already sorted for deterministic removal order)
+        for item in self._sorted_items():
+            changes.append(self._repo.remove_one(item))
+        return changes
+
 
 # Note: serialization/deserialization helpers removed; prefer fusion.libs.entity API directly

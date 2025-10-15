@@ -18,7 +18,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fusion import get_logger
 from fusion.libs.entity.change import Change
 from fusion.loop import AsyncioMainLoop, set_main_loop
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import (
+    AutoProcessor,
+    Qwen2_5_VLForConditionalGeneration,
+    Qwen3VLForConditionalGeneration,
+)
 
 from assistant.inference.interface import (
     AppendItemContentTextMessage,
@@ -55,8 +59,12 @@ async def lifespan(app: FastAPI):
         return torch.float32
 
     dtype = _select_dtype(device, model_config.precision)
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_config.model_id, torch_dtype=dtype
+    model = Qwen3VLForConditionalGeneration.from_pretrained(  # Qwen2_5_VLForConditionalGeneration
+        model_config.model_id,
+        dtype=dtype,
+        #     dtype=torch.bfloat16,
+        #     attn_implementation="flash_attention_2",
+        #     device_map="auto",
     )
     _to = getattr(model, "to")
     _to(device)
