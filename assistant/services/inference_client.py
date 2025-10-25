@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -158,6 +159,11 @@ class InferenceClient:
         self._connection_established = True
         self._last_error_message = None
         self._post_message(f"Connected to inference websocket at {self._url}")
+
+        # Send all existing context items to backend on connect
+        for item in facade.context_manager.items_sorted():
+            change = Change(new_state=item)
+            self._on_client_change(change)
 
     def _handle_connection_closed(self) -> None:
         if not self._connection_established:

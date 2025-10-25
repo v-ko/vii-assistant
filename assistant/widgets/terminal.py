@@ -70,6 +70,7 @@ class TerminalWindow(QWidget):
         # Create a container widget to hold the UI; this widget will be
         # animated.
         self.container = QWidget(self)
+        self.container.setObjectName("terminalWindowContainer")
         container_layout = QHBoxLayout(self.container)
         container_layout.setContentsMargins(10, 10, 10, 10)
 
@@ -86,7 +87,7 @@ class TerminalWindow(QWidget):
         # Container styling (window itself is transparent)
         self.container.setStyleSheet(
             """
-            QWidget {
+            #terminalWindowContainer {
                 background-color: #2d2d2d;
                 border: 1px solid #444;
                 border-radius: 5px;

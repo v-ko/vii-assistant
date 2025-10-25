@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -248,6 +249,81 @@ class _ImageItemWidget(_BaseItemWidget):
         super().leaveEvent(event)
 
 
+class _SystemPromptItemWidget(_BaseItemWidget):
+    """Collapsible widget (expander/accordion) for displaying system prompt."""
+
+    def __init__(self, state: ContextItemViewState):
+        super().__init__(state)
+
+        # Clickable header with toggle button and label
+        self._header = QWidget()
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header.mousePressEvent = lambda event: self._toggle_collapsed()
+        header_layout = QHBoxLayout(self._header)
+        header_layout.setContentsMargins(2, 2, 2, 2)
+        header_layout.setSpacing(4)
+
+        self._toggle_btn = QToolButton()
+        self._toggle_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self._toggle_btn.setStyleSheet(
+            "QToolButton { border: none; background: transparent; }"
+        )
+        self._toggle_btn.setFixedSize(16, 16)
+        header_layout.addWidget(self._toggle_btn)
+
+        title_label = QLabel("System Prompt")
+        title_label.setStyleSheet(
+            "QLabel { color: #888; font-weight: bold; font-size: 11px; }"
+        )
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+
+        self._layout.addWidget(self._header)
+
+        # Collapsible content
+        self._content = QLabel()
+        self._content.setWordWrap(True)
+        self._content.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._content.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._content.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self._content.setStyleSheet(
+            "QLabel { color: #aaa; background-color: #1a1a1a; padding: 6px; "
+            "border-left: 2px solid #555; font-size: 11px; }"
+        )
+        self._content.setVisible(False)  # Start collapsed
+        self._content.setMaximumHeight(0)  # Ensure it takes no space when hidden
+        self._layout.addWidget(self._content)
+
+        self._state.text_changed.connect(self._update_text)
+        self._update_text(self._state.text)
+
+    def _toggle_collapsed(self):
+        is_visible = self._content.isVisible()
+        new_visible = not is_visible
+
+        self._content.setVisible(new_visible)
+        # Set max height to control space usage
+        if new_visible:
+            self._content.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+        else:
+            self._content.setMaximumHeight(0)
+
+        self._toggle_btn.setArrowType(
+            Qt.ArrowType.DownArrow if new_visible else Qt.ArrowType.RightArrow
+        )
+        self._notify_size_change()
+
+    def _update_text(self, text: str) -> None:
+        self._content.setText(text.strip() if text else "(no system prompt)")
+        if self._content.isVisible():
+            self._notify_size_change()
+
+
 class ContextViewerWidget(QWidget):
     message_submitted = Signal(str)
 
@@ -336,8 +412,11 @@ class ContextViewerWidget(QWidget):
         self._list.setUpdatesEnabled(True)
         self._update_all_item_sizes()
 
-    def _widget_for_state(self, state: ContextItemViewState) -> QWidget:
+    def _widget_for_state(self, state: ContextItemViewState) -> _BaseItemWidget:
         kind = state.content_kind
+        origin = state.origin
+        if origin == "system":
+            return _SystemPromptItemWidget(state)
         if kind == ContentType.IMAGE.value:
             return _ImageItemWidget(state, self._preview_manager)
         if kind == ContentType.TOOL_CALL.value:

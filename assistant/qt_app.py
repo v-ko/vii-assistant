@@ -27,55 +27,56 @@ class AssistantQtApp(QApplication):
         # Using wildcard for universal application of disabled states
         self.setStyleSheet(
             """
-            /* Universal disabled state for all input widgets */
-            *:disabled {
+            QWidget:disabled {
                 background-color: #1a1a1a;
                 color: #555;
+                border-color: #333;
             }
 
             QPushButton {
-                background-color: #444;
                 border: 1px solid #666;
                 border-radius: 4px;
                 padding: 4px 10px;
-                color: #f0f0f0;
                 font-weight: 500;
                 min-height: 26px;
             }
-            QPushButton:hover {
+            QPushButton:enabled {
+                background-color: #444;
+                color: #f0f0f0;
+            }
+            QPushButton:enabled:hover {
                 background-color: #515151;
                 border-color: #7a7a7a;
             }
-            QPushButton:pressed {
+            QPushButton:enabled:pressed {
                 background-color: #3a3a3a;
                 border-color: #555;
                 padding-top: 5px;
                 padding-bottom: 3px;
             }
-            QPushButton:disabled {
-                border-color: #333;
-            }
 
             QComboBox {
-                background-color: #3a3a3a;
                 border: 1px solid #555;
                 border-radius: 4px;
                 padding: 4px 8px;
+            }
+            QComboBox:enabled {
+                background-color: #3a3a3a;
                 color: #e0e0e0;
             }
-            QComboBox:hover {
+            QComboBox:enabled:hover {
                 background-color: #444;
-            }
-            QComboBox:disabled {
-                background-color: #252525;
             }
 
             QPlainTextEdit {
-                background-color: #1f1f1f;
                 border: 1px solid #555;
                 border-radius: 4px;
                 padding: 6px;
                 font-family: 'Fira Code', monospace;
+            }
+            QPlainTextEdit:enabled {
+                background-color: #1f1f1f;
+                color: #f0f0f0;
             }
         """
         )  # Initialize components

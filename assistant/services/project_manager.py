@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from assistant.facade import facade
-from assistant.inference.context import ContextManager
+from assistant.inference.context import ContextItem, ContextManager
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.services.inference_client import InferenceClient
 
@@ -230,6 +230,9 @@ class ViiProjectManager:
         if self._session_manager is not None:
             self._session_manager.start_recording(config or None)
 
+        # Set session state to "started" before adding context items
+        settings_state.session_state = "started"
+
         # Ensure inference client
         if self._inference_client is None:
             ws_url = INFERENCE_WS_URL
@@ -238,6 +241,21 @@ class ViiProjectManager:
             )
             self._inference_client = InferenceClient(url=ws_url)
             self._inference_client.start()
+
+        # Add system prompt as first context item (after client starts)
+        # The client subscribes to client_updates channel, so this will be sent
+        # when connection is established
+        system_prompt_text = self.current_system_prompt()
+        if system_prompt_text and system_prompt_text.strip():
+            system_item = ContextItem()
+            # Use negative position to ensure it stays first
+            system_item.position = 0
+            system_item.size = 0
+            system_item.content = {"text": system_prompt_text.strip()}
+            system_item.metadata = {"origin": "system"}
+            # Create via context controller to broadcast properly
+            facade.context_controller.create(system_item)
+
         if not self._running:
             self._running = True
             try:
@@ -250,7 +268,6 @@ class ViiProjectManager:
                 else ""
             )
             print(f"Project manager started automation (session + inference){preview}")
-        settings_state.session_state = "started"
         return self._session_manager
 
     def pause_session(self, *, new_state: str = "paused") -> None:
