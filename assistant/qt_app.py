@@ -67,9 +67,8 @@ class AssistantQtApp(QApplication):
         self.terminal_state = TerminalViewState(self.app_state)
         self.terminal_window = TerminalWindow(self.terminal_state)
 
-        # Defer overlay full-screen setup until screen selection applied by facade
-        self.overlay = ModelVisionOverlay()
-        self.overlay.hide()  # hide until screen assigned
+        # Overlay will be created after screen is configured
+        self.overlay = None
 
         # Set up the tray icon
         self.setup_tray_icon()
@@ -103,24 +102,39 @@ class AssistantQtApp(QApplication):
         # Show the tray icon
         self.tray_icon.show()
 
-    # Helper to show overlay after screen configured
-    def show_overlay_on_screen(self, screen):
-        try:
-            if screen is not None:
-                self.overlay.setScreen(screen)
-            self.overlay._setup_full_screen()
+    def initialize_overlay(self, screen):
+        """Initialize overlay with the configured screen."""
+        if self.overlay is not None:
+            log.warning("Overlay already initialized")
+            return
+        log.info(f"Initializing overlay on screen: {screen.name()}")
+        self.overlay = ModelVisionOverlay(screen)
+        self.overlay.hide()
+
+    def update_overlay_screen(self, screen):
+        """Update overlay to a different screen."""
+        if self.overlay is None:
+            log.error("Cannot update overlay screen - overlay not initialized")
+            return
+        log.info(f"Updating overlay to screen: {screen.name()}")
+        self.overlay.setScreen(screen)
+        self.overlay._setup_full_screen()
+        # Preserve visibility state
+        if self.overlay.isVisible():
             self.overlay.show()
-        except Exception as exc:  # noqa: BLE001
-            print(f"Failed to show overlay: {exc}")
 
     # --- Screen change binding (moved from facade) ------------------
-    def bind_screen_overlay(self):
-        """Connect settings screen_changed signal to overlay update once."""
+    def bind_screen_overlay(self, initial_screen):
+        """Initialize overlay with screen and connect to screen changes."""
+        # Initialize overlay with the configured screen
+        self.initialize_overlay(initial_screen)
+
+        # Connect to future screen changes
         try:
             settings_state = self.terminal_state.app_state.settings_VS
         except Exception:
             return
-        # Avoid duplicate connections: Qt doesn't give an easy handle, so we use an attr flag
+        # Avoid duplicate connections
         if getattr(self, "_overlay_bound", False):
             return
         settings_state.screen_changed.connect(self._on_screen_changed)
@@ -134,4 +148,4 @@ class AssistantQtApp(QApplication):
         screen = facade.get_screen_by_name(screen_name)
         if screen is None:
             raise RuntimeError(f"Selected screen '{screen_name}' not found")
-        self.show_overlay_on_screen(screen)
+        self.update_overlay_screen(screen)

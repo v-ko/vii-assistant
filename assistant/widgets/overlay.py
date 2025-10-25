@@ -1,5 +1,5 @@
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygon
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygon, QScreen
 from PySide6.QtWidgets import QWidget
 
 from assistant.util import Shape, get_logger
@@ -17,7 +17,7 @@ class ModelVisionOverlay(QWidget):
     Currently supports 'rect' and 'point' shape types.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, screen: QScreen, parent=None):
         super().__init__(
             parent,
             Qt.WindowType.FramelessWindowHint
@@ -39,36 +39,36 @@ class ModelVisionOverlay(QWidget):
         self.shape_width = 2
         self.triangle_size = 40  # Size of triangle cursor for points
 
-        # Set up the widget to cover the entire screen
+        # Set the screen and set up full screen
+        self.setScreen(screen)
         self._setup_full_screen()
 
     def _setup_full_screen(self):
         """Set up the widget to cover the entire screen."""
         screen = self.screen()
-        if screen:
-            # Use the full screen geometry, not just the available area
-            geometry = screen.geometry()
-            print(f"Setting overlay geometry to: {geometry}")
-            self.setGeometry(geometry)
+        # Use the full screen geometry, not just the available area
+        geometry = screen.geometry()
+        log.info(f"Setting overlay geometry to: {geometry} on screen: {screen.name()}")
+        self.setGeometry(geometry)
 
-            # Reset window flags to ensure proper behavior
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.X11BypassWindowManagerHint
-            )
+        # Reset window flags to ensure proper behavior
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.X11BypassWindowManagerHint
+        )
 
-            # Make the widget transparent to user events (click-through)
-            # This is critical for allowing clicks to pass through
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Make the widget transparent to user events (click-through)
+        # This is critical for allowing clicks to pass through
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-            # Show in full screen mode
-            self.showFullScreen()
+        # Show in full screen mode
+        self.showFullScreen()
 
-            # Ensure the attribute is still set after showing
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Ensure the attribute is still set after showing
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-            print("Overlay should now be transparent for mouse events")
+        log.info("Overlay configured for click-through transparency")
 
     def set_shapes(self, shapes: list[Shape]):
         """
@@ -105,7 +105,7 @@ class ModelVisionOverlay(QWidget):
             geometry = shape.get("geometry", None)
 
             if not geometry:
-                print("Invalid shape geometry, skipping:", shape)
+                log.warning(f"Invalid shape geometry, skipping: {shape}")
                 continue
 
             # Set up pen with color from shape (or default) and hardcoded width
@@ -113,25 +113,26 @@ class ModelVisionOverlay(QWidget):
             pen.setWidth(self.shape_width)
             painter.setPen(pen)
 
-            # Set up brush for filled shapes
-            brush = QBrush(QColor(shape.get("color", self.default_color)))
-            painter.setBrush(brush)
-
             # Draw the shape based on its type
             if shape_type == "rect":
                 if isinstance(geometry, (list, tuple)) and len(geometry) == 4:
                     x, y, width, height = geometry
+                    # Use NoBrush to make rectangles transparent (outline only)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(x, y, width, height)
 
             elif shape_type == "point":
                 if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
                     x, y = geometry[0], geometry[1]
-                    print("Drawing point at:", x, y)
-                    print("In self rect:", self.rect())
+                    log.debug(f"Drawing point at: {x}, {y}")
 
                     # Draw a mouse cursor-like triangle pointing to the point
                     # Make it inclined and sharp (less than 60 degrees)
                     size = self.triangle_size
+
+                    # Set up filled brush for the point triangle
+                    brush = QBrush(QColor(shape.get("color", self.default_color)))
+                    painter.setBrush(brush)
 
                     # Create an inclined triangle pointing bottom-right
                     triangle = QPolygon(

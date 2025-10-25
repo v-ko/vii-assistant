@@ -121,8 +121,15 @@ class Facade:
         # Bind config persistence AFTER settings initialized so initial apply_config does not trigger writes
         self._config_persistence = ConfigPersistenceService()
         self._config_persistence.bind(self.config, settings_state)
-        # Attach facade to automation service if already injected
-        self._qt_app.bind_screen_overlay()
+
+        # Initialize overlay with configured screen and bind to screen changes
+        screen_name = settings_state.screen
+        if not screen_name:
+            raise RuntimeError("No screen configured in settings")
+        screen = self.get_screen_by_name(screen_name)
+        if screen is None:
+            raise RuntimeError(f"Configured screen '{screen_name}' not found")
+        self._qt_app.bind_screen_overlay(screen)
 
     def get_screen_by_name(self, name: str) -> Optional[QScreen]:
         """Get a QScreen object by its name."""
