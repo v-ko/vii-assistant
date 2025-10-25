@@ -117,8 +117,11 @@ class ModelVisionOverlay(QWidget):
             if shape_type == "rect":
                 if isinstance(geometry, (list, tuple)) and len(geometry) == 4:
                     x, y, width, height = geometry
-                    # Use NoBrush to make rectangles transparent (outline only)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    # Set up filled brush for the rectangle with transparency
+                    fill_color = QColor(shape.get("color", self.default_color))
+                    fill_color.setAlpha(50)  # Make fill transparent
+                    brush = QBrush(fill_color)
+                    painter.setBrush(brush)
                     painter.drawRect(x, y, width, height)
 
             elif shape_type == "point":
@@ -130,8 +133,10 @@ class ModelVisionOverlay(QWidget):
                     # Make it inclined and sharp (less than 60 degrees)
                     size = self.triangle_size
 
-                    # Set up filled brush for the point triangle
-                    brush = QBrush(QColor(shape.get("color", self.default_color)))
+                    # Set up filled brush for the point triangle with transparency
+                    fill_color = QColor(shape.get("color", self.default_color))
+                    fill_color.setAlpha(50)  # Make fill transparent
+                    brush = QBrush(fill_color)
                     painter.setBrush(brush)
 
                     # Create an inclined triangle pointing bottom-right
