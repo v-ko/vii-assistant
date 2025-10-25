@@ -24,6 +24,7 @@ from transformers import (
     Qwen3VLForConditionalGeneration,
 )
 
+from assistant.inference.context import ContextItem
 from assistant.inference.interface import (
     AppendItemContentTextMessage,
     ChangeMessage,
@@ -141,8 +142,18 @@ async def context_ws(websocket: WebSocket) -> None:
                     log.warning(f"WebSocket disconnected code={code} reason={reason}")
                 break
             except Exception as exc:  # noqa: BLE001
-                log.error(f"Error receiving WS message: {exc}", exc_info=True)
-                break
+                # Log the raw text that failed to parse
+                try:
+                    raw_text = await websocket.receive_text()
+                    log.error(
+                        f"Error receiving WS message: {exc}\nRaw message: {raw_text!r}",
+                        exc_info=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.error(f"Error receiving WS message: {exc}", exc_info=True)
+                # Send error to client and continue (don't break the connection)
+                await _safe_send_json({"error": f"receive_json: {exc}"})
+                continue
             # Accept both wrapped protocol and legacy raw Change safe-delta
             try:
                 inbound = parse_message(raw)
@@ -152,7 +163,9 @@ async def context_ws(websocket: WebSocket) -> None:
                     inbound["payload"]
                 )  # payload guaranteed dict
             except Exception as exc:  # noqa: BLE001
-                log.error(f"Invalid message wrapper: {exc}", exc_info=True)
+                log.error(
+                    f"Invalid message wrapper: {exc}\nRaw: {raw!r}", exc_info=True
+                )
                 await _safe_send_json({"error": str(exc)})
                 continue
 
@@ -160,7 +173,23 @@ async def context_ws(websocket: WebSocket) -> None:
                 repo_change = await service.context.apply_change(change)
                 service.client_updates.push(repo_change)
             except Exception as exc:  # noqa: BLE001
-                log.error(f"Failed to apply change: {exc}", exc_info=True)
+                log.error(
+                    f"Failed to apply change: {exc}\nChange: {change!r}", exc_info=True
+                )
+                # Create an error context item to show the error to the user
+                error_item = ContextItem()
+                error_item.position = service.context.next_position()
+                error_item.size = 0
+                error_item.content = {
+                    "text": (
+                        f"Error: {exc}\n\nFailed to apply change:"
+                        f" {change.change_type.name}"
+                    )
+                }
+                error_item.metadata = {"origin": "system_error"}
+                error_change = service.context.insert(error_item)
+                await _safe_send_json(wrap_change(error_change))
+                # Also send error response
                 await _safe_send_json({"error": f"apply_change: {exc}"})
                 continue
     finally:

@@ -1,6 +1,10 @@
+import os
 import signal
 import sys
 from importlib.metadata import PackageNotFoundError, version
+
+# Set logging level before importing anything else (especially fusion)
+os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
 

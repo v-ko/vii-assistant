@@ -16,29 +16,35 @@ from assistant.util import Shape
 log = get_logger(__name__)
 
 
-def capture(
-    x: int, y: int, width: int, height: int
+def locate(
+    x1: int, y1: int, x2: int, y2: int
 ) -> Rectangle:  # placeholder for future screenshot logic
-    return Rectangle(x, y, width, height)
+    """locate function expecting xyxy format (x1, y1, x2, y2) like models output.
+
+    Converts to xywh format for Rectangle.
+    """
+    width = x2 - x1
+    height = y2 - y1
+    return Rectangle(x1, y1, width, height)
 
 
 _SEG_LINE = re.compile(
     r"^\s*(?:"  # start line, optional assignment prefix
     r"(output\.[A-Za-z0-9_.]+)\s*=\s*"  # group(1) lhs if present
-    r")?(Rectangle|capture)\s*\((?P<args>[^)]*)\)\s*$"
+    r")?(Rectangle|locate)\s*\((?P<args>[^)]*)\)\s*$"
 )
 
 
 class SegmentOutput(TypedDict, total=False):
-    bbox: Rectangle | None
+    bbox: list[Rectangle]
     # image may eventually be a PIL Image; for now we also allow a Rectangle region
-    image: Rectangle | Image.Image | None
+    image: list[Rectangle] | list[Image.Image]
 
 
 class HybridSegmentService:
-    """Parses last assistant text output for Rectangle/capture lines and updates overlay.
+    """Parses last assistant text output for Rectangle/locate lines and updates overlay.
 
-    Coordinate conversion: assumes emitted Rectangle/capture coordinates are in Qwen 0..1000 grid.
+    Coordinate conversion: assumes emitted Rectangle/locate coordinates are in Qwen 0..1000 grid.
     """
 
     def __init__(self) -> None:
@@ -52,26 +58,32 @@ class HybridSegmentService:
             return
         if not last_ai_text:
             return
+        log.info(f"Processing AI text for segments: {last_ai_text[:200]}...")
         output_model = self._parse_output(last_ai_text)
         rects: list[Rectangle] = []
-        if output_model.get("bbox"):
-            rects.append(output_model["bbox"])  # type: ignore[index]
-        # For now image field stores rect too until actual screenshot integrated
-        img_val = output_model.get("image")
-        if isinstance(
-            img_val, Rectangle
-        ):  # treat image region same as bbox for overlay
-            rects.append(img_val)
+        # Collect all bboxes
+        bbox_list = output_model.get("bbox", [])
+        if bbox_list:
+            rects.extend(bbox_list)
+        # Collect all image regions (treat as rectangles for now)
+        img_list = output_model.get("image", [])
+        for img_val in img_list:
+            if isinstance(img_val, Rectangle):
+                rects.append(img_val)
+        log.info(f"Extracted {len(rects)} rectangles from AI output")
         if not rects:
             # Clear overlay on no shapes
+            log.info("No rectangles found, clearing overlay")
             try:
                 facade.qt_app.overlay.set_shapes([])
             except Exception:
                 pass
             return
         shapes = self._convert_to_shapes(rects)
+        log.info(f"Converted {len(rects)} rectangles to {len(shapes)} shapes")
         try:
             facade.qt_app.overlay.set_shapes(shapes)
+            log.info("Successfully set overlay shapes")
         except Exception as e:
             log.error(f"Failed to set overlay shapes: {e}")
 
@@ -92,7 +104,7 @@ class HybridSegmentService:
         return None
 
     def _parse_output(self, text: str) -> SegmentOutput:
-        out: SegmentOutput = {"bbox": None, "image": None}
+        out: SegmentOutput = {"bbox": [], "image": []}
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
@@ -103,6 +115,7 @@ class HybridSegmentService:
             lhs = m.group(1)  # may be None for bare call
             tool = m.group(2)
             args_raw = m.group("args")
+            log.debug(f"Parsing segment line: lhs={lhs}, tool={tool}, args={args_raw}")
             parts = [p.strip() for p in args_raw.split(",") if p.strip()]
             if len(parts) != 4:
                 log.error(
@@ -112,7 +125,7 @@ class HybridSegmentService:
                 )
                 continue
             try:
-                x, y, w, h = [int(p) for p in parts]
+                a, b, c, d = [int(p) for p in parts]
             except ValueError:
                 log.error(
                     "Segment parse error (non-integer args)"
@@ -120,21 +133,37 @@ class HybridSegmentService:
                     + f" tool={tool} parts={parts}"
                 )
                 continue
-            rect = Rectangle(x, y, w, h) if tool == "Rectangle" else capture(x, y, w, h)
+            # Rectangle expects xywh, locate expects xyxy
+            if tool == "Rectangle":
+                rect = Rectangle(a, b, c, d)
+                log.info(
+                    f"Parsed Rectangle({a}, {b}, {c}, {d}) [xywh] ->"
+                    f" Rectangle{rect.as_tuple()}"
+                )
+            else:  # locate
+                rect = locate(a, b, c, d)
+                log.info(
+                    f"Parsed locate({a}, {b}, {c}, {d}) [xyxy] ->"
+                    f" Rectangle{rect.as_tuple()} [xywh]"
+                )
             if lhs:
                 if lhs not in ("output.bbox", "output.image"):
                     log.error(f"Segment parse ignore (invalid lhs root): {lhs}")
                     continue
                 if lhs.endswith("bbox"):
-                    out["bbox"] = rect
+                    out["bbox"].append(rect)  # type: ignore[union-attr]
                 else:
-                    out["image"] = rect
+                    out["image"].append(rect)  # type: ignore[union-attr]
             else:
-                # Bare invocation policy
-                if tool == "Rectangle" and out.get("bbox") is None:
-                    out["bbox"] = rect
-                elif tool == "capture" and out.get("image") is None:
-                    out["image"] = rect
+                # Bare invocation policy - collect all locates/rectangles
+                if tool == "Rectangle":
+                    out["bbox"].append(rect)  # type: ignore[union-attr]
+                elif tool == "locate":
+                    out["image"].append(rect)  # type: ignore[union-attr]
+        log.info(
+            f"Parse complete: bbox count={len(out.get('bbox', []))}, image"
+            f" count={len(out.get('image', []))}"
+        )
         return out
 
     def _convert_to_shapes(self, rects: list[Rectangle]) -> list[Shape]:
@@ -144,10 +173,12 @@ class HybridSegmentService:
         except Exception:
             screen = QGuiApplication.primaryScreen()
         if not screen:
+            log.error("No screen available for shape conversion")
             return []
         geo = screen.geometry()
         orig_w = int(geo.width())
         orig_h = int(geo.height())
+        log.info(f"Screen geometry: {orig_w}x{orig_h}")
         # Use explicit image_size metadata from the last image context item if available.
         input_w = orig_w
         input_h = orig_h
@@ -160,10 +191,13 @@ class HybridSegmentService:
                     if isinstance(iw, int) and isinstance(ih, int):
                         input_w = iw
                         input_h = ih
+                        log.info(f"Found image size in metadata: {input_w}x{input_h}")
                         break
 
         if input_w == orig_w and input_h == orig_h:
             # Fallback derive resized dims to mimic model policy for scaling
+            log.info("No image metadata found, deriving resized dimensions")
+
             class _DummyProcessor:
                 patch_size = 28
                 min_pixels = 4 * patch_size * patch_size
@@ -173,6 +207,7 @@ class HybridSegmentService:
             _, meta = resize_like_preprocessor(synthetic, _DummyProcessor())
             input_w = meta["width"]
             input_h = meta["height"]
+            log.info(f"Derived input dimensions: {input_w}x{input_h}")
         shapes: list[Shape] = []
 
         for r in rects:
@@ -182,6 +217,10 @@ class HybridSegmentService:
             y1 = r.y()
             x2 = r.right()
             y2 = r.bottom()
+            log.info(
+                f"Processing rectangle: x1={x1}, y1={y1}, x2={x2}, y2={y2} (from Qwen"
+                " grid)"
+            )
             # Cast to int to satisfy typing contract (Rectangle may yield float via right()/bottom() in future changes)
             sx, sy, ex, ey = scale_qwen_bbox_xyxy(
                 (int(x1), int(y1), int(x2), int(y2)),
@@ -191,11 +230,13 @@ class HybridSegmentService:
                 orig_h=orig_h,
                 coords_are_qwen_grid=True,
             )
+            log.info(f"Scaled to screen: sx={sx}, sy={sy}, ex={ex}, ey={ey}")
             w = max(0, ex - sx)
             h = max(0, ey - sy)
             # Use fusion Rectangle for final shape geometry
             final = Rectangle(sx, sy, w, h)
             gx, gy, gw, gh = final.as_tuple()
+            log.info(f"Final shape geometry: x={gx}, y={gy}, w={gw}, h={gh}")
             # Cast to int for Shape geometry contract
             rect_shape: Shape = {
                 "type": "rect",
@@ -206,4 +247,4 @@ class HybridSegmentService:
         return shapes
 
 
-__all__ = ["HybridSegmentService", "capture"]
+__all__ = ["HybridSegmentService", "locate"]

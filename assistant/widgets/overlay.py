@@ -100,7 +100,7 @@ class ModelVisionOverlay(QWidget):
         painter.drawRect(self.rect())
 
         # Draw each shape
-        for shape in self._shapes:
+        for idx, shape in enumerate(self._shapes):
             shape_type = shape.get("type", "")
             geometry = shape.get("geometry", None)
 
@@ -123,6 +123,10 @@ class ModelVisionOverlay(QWidget):
                     brush = QBrush(fill_color)
                     painter.setBrush(brush)
                     painter.drawRect(x, y, width, height)
+                else:
+                    log.error(
+                        f"Invalid rect geometry format for shape {idx}: {geometry}"
+                    )
 
             elif shape_type == "point":
                 if isinstance(geometry, (list, tuple)) and len(geometry) >= 2:
