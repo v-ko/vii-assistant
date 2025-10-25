@@ -1,6 +1,10 @@
+from base64 import b64encode
+from io import BytesIO
 from typing import TYPE_CHECKING, Optional
 from uuid import uuid4
 
+from fusion.platform.qt_widgets.utils import qpixmap_to_pil
+from PIL import Image
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -20,6 +24,7 @@ from assistant.actions import (
     start_session,
 )
 from assistant.facade import facade  # module-level singleton
+from assistant.image_ops import resize_like_preprocessor
 from assistant.inference.context import ContextItem
 from assistant.util import pixmap_to_base64
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
@@ -147,7 +152,7 @@ class TerminalWindow(QWidget):
             return
         pixmap = take_screenshot(screen)
         if pixmap is None:
-            print("Failed to capture screenshot for attachment.")
+            print("Failed to capture screenshot")
             return
         self._add_image_item(pixmap, "screenshot")
 
@@ -156,26 +161,35 @@ class TerminalWindow(QWidget):
             return
         pixmap = clipboard_image()
         if pixmap is None:
-            print("No image found in clipboard.")
+            print("No image in clipboard")
             return
         self._add_image_item(pixmap, "clipboard")
 
     def _add_image_item(self, pixmap, source: str) -> None:
         if not self._facade:
             return
+
         controller = self._facade.context_controller
-        encoded = pixmap_to_base64(pixmap)
+        pil = qpixmap_to_pil(pixmap)
+        processed_img, meta = resize_like_preprocessor(pil)
+
+        buf = BytesIO()
+        processed_img.save(buf, format="PNG")
+        encoded = b64encode(buf.getvalue()).decode("ascii")
+
         if not encoded:
-            print("Failed to encode captured image.")
-            return
-        position = controller.next_position()
+            raise RuntimeError("Image encoding failed")
+
         item = ContextItem()
         item.id = uuid4().hex
-        item.position = position
+        item.position = controller.next_position()
         item.size = pixmap.width() * pixmap.height()
         item.content = {"image": encoded}
+        item.metadata = {
+            "origin": source,
+            "image_size": {"width": meta["width"], "height": meta["height"]},
+        }
         item.request = None
-        item.metadata = {"origin": "user", "source": source}
         controller.create(item)
 
     def setup_shortcuts(self):

@@ -11,12 +11,17 @@ import io
 import json
 from dataclasses import field
 from enum import StrEnum
-from typing import Any, NamedTuple, Optional, cast
+from typing import Any, Generator, NamedTuple, Optional, TypedDict, cast
 
 from fusion.libs.entity import Entity, entity_type
 from fusion.libs.entity.change import Change
 from fusion.storage.in_memory_repository import InMemoryRepository
 from PIL import Image
+
+
+class ContextItemMetadata(TypedDict, total=False):
+    origin: Optional[str]
+    image_size: Optional[dict[str, int]]  # width, height
 
 
 @entity_type
@@ -25,20 +30,21 @@ class ContextItem(Entity):
     size: int = 0
     content: dict[str, Any] = field(default_factory=dict)
     request: Optional[dict[str, Any]] = None
-    metadata: Optional[dict[str, Any]] = None
+    metadata: ContextItemMetadata = field(default_factory=ContextItemMetadata)
 
-    def content_kind(self) -> "ContentKind":
-        keys = {k for k in ("tool_call", "image", "text") if k in self.content}
-        if len(keys) != 1:
-            raise ValueError(
-                "ContextItem.content must contain exactly one of 'text', 'image',"
-                f" 'tool_call'; got {sorted(keys)}"
-            )
-        if "tool_call" in keys:
-            return ContentKind.TOOL_CALL
-        if "image" in keys:
-            return ContentKind.IMAGE
-        return ContentKind.TEXT
+    def content_type(self) -> "ContentType":
+        if not self.content:
+            raise ValueError("ContextItem has empty content")
+
+        if "image" in self.content:
+            return ContentType.IMAGE
+        if "tool_call" in self.content:
+            return ContentType.TOOL_CALL
+        if "text" in self.content:
+            return ContentType.TEXT
+        raise ValueError(
+            f"ContextItem has unknown content type for content keys: {self.content.keys()})"
+        )
 
     def resolve_image(self) -> Image.Image:
         b64 = self.content.get("image")
@@ -53,7 +59,7 @@ class MessageBatch(NamedTuple):
     images: list[Image.Image]
 
 
-class ContentKind(StrEnum):
+class ContentType(StrEnum):
     TEXT = "text"
     IMAGE = "image"
     TOOL_CALL = "tool_call"
@@ -65,34 +71,54 @@ CONTEXT_POSITION_STEP = 100
 class ContextManager:
     def __init__(self) -> None:
         self._repo = InMemoryRepository(types_for_cached_type_filtering=(ContextItem,))
+        # Cache of sorted item ids (position, id) for fast listing
+        self._sorted_ids: list[str] = []
+        # No dirty flag; list rebuilt eagerly on mutations that can affect ordering
 
-    def _sorted_items(self) -> list[ContextItem]:
+    # --- cache internals ---
+    def _rebuild_sorted_ids(self) -> None:
         items: list[ContextItem] = []
-        for entity in self._repo.find():
+        for entity in self._repo.find_cached(
+            type=ContextItem
+        ):  # avoid copy for sort source
             if isinstance(entity, ContextItem):
                 items.append(entity)
         items.sort(key=lambda item: (item.position, item.id))
-        return items
+        # Coerce id to str to keep cache homogenous (Entity.id may be tuple for composite keys)
+        self._sorted_ids = [str(item.id) for item in items]
 
-    def list_items(self) -> list[ContextItem]:
-        return [cast(ContextItem, item.copy()) for item in self._sorted_items()]
+    def _sorted_item_ids(self) -> list[str]:
+        if not self._sorted_ids:
+            self._rebuild_sorted_ids()
+        return self._sorted_ids
+
+    def items_sorted(self) -> Generator[ContextItem]:
+        for item_id in self._sorted_item_ids():
+            for entity in self._repo.find(id=item_id):
+                if isinstance(entity, ContextItem):
+                    yield cast(ContextItem, entity)
+        # return [cast(ContextItem, item.copy()) for item in self._sorted_items()]
+
+    def items_reversed(self) -> Generator[ContextItem]:
+        for item_id in reversed(self._sorted_item_ids()):
+            for entity in self._repo.find(id=item_id):
+                if isinstance(entity, ContextItem):
+                    yield cast(ContextItem, entity)
 
     def items_as_qwen_chat_messages(self) -> MessageBatch:
-        items = self._sorted_items()
         messages: list[dict[str, Any]] = []
         images: list[Image.Image] = []
         current: Optional[dict[str, Any]] = None
-
-        for item in items:
-            kind = item.content_kind()
+        for item in self.items_sorted():
+            kind = item.content_type()
             origin = (item.metadata or {}).get("origin")
             role = (
                 "assistant"
-                if origin == "assistant" or kind is ContentKind.TOOL_CALL
+                if origin == "assistant" or kind is ContentType.TOOL_CALL
                 else "user"
             )
 
-            if kind is ContentKind.TOOL_CALL:
+            if kind is ContentType.TOOL_CALL:
                 if current is not None:
                     messages.append(current)
                     current = None
@@ -115,10 +141,10 @@ class ContextManager:
                     messages.append(current)
                 current = {"role": role, "content": []}
 
-            if kind is ContentKind.TEXT:
+            if kind is ContentType.TEXT:
                 text = item.content.get("text", "")
                 current["content"].append({"type": "text", "text": str(text)})
-            elif kind is ContentKind.IMAGE:
+            elif kind is ContentType.IMAGE:
                 current["content"].append({"type": "image"})
                 images.append(item.resolve_image())
             else:
@@ -129,10 +155,16 @@ class ContextManager:
         return MessageBatch(messages=messages, images=images)
 
     def next_position(self) -> int:
-        items = self._sorted_items()
-        if not items:
+        # Use cache to find last item's position without copying all
+        ids = self._sorted_item_ids()
+        if not ids:
             return 0
-        return items[-1].position + CONTEXT_POSITION_STEP
+        # retrieve last entity (already cached) and read position
+        last_id = ids[-1]
+        for entity in self._repo.find_cached(id=last_id):  # direct cached entity
+            if isinstance(entity, ContextItem):
+                return entity.position + CONTEXT_POSITION_STEP
+        return 0
 
     # --- CRUD helpers ---
     async def apply_change(self, change: Change) -> Change:
@@ -142,27 +174,46 @@ class ContextManager:
             if not isinstance(new, ContextItem):
                 raise TypeError("Expected ContextItem for CREATE")
             repo_change = self._repo.insert_one(new)
+            self._rebuild_sorted_ids()
         elif change.is_delete():
             old = change.old_state
             if not isinstance(old, ContextItem):
                 raise TypeError("Expected ContextItem for DELETE")
             repo_change = self._repo.remove_one(old)
+            # Deletion removes an id; reflect removal without full rebuild if large list
+            try:
+                self._sorted_ids.remove(str(old.id))
+            except ValueError:
+                pass
         else:  # update
             new = change.new_state
             if not isinstance(new, ContextItem):
                 raise TypeError("Expected ContextItem for UPDATE")
             repo_change = self._repo.update_one(new)
+            # Update may change position => rebuild ordering
+            self._rebuild_sorted_ids()
         return repo_change
 
     # Server-side helpers to mutate context state
     def insert(self, item: ContextItem) -> Change:
-        return self._repo.insert_one(item)
+        change = self._repo.insert_one(item)
+        self._rebuild_sorted_ids()
+        return change
 
     def update(self, item: ContextItem) -> Change:
-        return self._repo.update_one(item)
+        change = self._repo.update_one(item)
+        self._rebuild_sorted_ids()
+        return change
 
     def remove(self, item: ContextItem) -> Change:
-        return self._repo.remove_one(item)
+        change = self._repo.remove_one(item)
+        try:
+            self._sorted_ids.remove(str(item.id))
+        except ValueError:
+            # If id not present (e.g. cache not initialized), fallback to rebuild
+            if self._sorted_ids:
+                pass
+        return change
 
     def clear(self) -> list[Change]:
         """Remove all context items and return the list of deletion Change objects.
@@ -173,9 +224,7 @@ class ContextManager:
         """
         changes: list[Change] = []
         # Collect current items (already sorted for deterministic removal order)
-        for item in self._sorted_items():
+        for item in self.items_sorted():
             changes.append(self._repo.remove_one(item))
+        self._sorted_ids = []  # emptied
         return changes
-
-
-# Note: serialization/deserialization helpers removed; prefer fusion.libs.entity API directly

@@ -111,7 +111,7 @@ async def context_ws(websocket: WebSocket) -> None:
             log.error(f"Failed to send WS message: {exc}", exc_info=True)
 
     # Send current state as a series of CREATE changes
-    for item in service.context.list_items():
+    for item in service.context.items_sorted():
         await _safe_send_json(wrap_change(Change.CREATE(item)))
 
     # Subscribe to inference updates and forward to websocket

@@ -6,7 +6,7 @@ from fusion.libs.entity.change import Change
 from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
 
-from assistant.inference.context import ContentKind, ContextItem
+from assistant.inference.context import ContentType, ContextItem
 
 
 def _summarize_request(item: ContextItem) -> str:
@@ -41,7 +41,7 @@ class ContextItemViewState(QObject):
         super().__init__(parent)
         self._item_id = item_id
         self._position = 0
-        self._content_kind = ContentKind.TEXT.value
+        self._content_kind = ContentType.TEXT.value
         self._text = ""
         self._image_b64 = ""
         self._tool_call = ""
@@ -130,7 +130,7 @@ class ContextItemViewState(QObject):
         self.origin_changed.emit(value)
 
     def apply_context_item(self, item: ContextItem) -> bool:
-        kind = item.content_kind().value
+        kind = item.content_type().value
         reposition = item.position != self._position
         previous_kind = self._content_kind
         origin = (item.metadata or {}).get("origin", "") if item.metadata else ""
@@ -140,12 +140,12 @@ class ContextItemViewState(QObject):
         self.origin = origin
         self.request_summary = _summarize_request(item)
 
-        if kind == ContentKind.TEXT.value:
+        if kind == ContentType.TEXT.value:
             text = str(item.content.get("text", ""))
             self.text = text
             self.image_b64 = ""
             self.tool_call = ""
-        elif kind == ContentKind.IMAGE.value:
+        elif kind == ContentType.IMAGE.value:
             image_b64 = item.content.get("image")
             self.image_b64 = image_b64 if isinstance(image_b64, str) else ""
             self.text = ""

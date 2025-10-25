@@ -142,11 +142,5 @@ async def main() -> None:
             pass
 
 
-"""No CLI parsing; adjust STREAM / WAIT_SECONDS / MAX_NEW_TOKENS / TEMPERATURE above."""
-
-
-"""helper only"""
-
-
 if __name__ == "__main__":
     asyncio.run(main())

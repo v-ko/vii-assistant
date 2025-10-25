@@ -196,11 +196,12 @@ def apply_inference_event(evt):
         else:
             return
         app_ctx_view.apply_change(repo_change)
+        facade.project_manager.hybrid_segment_service.handle_context_change()
     elif isinstance(evt, dict) and evt.get("type") == "AppendItemContentText":
         payload = evt["payload"]
         item_id = payload["item_id"]
         text = payload["text"]
-        for existing in ctx_mgr.list_items():  # TODO: optimize lookup
+        for existing in ctx_mgr.items_sorted():  # TODO: optimize lookup
             if str(existing.id) == str(item_id):
                 if not isinstance(existing.content, dict):
                     existing.content = {}
@@ -208,6 +209,7 @@ def apply_inference_event(evt):
                 existing.content["text"] = f"{prior}{text}"
                 repo_change = ctx_mgr.update(existing)
                 app_ctx_view.apply_change(repo_change)
+                facade.project_manager.hybrid_segment_service.handle_context_change()
                 break
     else:
         return

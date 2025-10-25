@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-
-from assistant.services import qwen25_preprocess  # kept for potential future use
+from typing import Any, Callable, Dict, Optional
 
 
 class Config:

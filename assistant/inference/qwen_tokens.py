@@ -9,8 +9,8 @@ from typing import Any, Dict, List, cast
 from PIL import Image
 from transformers import AutoProcessor
 
+from assistant.image_ops import resize_like_preprocessor
 from assistant.inference.context import ContextManager, MessageBatch
-from assistant.inference.image_ops import resize_like_processor
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def compile_qwen_context(
     # Use processor.image_processor via Any to satisfy static typing
     _pp: Any = processor
     for idx, image in enumerate(images):
-        resized, meta = resize_like_processor(image, _pp.image_processor)  # type: ignore[attr-defined]
+        resized, meta = resize_like_preprocessor(image, _pp.image_processor)  # type: ignore[attr-defined]
         if resized.size != image.size:
             logger.warning(
                 f"Preprocessor resized image {idx} from {image.width}x{image.height} to"

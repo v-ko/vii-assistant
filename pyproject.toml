@@ -19,6 +19,7 @@ dependencies = [
   "qwen-vl-utils",
   "transformers",
   "torch",
+  "torchvision",
   "pytesseract",
   "python-fusion",
   "pynput",

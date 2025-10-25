@@ -1,14 +1,3 @@
-"""Standalone script to probe Qwen2.5-VL manual multimodal conditioning.
-
-The script downloads the configured checkpoint, runs the vision encoder to
-produce image embeddings, scatters them into the token stream alongside a text
-prompt, and executes the decoder to generate logits. The resulting logits are
-compared with the model's regular forward pass to confirm parity.
-
-Configuration is via hardcoded globals below (no CLI arguments / env vars).
-Edit the constants if you want to change the model or generation behaviour.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,17 +7,11 @@ import numpy as np
 import torch
 from PIL import Image
 from torch import nn
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration as QwenModel
 
-from assistant.inference.image_ops import resize_like_processor
+from assistant.image_ops import resize_like_preprocessor
+from assistant.model_configs import MODEL_CLASS_MAP, MODEL_ID
 
-# pyright: ignore-all
-
-
-###################################################################################################
-# Hardcoded demo configuration (edit as needed)
-###################################################################################################
-MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Ordered variety of image sizes to stress resizing & positional embedding logic
 IMAGE_SIZES = [32, 224, 512, 1024]
@@ -69,9 +52,8 @@ def main() -> None:
 
     print(f"Loading processor and model from {config.model_id} ...")
     processor = AutoProcessor.from_pretrained(config.model_id)
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        config.model_id, torch_dtype=dtype
-    )
+    modelClass = MODEL_CLASS_MAP[config.model_id]
+    model = modelClass.from_pretrained(config.model_id, torch_dtype=dtype)
     model.to(device)  # type: ignore[call-arg]
     model.eval()
 
@@ -94,7 +76,7 @@ def main() -> None:
     for size in config.image_sizes:
         print("\n" + "=" * 10 + f" Processing image {size}x{size} " + "=" * 10)
         image = _build_gradient_image(size)
-        manual_resized_image, resize_meta = resize_like_processor(
+        manual_resized_image, resize_meta = resize_like_preprocessor(
             image, processor.image_processor
         )
 
@@ -199,7 +181,7 @@ def _build_model_kwargs(prepared: PreparedInputs) -> Dict[str, Any]:
     return kwargs
 
 
-def _reset_rope_state(model: Qwen2_5_VLForConditionalGeneration) -> None:
+def _reset_rope_state(model: QwenModel) -> None:
     setattr(model, "rope_deltas", None)  # type: ignore[attr-defined]
 
 
@@ -210,9 +192,7 @@ def _move_to_device(data: Dict[str, Any], device: torch.device) -> Dict[str, Any
     }
 
 
-def _manual_forward(
-    model: Qwen2_5_VLForConditionalGeneration, prepared: PreparedInputs
-) -> torch.Tensor:
+def _manual_forward(model: QwenModel, prepared: PreparedInputs) -> torch.Tensor:
     input_ids = prepared.input_ids
     attention_mask = prepared.attention_mask
     pixel_values = prepared.pixel_values
@@ -276,7 +256,7 @@ def _scatter_modal_embeds(
     inputs_embeds.masked_scatter_(mask, modal_embeds)
 
 
-def _infer_visual_dtype(model: Qwen2_5_VLForConditionalGeneration) -> torch.dtype:
+def _infer_visual_dtype(model: QwenModel) -> torch.dtype:
     first_visual = next(model.visual.parameters(), None)
     if first_visual is not None:
         return first_visual.dtype

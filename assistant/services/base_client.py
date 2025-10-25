@@ -4,7 +4,6 @@ from typing import List, Optional, Union
 
 from PIL import Image
 
-from assistant.services import qwen25_preprocess
 from assistant.util import Shape, extract_coordinates
 
 # Centralized client/model defaults (previously in config.py)
@@ -29,7 +28,7 @@ DEFAULT_CLIENT_TYPE = "ollama:moondream"
 # Keys in the inner dict must exactly match model names in CLIENT_CONFIG.
 MODEL_EXTRACTOR_MAP = {
     "ollama": {
-        "qwen2.5vl": qwen25_preprocess.extract_qwen25_shapes_ollama_policy,
+        # "qwen2.5vl": qwen25_preprocess.extract_qwen25_shapes_ollama_policy,
     },
     "vllm": {
         # Add vLLM model-specific extractors here if needed

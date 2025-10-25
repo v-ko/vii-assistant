@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from assistant.inference.context import ContentKind
+from assistant.inference.context import ContentType
 from assistant.view_states.context_view import ContextItemViewState, ContextViewerState
 
 
@@ -338,9 +338,9 @@ class ContextViewerWidget(QWidget):
 
     def _widget_for_state(self, state: ContextItemViewState) -> QWidget:
         kind = state.content_kind
-        if kind == ContentKind.IMAGE.value:
+        if kind == ContentType.IMAGE.value:
             return _ImageItemWidget(state, self._preview_manager)
-        if kind == ContentKind.TOOL_CALL.value:
+        if kind == ContentType.TOOL_CALL.value:
             return _ToolCallItemWidget(state)
         return _TextItemWidget(state)
 

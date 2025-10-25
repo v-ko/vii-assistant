@@ -1,9 +1,11 @@
 import logging
 import re
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, Final, List, Literal, Optional, Tuple, TypedDict, Union
 
+import numpy as np
+from PIL import Image
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 
 
 class BaseShape(TypedDict, total=False):
@@ -124,3 +126,30 @@ def pixmap_to_base64(pixmap: QPixmap) -> Optional[str]:
     except Exception as e:
         print(f"Error converting QPixmap to base64: {e}")
         return None
+
+
+def qimage_to_pil(img: QImage) -> Image.Image:
+    if img.isNull():
+        raise ValueError("Cannot convert null QImage")
+
+    qimg = img.convertToFormat(QImage.Format_RGB888)
+    w: Final[int] = qimg.width()
+    h: Final[int] = qimg.height()
+    stride: Final[int] = qimg.bytesPerLine()
+    size_bytes: Final[int] = stride * h
+
+    p = qimg.bits()  # sip.voidptr
+    try:
+        p.setsize(size_bytes)  # runtime ok; Pylance may not know this method
+        mv = memoryview(p)[:size_bytes].cast("B")  # 1-byte view
+    except AttributeError:
+        # PySide/PyQt variant where .setsize() isn’t available
+        mv = memoryview(p.asstring(size_bytes))
+
+    # Pillow accepts buffer-protocol; silence Pylance with cast(Any, …)
+    buf = cast(Any, mv)
+
+    pil = Image.frombuffer("RGB", (w, h), buf, "raw", "RGB", stride, 0)
+    # If qimg might be freed/modified, detach:
+    # pil = pil.copy()
+    return pil

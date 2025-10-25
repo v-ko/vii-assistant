@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from assistant.facade import facade
 from assistant.inference.context import ContextManager
+from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.services.inference_client import InferenceClient
 
 from .session_recorder import SessionRecorder, SessionRecorderConfig
@@ -139,6 +140,8 @@ class ViiProjectManager:
     - Wire inference updates to reducer (apply_context_event)
     """
 
+    hybrid_segment_service: HybridSegmentService  # always present after __init__
+
     def __init__(
         self, project_root: Path | str, *, context_manager: ContextManager
     ) -> None:
@@ -156,8 +159,11 @@ class ViiProjectManager:
         self._session_manager: Optional[SessionManager] = None
         self._inference_client: Optional[InferenceClient] = None
         self._running = False
+        # Segment/vision service (always present)
 
-        # Inference events wired in facade.set_project_manager
+        self.hybrid_segment_service = HybridSegmentService()
+
+    # Inference events wired in facade.set_project_manager
 
     # Task/system prompt -------------------------------------------------
     def set_task(self, task: str) -> None:
