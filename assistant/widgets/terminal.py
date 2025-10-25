@@ -83,7 +83,7 @@ class TerminalWindow(QWidget):
         container_layout.setStretch(0, 1)
         container_layout.setStretch(1, 1)
 
-        # Apply styling to the container only (the window is transparent)
+        # Container styling (window itself is transparent)
         self.container.setStyleSheet(
             """
             QWidget {

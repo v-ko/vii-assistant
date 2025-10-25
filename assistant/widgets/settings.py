@@ -175,25 +175,6 @@ class SettingsWidget(QWidget):
         main_layout.addLayout(second_column)
         main_layout.addLayout(third_column, 2)
 
-        # Apply styling
-        self.setStyleSheet(
-            """
-            QWidget { background-color: #2d2d2d; color: #e0e0e0; }
-            QComboBox {
-                background-color: #3a3a3a;
-                border: 1px solid #555;
-                padding: 5px;
-            }
-            QPlainTextEdit {
-                background-color: #1f1f1f;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px;
-                font-family: 'Fira Code', monospace;
-            }
-        """
-        )
-
         self._update_session_controls()
 
     def _bind_state(self):

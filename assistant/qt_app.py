@@ -23,17 +23,24 @@ class AssistantQtApp(QApplication):
         # Prevent app from closing when all windows are closed
         self.setQuitOnLastWindowClosed(False)
 
-        # Minimal global styling for buttons (adds depth & focus without heavy theming)
+        # Global application stylesheet using CSS inheritance principles
+        # Using wildcard for universal application of disabled states
         self.setStyleSheet(
             """
+            /* Universal disabled state for all input widgets */
+            *:disabled {
+                background-color: #1a1a1a;
+                color: #555;
+            }
+
             QPushButton {
                 background-color: #444;
                 border: 1px solid #666;
                 border-radius: 4px;
-                padding: 4px 10px; /* more hit area */
+                padding: 4px 10px;
                 color: #f0f0f0;
                 font-weight: 500;
-                min-height: 26px; /* avoid slim buttons */
+                min-height: 26px;
             }
             QPushButton:hover {
                 background-color: #515151;
@@ -42,15 +49,13 @@ class AssistantQtApp(QApplication):
             QPushButton:pressed {
                 background-color: #3a3a3a;
                 border-color: #555;
-                padding-top: 5px;  /* subtle pressed shift */
+                padding-top: 5px;
                 padding-bottom: 3px;
             }
             QPushButton:disabled {
-                background-color: #2f2f2f;
-                color: #777;
-                border-color: #444;
+                border-color: #333;
             }
-            /* Keep combos consistent */
+
             QComboBox {
                 background-color: #3a3a3a;
                 border: 1px solid #555;
@@ -58,11 +63,22 @@ class AssistantQtApp(QApplication):
                 padding: 4px 8px;
                 color: #e0e0e0;
             }
-            QComboBox:hover { background-color: #444; }
-            """
-        )
+            QComboBox:hover {
+                background-color: #444;
+            }
+            QComboBox:disabled {
+                background-color: #252525;
+            }
 
-        # Initialize components
+            QPlainTextEdit {
+                background-color: #1f1f1f;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px;
+                font-family: 'Fira Code', monospace;
+            }
+        """
+        )  # Initialize components
         self.app_state = AppState(parent=self)
         self.terminal_state = TerminalViewState(self.app_state)
         self.terminal_window = TerminalWindow(self.terminal_state)
