@@ -16,7 +16,7 @@ class Config:
         self._config = {
             "screen": "",  # Will be set to actual screen in init
             "system_prompt": "",
-            # legacy key client_type removed; single hardcoded client now
+            "selected_model": "qwen3_vl_4b",
         }
 
         self._init_config()

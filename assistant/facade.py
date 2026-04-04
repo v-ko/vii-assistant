@@ -10,6 +10,7 @@ from assistant.app_state import AppState
 from assistant.config import Config
 from assistant.inference.context import ContextManager
 from assistant.services.config_persistence_service import ConfigPersistenceService
+from assistant.util import get_screen_by_name
 
 if TYPE_CHECKING:
     from assistant.qt_app import AssistantQtApp
@@ -29,6 +30,7 @@ class Facade:
     _config_persistence: Optional[ConfigPersistenceService] = None
     _image_preprocessor = None
     _image_preprocessor_model_id: str | None = None
+    _experiments_manager = None
 
     def __init__(self):
         # Minimal setup; external services injected from main to avoid circular deps
@@ -93,6 +95,14 @@ class Facade:
             raise RuntimeError("App state not initialized")
         return self._app_state
 
+    @property
+    def experiments_manager(self):
+        if self._experiments_manager is None:
+            from assistant.experiments_manager import ExperimentsManager
+
+            self._experiments_manager = ExperimentsManager(self)
+        return self._experiments_manager
+
     # Model/client selection removed; single client in use.
 
     def current_watched_screen(self) -> Optional[QScreen]:
@@ -103,7 +113,7 @@ class Facade:
         screen_name = self.app_state.settings_VS.screen
         if not screen_name:
             raise RuntimeError("No screen selected in settings")
-        scr = self.get_screen_by_name(screen_name)
+        scr = get_screen_by_name(screen_name)
         if scr is None:
             raise RuntimeError(f"Configured screen '{screen_name}' not found")
         return scr
@@ -123,7 +133,7 @@ class Facade:
             screen_name = self.config.get("screen", "")
             screen_valid = False
             if screen_name:
-                screen_valid = self.get_screen_by_name(screen_name) is not None
+                screen_valid = get_screen_by_name(screen_name) is not None
             if not screen_valid:
                 # Pick default screen (second non-primary if available else first)
                 try:
@@ -144,18 +154,9 @@ class Facade:
         screen_name = settings_state.screen
         if not screen_name:
             raise RuntimeError("No screen configured in settings")
-        screen = self.get_screen_by_name(screen_name)
-        if screen is None:
+        if get_screen_by_name(screen_name) is None:
             raise RuntimeError(f"Configured screen '{screen_name}' not found")
-        self._qt_app.bind_screen_overlay(screen)
-
-    def get_screen_by_name(self, name: str) -> Optional[QScreen]:
-        """Get a QScreen object by its name."""
-        screens = QGuiApplication.screens()
-        for screen in screens:
-            if screen.name() == name:
-                return screen
-        return None
+        self._qt_app.bind_screen_overlay(screen_name)
 
     def get_default_screen(self) -> QScreen:
         """Get the default screen (second to primary if available)."""
@@ -196,6 +197,13 @@ class ContextController:
         change = self._facade.context_manager.remove(item)
         self._broadcast(change)
         return change
+
+    def clear(self) -> list[Change]:
+        self._ensure_session_started()
+        changes = self._facade.context_manager.clear()
+        for change in changes:
+            self._broadcast(change)
+        return changes
 
     def _broadcast(self, change: Change) -> None:
         self._facade.app_state.context_VS.apply_change(change)

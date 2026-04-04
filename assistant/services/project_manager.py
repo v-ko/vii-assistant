@@ -11,6 +11,7 @@ from assistant.facade import facade
 from assistant.inference.context import ContextItem, ContextManager
 from assistant.services.context_sync_client import ContextSyncClient
 from assistant.services.hybrid_segment_service import HybridSegmentService
+from assistant.util import get_screen_by_name
 
 from .session_recorder import SessionRecorder, SessionRecorderConfig
 
@@ -24,6 +25,12 @@ DEFAULT_WEBSOCKET_URL = "ws://desk:8008/ws/context"
 INFERENCE_WS_URL = (
     os.environ.get("VII_ASSISTANT_WS_URL", DEFAULT_WEBSOCKET_URL).strip()
     or DEFAULT_WEBSOCKET_URL
+)
+
+# HTTP base URL derived from the websocket URL
+_ws_base = INFERENCE_WS_URL.split("/ws/")[0]
+INFERENCE_HTTP_BASE = _ws_base.replace("ws://", "http://", 1).replace(
+    "wss://", "https://", 1
 )
 
 
@@ -217,7 +224,7 @@ class ViiProjectManager:
             config["screen"] = screen_name
         target_screen = None
         if screen_name:
-            target_screen = facade.get_screen_by_name(screen_name)
+            target_screen = get_screen_by_name(screen_name)
         if target_screen is None:
             try:
                 target_screen = facade.current_watched_screen()
@@ -252,13 +259,11 @@ class ViiProjectManager:
         # when connection is established
         system_prompt_text = self.current_system_prompt()
         if system_prompt_text and system_prompt_text.strip():
-            system_item = ContextItem()
-            # Use negative position to ensure it stays first
-            system_item.position = 0
-            system_item.size = 0
-            system_item.content = {"text": system_prompt_text.strip()}
-            system_item.metadata = {"origin": "system"}
-            # Create via context controller to broadcast properly
+            system_item = ContextItem.create_text(
+                position=0,
+                text=system_prompt_text.strip(),
+                origin="system",
+            )
             facade.context_controller.create(system_item)
 
         if not self._running:
@@ -301,19 +306,13 @@ class ViiProjectManager:
         terminal_state = facade.qt_app.terminal_state
 
         # Clear context repository and propagate deletions to view + client channel
-        deletions = self.context_manager.clear()
-        if deletions:
-            for ch in deletions:
-                # Apply to in-memory view + broadcast to client channel
-                app_state.context_VS.apply_change(ch)
-                facade.client_updates.push(ch)
+        facade.context_controller.clear()
 
         # Clear info/status messages
         settings_state.clear_info_messages()
 
         # Clear overlay shapes
-        if facade.qt_app.overlay:
-            facade.qt_app.overlay.set_shapes([])
+        facade.app_state.overlay_VS.clear()
 
         # Reset terminal output
         terminal_state.output_text = (

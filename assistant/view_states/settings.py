@@ -9,7 +9,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
     from assistant.config import Config
     from assistant.services.project_manager import ViiProjectManager
 
+from assistant.model_configs import DEFAULT_MODEL_KEY
+
 _VALID_SESSION_STATES = {"new-session", "started", "paused"}
+_VALID_MODEL_STATES = {"unknown", "unloaded", "loading", "loaded"}
 
 
 def _normalize_markdown(value: Optional[str]) -> str:
@@ -18,7 +21,7 @@ def _normalize_markdown(value: Optional[str]) -> str:
     return value.rstrip("\n")
 
 
-class SettingsViewState(QObject):
+class AssistantSettingsViewState(QObject):
     session_state_changed = Signal(str)
     screen_changed = Signal(str)
     request_in_progress_changed = Signal(bool)
@@ -27,6 +30,13 @@ class SettingsViewState(QObject):
     info_messages_changed = Signal(str)
     _info_message_enqueued = Signal(str)
     context_updates_allowed_changed = Signal(bool)
+    selected_model_changed = Signal(str)
+    server_model_state_changed = Signal(
+        str
+    )  # "unknown" | "unloaded" | "loading" | "loaded"
+    server_model_key_changed = Signal(
+        str
+    )  # the model key actually loaded on the server
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -43,6 +53,9 @@ class SettingsViewState(QObject):
         self._system_prompt = ""
         self._info_messages: list[str] = []
         self._context_updates_allowed = True
+        self._selected_model = DEFAULT_MODEL_KEY
+        self._server_model_state = "unknown"
+        self._server_model_key = ""
         self._info_message_enqueued.connect(self._append_info_message)
 
     # --- lifecycle -------------------------------------------------
@@ -59,6 +72,10 @@ class SettingsViewState(QObject):
     def apply_config(self, config: Dict[str, object]) -> None:
         screen = str(config.get("screen", self._screen) or "")
         self._set_screen(screen)
+        selected_model = str(
+            config.get("selected_model", self._selected_model) or DEFAULT_MODEL_KEY
+        )
+        self._set_selected_model(selected_model)
 
     def reload_project_documents(self) -> None:
         if not self._project_manager:
@@ -196,3 +213,46 @@ class SettingsViewState(QObject):
             return
         self._context_updates_allowed = value
         self.context_updates_allowed_changed.emit(value)
+
+    # --- selected_model -----------------------------------------------
+    @Property(str, notify=selected_model_changed)
+    def selected_model(self) -> str:
+        return self._selected_model
+
+    @selected_model.setter
+    def selected_model(self, value: str) -> None:
+        if self._selected_model == value:
+            return
+        self._set_selected_model(value)
+
+    def _set_selected_model(self, value: str) -> None:
+        if self._selected_model == value:
+            return
+        self._selected_model = value
+        self.selected_model_changed.emit(value)
+
+    # --- server_model_state (read from server health) ------------------
+    @Property(str, notify=server_model_state_changed)
+    def server_model_state(self) -> str:
+        return self._server_model_state
+
+    @server_model_state.setter
+    def server_model_state(self, value: str) -> None:
+        if value not in _VALID_MODEL_STATES:
+            value = "unknown"
+        if self._server_model_state == value:
+            return
+        self._server_model_state = value
+        self.server_model_state_changed.emit(value)
+
+    # --- server_model_key (which model is actually on the server) ------
+    @Property(str, notify=server_model_key_changed)
+    def server_model_key(self) -> str:
+        return self._server_model_key
+
+    @server_model_key.setter
+    def server_model_key(self, value: str) -> None:
+        if self._server_model_key == value:
+            return
+        self._server_model_key = value
+        self.server_model_key_changed.emit(value)

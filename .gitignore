@@ -8,3 +8,5 @@ papers/*
 experiments.md
 papers.md
 work-history.md
+assistant/experiments/*
+assistant/scripts/build_paper_corpus.py

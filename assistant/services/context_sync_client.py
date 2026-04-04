@@ -12,7 +12,7 @@ from assistant.facade import facade
 from assistant.inference.interface import parse_message
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
-    from assistant.view_states.settings import SettingsViewState
+    from assistant.view_states.settings import AssistantSettingsViewState
 
 CONNECT_TIMEOUT_SECONDS = 3.0
 
@@ -57,7 +57,7 @@ class ContextSyncClient:
         self._ws = None
         self._loop: asyncio.AbstractEventLoop | None = None
         try:
-            self._settings_state: SettingsViewState | None = (
+            self._settings_state: AssistantSettingsViewState | None = (
                 facade.app_state.settings_VS
             )
         except Exception:
@@ -84,8 +84,6 @@ class ContextSyncClient:
             self._subscription = None
         try:
             if self._ws:
-                import asyncio
-
                 asyncio.run(self._ws.close())
         except Exception:
             pass

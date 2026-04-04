@@ -56,6 +56,7 @@ def main(command):
 
     from assistant.facade import facade
     from assistant.inference.context import ContextManager
+    from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
     from assistant.qt_app import AssistantQtApp
     from assistant.server.desktop_server import DesktopServer
     from assistant.services.ollama_client import OllamaClient
@@ -72,9 +73,7 @@ def main(command):
     facade.set_qt_app(qt_app)
 
     # Configure image preprocessor model (loaded lazily on first use)
-    from assistant.model_configs import MODEL_ID
-
-    facade.set_image_preprocessor_config(MODEL_ID)
+    facade.set_image_preprocessor_config(MODEL_SPECS[DEFAULT_MODEL_KEY]["id"])
 
     # Config already loaded; facade ensures screen is set during set_qt_app
     print(f"Config: {facade.config}")

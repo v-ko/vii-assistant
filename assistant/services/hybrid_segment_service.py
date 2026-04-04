@@ -89,19 +89,11 @@ class HybridSegmentService:
         #     f"Extracted {len(rects)} rectangles and {len(points)} points from AI output"
         # )
         if not rects and not points:
-            # log.info("No shapes found, clearing overlay")
-            try:
-                facade.qt_app.overlay.set_shapes([])
-            except Exception:
-                pass
+            facade.app_state.overlay_VS.shapes = []
             return
         shapes = self._convert_to_shapes(rects, points)
         log.info(f"Converted to {len(shapes)} overlay shapes")
-        try:
-            facade.qt_app.overlay.set_shapes(shapes)
-            log.info("Successfully set overlay shapes")
-        except Exception as e:
-            log.error(f"Failed to set overlay shapes: {e}")
+        facade.app_state.overlay_VS.shapes = shapes
 
     # --- internals ---
     def _last_ai_text(self) -> Optional[str]:

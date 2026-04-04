@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from io import BytesIO
 
 import numpy as np
 import websockets
@@ -30,8 +31,6 @@ def build_gradient_b64(size: int = 224) -> str:
         size, size, 3
     )
     image = Image.fromarray(data, mode="RGB")
-    from io import BytesIO
-
     buf = BytesIO()
     image.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")

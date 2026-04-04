@@ -5,7 +5,7 @@ from typing import Any, Dict, Final, List, Literal, Optional, Tuple, TypedDict, 
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QScreen
 
 
 class BaseShape(TypedDict, total=False):
@@ -39,6 +39,13 @@ def get_logger(name: str) -> logging.Logger:
     """Get a logger with the specified name."""
     logger = logging.getLogger(name)
     return logger
+
+
+def get_screen_by_name(name: str) -> QScreen | None:
+    for screen in QGuiApplication.screens():
+        if screen.name() == name:
+            return screen
+    return None
 
 
 def encode_client_type(backend: str, model: str) -> str:

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QObject
 
 from assistant.config import Config
-from assistant.view_states.settings import SettingsViewState
+from assistant.view_states.settings import AssistantSettingsViewState
 
 
 class ConfigPersistenceService(QObject):
@@ -22,19 +22,21 @@ class ConfigPersistenceService(QObject):
     def __init__(self, parent: Optional[QObject] = None, debounce_seconds: float = 1):
         super().__init__(parent)
         self._config: Optional[Config] = None
-        self._settings: Optional[SettingsViewState] = None
+        self._settings: Optional[AssistantSettingsViewState] = None
         self._pending: Dict[str, Any] = {}
         self._debounce_seconds = debounce_seconds
         self._lock = threading.Lock()
         self._timer: Optional[threading.Timer] = None
 
-    def bind(self, config: Config, settings: SettingsViewState) -> None:
+    def bind(self, config: Config, settings: AssistantSettingsViewState) -> None:
         self._config = config
         self._settings = settings
 
         # connect signals
         settings.screen_changed.connect(lambda v: self._enqueue("screen", v))
-        # Potential future fields can be added here.
+        settings.selected_model_changed.connect(
+            lambda v: self._enqueue("selected_model", v)
+        )
 
     # --- internal -------------------------------------------------
     def _enqueue(self, key: str, value: Any) -> None:

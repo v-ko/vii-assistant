@@ -1,7 +1,6 @@
 from base64 import b64encode
 from io import BytesIO
 from typing import TYPE_CHECKING, Optional
-from uuid import uuid4
 
 from fusion.platform.qt_widgets.utils import qpixmap_to_pil
 from PySide6.QtCore import (
@@ -25,7 +24,6 @@ from assistant.actions import (
 from assistant.facade import facade  # module-level singleton
 from assistant.image_ops import resize_like_preprocessor
 from assistant.inference.context import ContextItem
-from assistant.util import pixmap_to_base64
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
 from assistant.widgets.context_viewer import ContextViewerWidget
 from assistant.widgets.settings import SettingsWidget
@@ -189,16 +187,13 @@ class TerminalWindow(QWidget):
         if not encoded:
             raise RuntimeError("Image encoding failed")
 
-        item = ContextItem()
-        item.id = uuid4().hex
-        item.position = controller.next_position()
-        item.size = pixmap.width() * pixmap.height()
-        item.content = {"image": encoded}
-        item.metadata = {
-            "origin": source,
-            "image_size": {"width": meta["width"], "height": meta["height"]},
-        }
-        item.request = None
+        item = ContextItem.create_image(
+            position=controller.next_position(),
+            image_b64=encoded,
+            width=meta["width"],
+            height=meta["height"],
+            origin=source,
+        )
         controller.create(item)
 
     def setup_shortcuts(self):

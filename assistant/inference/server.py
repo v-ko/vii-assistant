@@ -4,6 +4,7 @@ Overhauled to:
 - Use a module-level FastAPI `app` with lifespan setup
 - Exchange only fusion Change objects over the websocket (no wrappers)
 - Notify an InferenceService on client-originated updates
+- Dynamic model load/unload via ModelManager
 """
 
 from __future__ import annotations
@@ -12,22 +13,22 @@ import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any
 
 # Force verbose backend logs unless explicitly overridden
 os.environ.setdefault("LOGLEVEL", "INFO")
 
-import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fusion import get_logger
 from fusion.libs.entity.change import Change
 from fusion.loop import AsyncioMainLoop, set_main_loop
-from transformers import AutoProcessor
+from pydantic import BaseModel
 
 from assistant.inference.context import ContextItem
 from assistant.inference.interface import parse_message, wrap_change
-from assistant.inference.service import InferenceService, ModelConfig
-from assistant.model_configs import MODEL_CLASS
+from assistant.inference.model_manager import ModelManager
+from assistant.inference.service import InferenceService
+from assistant.model_configs import MODEL_SPECS
 
 log = get_logger(__name__)
 
@@ -55,66 +56,56 @@ def _summarize_change(change: Change) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize shared services
-    # Ensure fusion uses asyncio loop
     set_main_loop(AsyncioMainLoop())
-
-    # Configure model from env if needed (kept simple for now)
-    model_config = ModelConfig()
-    processor = AutoProcessor.from_pretrained(model_config.model_id)
-    # Eagerly load model with appropriate dtype/device
-    device = torch.device(model_config.device)
-
-    def _select_dtype(device: torch.device, precision: Optional[str]) -> torch.dtype:
-        if precision == "bf16":
-            return torch.bfloat16
-        if precision == "fp16":
-            return torch.float16
-        if precision == "fp32":
-            return torch.float32
-        if device.type == "cuda":
-            return torch.float16
-        return torch.float32
-
-    dtype = _select_dtype(device, model_config.precision)
-    model = MODEL_CLASS.from_pretrained(
-        model_config.model_id,
-        dtype=dtype,
-        #     dtype=torch.bfloat16,
-        #     attn_implementation="flash_attention_2",
-        #     device_map="auto",
-    )
-    _to = getattr(model, "to")
-    _to(device)
-    app.state.model_config = model_config
-    app.state.processor = processor
-    app.state.model = model
+    app.state.model_manager = ModelManager()
     try:
         yield
     finally:
-        pass
+        await app.state.model_manager.unload_model()
 
 
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/health")
-async def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "inference"}
+class LoadModelRequest(BaseModel):
+    model_key: str | None = None
+
+
+@app.get("/status")
+async def status() -> dict[str, Any]:
+    mm: ModelManager = app.state.model_manager
+    return {
+        "status": "ok",
+        "service": "inference",
+        "model": mm.get_state_dict(),
+    }
+
+
+@app.post("/model/load")
+async def load_model(body: LoadModelRequest) -> dict[str, Any]:
+    mm: ModelManager = app.state.model_manager
+    model_key = body.model_key
+
+    if model_key is None or model_key == "none":
+        await mm.unload_model()
+        return {"status": "ok", "model": mm.get_state_dict()}
+
+    if model_key not in MODEL_SPECS:
+        return {"status": "error", "message": f"Unknown model key: {model_key}"}
+
+    # Fire-and-forget: start loading in background so the HTTP response is immediate
+    asyncio.create_task(mm.load_model(model_key))
+    return {"status": "accepted", "model": mm.get_state_dict()}
 
 
 @app.websocket("/ws/context")
 async def context_ws(websocket: WebSocket) -> None:
     await websocket.accept()
-    model_config: ModelConfig = app.state.model_config
-    processor: AutoProcessor = app.state.processor
-    model: Any = app.state.model
+    model_manager: ModelManager = app.state.model_manager
     session_id = secrets.token_hex(4)
     log.info("WS accepted session=%s", session_id)
     service = InferenceService(
-        processor,
-        model,
-        model_config,
+        model_manager,
         session_id=session_id,
     )
 

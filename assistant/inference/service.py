@@ -5,45 +5,34 @@ from __future__ import annotations
 import asyncio
 import secrets
 import threading
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import torch
 from fusion import get_logger
 from fusion.libs.channel import Channel
 from fusion.libs.entity.change import Change
-from transformers import AutoProcessor, TextIteratorStreamer
+from transformers import TextIteratorStreamer
 
 from assistant.inference.context import ContextItem, ContextManager
 from assistant.inference.interface import wrap_append_item_content_text
 from assistant.inference.qwen_tokens import compile_qwen_context
-from assistant.model_configs import MODEL_ID
+
+if TYPE_CHECKING:
+    from assistant.inference.model_manager import ModelManager
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class ModelConfig:
-    model_id: str = MODEL_ID
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    precision: Optional[str] = None  # one of: bf16, fp16, fp32, or None for auto
-    default_generation_params: Dict[str, Any] | None = None
 
 
 class InferenceService:
     def __init__(
         self,
-        processor: AutoProcessor,
-        model: Any,
-        config: Optional[ModelConfig] = None,
-        *,
+        model_manager: ModelManager,
+        default_generation_params: Dict[str, Any] | None = None,
         session_id: Optional[str] = None,
     ) -> None:
         self.context = ContextManager()
-        self.config = config or ModelConfig()
-        self.processor: AutoProcessor = processor
-        self.model: Any = model
-        self._device = torch.device(self.config.device)
+        self.model_manager = model_manager
+        self._default_generation_params = default_generation_params
         self._lock = asyncio.Lock()
         # Active streaming threads (keyed by item id) for future cancellation support
         self._active_streams: dict[str, threading.Thread] = {}
@@ -82,22 +71,11 @@ class InferenceService:
         async with self._lock:
             await self._dispatch_generation(item)
 
-    @staticmethod
-    def _select_dtype(device: torch.device, precision: Optional[str]) -> torch.dtype:
-        if precision == "bf16":
-            return torch.bfloat16
-        if precision == "fp16":
-            return torch.float16
-        if precision == "fp32":
-            return torch.float32
-        if device.type == "cuda":
-            return torch.float16
-        return torch.float32
-
     # --- Internal helpers ---
 
     async def _dispatch_generation(self, item: ContextItem) -> None:
-        processor = self.processor
+        model, processor = await self.model_manager.get_model()
+        device = self.model_manager.device
         compiled = compile_qwen_context(self.context, processor)
         input_ids = compiled.processor_inputs.get("input_ids")
         prompt_tokens = input_ids.shape[1] if input_ids is not None else 0
@@ -112,7 +90,7 @@ class InferenceService:
         # Prepare inputs
         inputs = {k: v for k, v in compiled.processor_inputs.items()}
         inputs = {
-            k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+            k: v.to(device) if isinstance(v, torch.Tensor) else v
             for k, v in inputs.items()
         }
 
@@ -132,8 +110,8 @@ class InferenceService:
             "max_new_tokens": 128,
             "do_sample": False,
         }
-        if self.config.default_generation_params:
-            gen_params.update(self.config.default_generation_params)
+        if self._default_generation_params:
+            gen_params.update(self._default_generation_params)
         if item.request:
             gen_params.update(item.request)
         # Remove non-generation control keys so HF generate doesn't error
@@ -150,25 +128,30 @@ class InferenceService:
         updated = cast(ContextItem, item.copy())
         stream = bool((item.request or {}).get("stream"))
         if stream:
-            await self._generate_stream(updated, model_kwargs, gen_params)
+            await self._generate_stream(
+                updated, model, processor, model_kwargs, gen_params
+            )
         else:
-            await self._generate_non_stream(updated, inputs, model_kwargs, gen_params)
+            await self._generate_non_stream(
+                updated, model, processor, inputs, model_kwargs, gen_params
+            )
 
     async def _generate_non_stream(
         self,
         updated: ContextItem,
+        model: Any,
+        processor: Any,
         inputs: Dict[str, Any],
         model_kwargs: Dict[str, Any],
         gen_params: Dict[str, Any],
     ) -> None:
         try:
-            model = self.model
             model.eval()
             with torch.no_grad():
                 generation = model.generate(**model_kwargs, **gen_params)
             prompt_len = inputs["input_ids"].shape[1]
             new_tokens = generation[:, prompt_len:]
-            tokenizer = getattr(self.processor, "tokenizer", None)
+            tokenizer = getattr(processor, "tokenizer", None)
             if tokenizer is None:
                 raise RuntimeError("Processor missing tokenizer for decoding")
             decoded_full = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[
@@ -218,16 +201,17 @@ class InferenceService:
     async def _generate_stream(
         self,
         updated: ContextItem,
+        model: Any,
+        processor: Any,
         model_kwargs: Dict[str, Any],
         gen_params: Dict[str, Any],
     ) -> None:
-        tokenizer = getattr(self.processor, "tokenizer", None)
+        tokenizer = getattr(processor, "tokenizer", None)
         if tokenizer is None:
             raise RuntimeError("Processor has no tokenizer for streaming")
         streamer = TextIteratorStreamer(
             tokenizer, skip_prompt=True, skip_special_tokens=True
         )
-        model = self.model
         model.eval()
 
         thread_error: list[Exception | None] = [None]

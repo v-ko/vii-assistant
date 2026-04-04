@@ -358,6 +358,7 @@ class ContextViewerWidget(QWidget):
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._list.setFrameShape(QFrame.Shape.NoFrame)
+        self._list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._list.setSpacing(2)
         self._list.setStyleSheet(
             """
@@ -436,6 +437,12 @@ class ContextViewerWidget(QWidget):
         )
         self._update_item_size(item_id)
 
+    def _is_scrolled_near_bottom(self) -> bool:
+        sb = self._list.verticalScrollBar()
+        if sb is None:
+            return True
+        return sb.value() >= sb.maximum() - 30
+
     def _update_item_size(self, item_id: str) -> None:
         entry = self._item_widgets.get(item_id)
         if not entry:
@@ -444,10 +451,13 @@ class ContextViewerWidget(QWidget):
         width = self._available_item_width()
         if width <= 0:
             return
+        was_near_bottom = self._is_scrolled_near_bottom()
         widget.setFixedWidth(width)
         hint_height = widget.sizeHint().height()
         list_item.setSizeHint(QSize(width, hint_height))
         self._list.doItemsLayout()
+        if was_near_bottom:
+            self._list.scrollToBottom()
 
     def _available_item_width(self) -> int:
         viewport = self._list.viewport()

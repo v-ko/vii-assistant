@@ -43,7 +43,8 @@ class ContextItem(Entity):
         if "text" in self.content:
             return ContentType.TEXT
         raise ValueError(
-            f"ContextItem has unknown content type for content keys: {self.content.keys()})"
+            "ContextItem has unknown content type for content keys:"
+            f" {self.content.keys()})"
         )
 
     def resolve_image(self) -> Image.Image:
@@ -52,6 +53,40 @@ class ContextItem(Entity):
             raise ValueError("ContextItem has no base64 image content")
         raw = base64.b64decode(b64)
         return Image.open(io.BytesIO(raw)).convert("RGB")
+
+    @classmethod
+    def create_image(
+        cls,
+        *,
+        position: int,
+        image_b64: str,
+        width: int,
+        height: int,
+        origin: str,
+    ) -> "ContextItem":
+        item = cls()
+        item.position = position
+        item.size = width * height
+        item.content = {"image": image_b64}
+        item.metadata = {
+            "origin": origin,
+            "image_size": {"width": width, "height": height},
+        }
+        return item
+
+    @classmethod
+    def create_text(
+        cls,
+        *,
+        position: int,
+        text: str,
+        origin: str,
+    ) -> "ContextItem":
+        item = cls()
+        item.position = position
+        item.content = {"text": text}
+        item.metadata = {"origin": origin}
+        return item
 
 
 class MessageBatch(NamedTuple):

@@ -1,45 +1,50 @@
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygon, QScreen
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPolygon, QScreen
 from PySide6.QtWidgets import QWidget
 
-from assistant.util import Shape, get_logger
+from assistant.util import Shape, get_logger, get_screen_by_name
+from assistant.view_states.overlay import OverlayMode, OverlayViewState
 
 log = get_logger(__name__)
 
 
 class ModelVisionOverlay(QWidget):
-    """
-    A transparent overlay widget that displays shapes on top of the screen.
 
-    The widget is transparent to user events (click-through) and displays
-    shapes based on the configuration provided through set_shapes.
-
-    Currently supports 'rect' and 'point' shape types.
-    """
-
-    def __init__(self, screen: QScreen, parent=None):
+    def __init__(self, state: OverlayViewState, parent=None):
         super().__init__(
             parent,
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.X11BypassWindowManagerHint,
-        )  # Bypass window manager on X11
+        )
 
-        # Make the widget transparent
+        self._state = state
+
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-        # Make the widget transparent to user events (click-through)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        # List of shapes to draw
-        self._shapes: list[Shape] = []
-
-        # Hardcoded style settings (but color comes from shape)
-        self.default_color = QColor(255, 0, 0, 50)  # Red default
+        self.default_color = QColor(255, 0, 0, 50)
         self.shape_width = 2
-        self.triangle_size = 40  # Size of triangle cursor for points
+        self.triangle_size = 40
 
-        # Set the screen and set up full screen
+        self._bind_state()
+
+        if state.screen_name:
+            self._apply_screen(state.screen_name)
+
+    def _bind_state(self):
+        self._state.mode_changed.connect(lambda _: self.update())
+        self._state.shapes_changed.connect(lambda _: self.update())
+        self._state.sample_image_changed.connect(lambda _: self.update())
+        self._state.screen_name_changed.connect(self._apply_screen)
+
+    def _apply_screen(self, screen_name: str):
+        if not screen_name:
+            return
+        screen = get_screen_by_name(screen_name)
+        if screen is None:
+            log.error(f"Screen '{screen_name}' not found")
+            return
         self.setScreen(screen)
         self._setup_full_screen()
 
@@ -70,28 +75,18 @@ class ModelVisionOverlay(QWidget):
 
         log.info("Overlay configured for click-through transparency")
 
-    def set_shapes(self, shapes: list[Shape]):
-        """
-        Set the shapes to be drawn on the overlay.
-
-        Args:
-            shapes: A list of dictionaries with shape properties.
-                   Each dictionary should have at least 'type' and 'geometry' keys.
-                   Supported types: 'rect', 'point'
-        """
-        self._shapes = shapes
-        self.update()  # Trigger a repaint
-
     def paintEvent(self, event):
-        """Paint the overlay with the configured shapes."""
         painter = QPainter(self)
-        # log.info(
-        #     f"Overlay paint event, size: {self.width()}x{self.height()}, shapes:"
-        #     f" {len(self._shapes)}"
-        # )
-
-        # Enable antialiasing for smoother shapes
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # In experiment mode, draw the sample image as background
+        if (
+            self._state.mode == OverlayMode.EXPERIMENT
+            and self._state.sample_image is not None
+        ):
+            painter.drawImage(
+                QRect(0, 0, self.width(), self.height()), self._state.sample_image
+            )
 
         # Draw a thin red outline around the widget
         outline_pen = QPen(QColor(255, 0, 0, 50))  # Red
@@ -100,7 +95,7 @@ class ModelVisionOverlay(QWidget):
         painter.drawRect(self.rect())
 
         # Draw each shape
-        for idx, shape in enumerate(self._shapes):
+        for idx, shape in enumerate(self._state.shapes):
             shape_type = shape.get("type", "")
             geometry = shape.get("geometry", None)
 

@@ -1,11 +1,14 @@
-import socket
+import json
 import threading
-from urllib.parse import urlparse
+import urllib.error
+import urllib.request
 
-from PySide6.QtCore import QSignalBlocker, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QTextCursor
+from PySide6.QtCore import QSignalBlocker, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -16,9 +19,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from assistant.facade import facade
+from assistant.model_configs import AVAILABLE_MODELS
 from assistant.services.hybrid_segment_service import hfi
-from assistant.services.project_manager import INFERENCE_WS_URL
-from assistant.view_states.settings import SettingsViewState
+from assistant.services.project_manager import INFERENCE_HTTP_BASE
+from assistant.view_states.settings import AssistantSettingsViewState
 
 
 class SettingsWidget(QWidget):
@@ -32,9 +37,10 @@ class SettingsWidget(QWidget):
     new_session_clicked = Signal()
     open_sessions_folder_clicked = Signal()
     # Internal signal for cross-thread health check result
-    _health_check_result = Signal(bool)
+    # Carries (connected: bool, model_state: str, model_key: str)
+    _health_check_result = Signal(bool, str, str)
 
-    def __init__(self, state: SettingsViewState, parent=None):
+    def __init__(self, state: AssistantSettingsViewState, parent=None):
         super().__init__(parent)
         self._state = state
         self._session_state = state.session_state
@@ -127,7 +133,7 @@ class SettingsWidget(QWidget):
         self._health_timer.start()
         self._schedule_health_check()
 
-        # Second column: Screen selector (client selection removed for now)
+        # Second column: Model selector, screen selector
         second_column = QVBoxLayout()
         second_column.setSpacing(8)
 
@@ -142,14 +148,23 @@ class SettingsWidget(QWidget):
         self.open_sessions_folder_button.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.open_sessions_folder_button)
 
+        # Model load button + state label
+        self.set_model_button = QPushButton("Set model")
+        self.set_model_button.setFixedHeight(uniform_button_height)
+        self.set_model_button.clicked.connect(self._on_set_model_clicked)
+        second_column.addWidget(self.set_model_button)
+
+        self._model_state_label = QLabel("Model: unknown")
+        self._model_state_label.setFixedHeight(uniform_button_height)
+        self._model_state_label.setStyleSheet("QLabel { color: #888; }")
+        second_column.addWidget(self._model_state_label)
+
         # Screen selector
         self.screen_combo = QComboBox()
         self.populate_screen_combo()
         self.screen_combo.currentTextChanged.connect(self.on_screen_changed)
         self.screen_combo.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.screen_combo)
-
-        # Client selector removed (single hardcoded backend). Placeholder retained for layout spacing if needed.
 
         second_column.addStretch()
 
@@ -180,6 +195,33 @@ class SettingsWidget(QWidget):
         sp_layout.addWidget(self.add_tool_prompt_button)
         self.prompt_tabs.addTab(system_prompt_container, "System Prompt")
 
+        # Experiments tab
+        experiments_container = QWidget()
+        exp_layout = QVBoxLayout(experiments_container)
+        exp_layout.setContentsMargins(0, 0, 0, 0)
+        exp_layout.setSpacing(6)
+
+        exp_buttons_layout = QHBoxLayout()
+        self.step_experiment_button = QPushButton("Step")
+        self.step_experiment_button.clicked.connect(self._on_step_experiment)
+        exp_buttons_layout.addWidget(self.step_experiment_button)
+
+        self.stop_experiment_button = QPushButton("Stop")
+        self.stop_experiment_button.setEnabled(False)
+        self.stop_experiment_button.clicked.connect(self._on_stop_experiment)
+        exp_buttons_layout.addWidget(self.stop_experiment_button)
+
+        self.open_config_button = QPushButton("Open Config")
+        self.open_config_button.clicked.connect(self._on_open_experiment_config)
+        exp_buttons_layout.addWidget(self.open_config_button)
+        exp_layout.addLayout(exp_buttons_layout)
+
+        self.experiment_status_label = QLabel("Status: idle")
+        exp_layout.addWidget(self.experiment_status_label)
+        exp_layout.addStretch()
+
+        self.prompt_tabs.addTab(experiments_container, "Experiments")
+
         third_column.addWidget(self.prompt_tabs)
 
         # Add columns to main layout
@@ -199,6 +241,8 @@ class SettingsWidget(QWidget):
         self._state.context_updates_allowed_changed.connect(
             self._apply_context_updates_allowed
         )
+        self._state.server_model_state_changed.connect(self._apply_server_model_state)
+        self._state.server_model_key_changed.connect(self._apply_server_model_state)
 
         self._apply_session_state(self._state.session_state)
         self._apply_screen(self._state.screen)
@@ -362,20 +406,122 @@ class SettingsWidget(QWidget):
         threading.Thread(target=self._do_health_check, daemon=True).start()
 
     def _do_health_check(self) -> None:
-        parsed = urlparse(INFERENCE_WS_URL)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or 8008
+        url = f"{INFERENCE_HTTP_BASE}/status"
         try:
-            sock = socket.create_connection((host, port), timeout=2)
-            sock.close()
-            self._health_check_result.emit(True)
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+            model_info = data.get("model", {})
+            model_state = model_info.get("state", "unknown")
+            model_key = model_info.get("model_key") or ""
+            self._health_check_result.emit(True, model_state, model_key)
         except Exception:
-            self._health_check_result.emit(False)
+            self._health_check_result.emit(False, "unknown", "")
 
-    def _apply_health_result(self, connected: bool) -> None:
+    def _apply_health_result(
+        self, connected: bool, model_state: str, model_key: str
+    ) -> None:
+        # Update health label
         if connected:
             self._health_label.setText("Server: Connected")
             self._health_label.setStyleSheet("QLabel { color: #4CAF50; }")
         else:
             self._health_label.setText("Server: Disconnected")
             self._health_label.setStyleSheet("QLabel { color: #f44336; }")
+
+        # Update model state in view state
+        self._state.server_model_state = model_state
+        self._state.server_model_key = model_key
+
+    # --- Model dialog ---------------------------------------------------
+    def _on_set_model_clicked(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set model")
+        layout = QVBoxLayout(dialog)
+
+        combo = QComboBox()
+        for key, display_name in AVAILABLE_MODELS.items():
+            combo.addItem(display_name, key)
+        # Pre-select the persisted selection
+        current_key = self._state.selected_model
+        for i in range(combo.count()):
+            if combo.itemData(i) == current_key:
+                combo.setCurrentIndex(i)
+                break
+        layout.addWidget(combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        model_key = combo.currentData()
+        self._state.selected_model = model_key
+        self._request_model_load(model_key)
+
+    def _apply_server_model_state(self, *_args) -> None:
+        state = self._state.server_model_state
+        key = self._state.server_model_key
+        if state == "loaded" and key:
+            display = AVAILABLE_MODELS.get(key, key)
+            self._model_state_label.setText(f"Model: {display}")
+            self._model_state_label.setStyleSheet("QLabel { color: #4CAF50; }")
+        elif state == "loading":
+            self._model_state_label.setText("Model: loading...")
+            self._model_state_label.setStyleSheet("QLabel { color: #FFA726; }")
+        elif state == "unloaded":
+            self._model_state_label.setText("Model: unloaded")
+            self._model_state_label.setStyleSheet("QLabel { color: #888; }")
+        else:
+            self._model_state_label.setText("Model: unknown")
+            self._model_state_label.setStyleSheet("QLabel { color: #888; }")
+
+    def _request_model_load(self, model_key: str) -> None:
+        threading.Thread(
+            target=self._do_model_load, args=(model_key,), daemon=True
+        ).start()
+
+    def _do_model_load(self, model_key: str) -> None:
+        url = f"{INFERENCE_HTTP_BASE}/model/load"
+        payload = json.dumps({"model_key": model_key}).encode()
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            model_info = data.get("model", {})
+            model_state = model_info.get("state", "unknown")
+            mk = model_info.get("model_key") or ""
+            self._health_check_result.emit(True, model_state, mk)
+        except Exception:
+            # Trigger a health check to get fresh state
+            self._do_health_check()
+
+    def _on_step_experiment(self):
+        facade.experiments_manager.step()
+        self._update_experiment_buttons()
+
+    def _on_stop_experiment(self):
+        facade.experiments_manager.stop()
+        self._update_experiment_buttons()
+
+    def _on_open_experiment_config(self):
+        config_path = facade.experiments_manager.config_path
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+    def _update_experiment_buttons(self):
+        running = facade.experiments_manager.running
+        self.stop_experiment_button.setEnabled(running)
+        self.experiment_status_label.setText(
+            f"Status: {facade.experiments_manager.state.value}"
+            f" (step {facade.experiments_manager._current_step})"
+        )

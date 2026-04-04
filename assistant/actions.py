@@ -124,11 +124,11 @@ def add_user_message(text: str) -> None:
     controller = facade.context_controller
     cleaned = text.strip()
     if cleaned:
-        text_item = ContextItem()
-        text_item.position = controller.next_position()
-        text_item.size = 0
-        text_item.content = {"text": cleaned}
-        text_item.metadata = {"origin": "user"}
+        text_item = ContextItem.create_text(
+            position=controller.next_position(),
+            text=cleaned,
+            origin="user",
+        )
         controller.create(text_item)
 
     request_item = ContextItem()
@@ -140,5 +140,5 @@ def add_user_message(text: str) -> None:
         "max_new_tokens": 256,
         "temperature": 0.0,
     }
-    request_item.metadata = {"origin": "user", "trigger": "manual-send"}
+    request_item.metadata = {"origin": "user"}
     controller.create(request_item)
