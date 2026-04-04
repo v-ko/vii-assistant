@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING, Optional
 from uuid import uuid4
 
 from fusion.platform.qt_widgets.utils import qpixmap_to_pil
-from PIL import Image
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
+    QEvent,
     QPoint,
     QPropertyAnimation,
     Qt,
@@ -16,12 +16,11 @@ from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QWidget
 
 from assistant.actions import (
+    _ensure_session,
     add_user_message,
     new_session,
     ocr_clipboard,
     open_sessions_folder,
-    pause_or_stop_session,
-    start_session,
 )
 from assistant.facade import facade  # module-level singleton
 from assistant.image_ops import resize_like_preprocessor
@@ -56,12 +55,6 @@ class TerminalWindow(QWidget):
         self.model_settings.ocr_clipboard_clicked.connect(ocr_clipboard)
         self.model_settings.attach_screen_clicked.connect(self.attach_screen)
         self.model_settings.attach_clipboard_clicked.connect(self.attach_clipboard)
-        self.model_settings.start_session_clicked.connect(
-            lambda: start_session(screen_name=facade.app_state.settings_VS.screen)
-        )
-        self.model_settings.stop_session_clicked.connect(
-            lambda: pause_or_stop_session(new_state="paused")
-        )
         self.model_settings.new_session_clicked.connect(new_session)
         self.model_settings.open_sessions_folder_clicked.connect(open_sessions_folder)
         self.context_viewer.message_submitted.connect(add_user_message)
@@ -84,17 +77,29 @@ class TerminalWindow(QWidget):
         container_layout.setStretch(0, 1)
         container_layout.setStretch(1, 1)
 
-        # Container styling (window itself is transparent)
+        # Container styling (window itself is transparent for drop-down effect)
+        self._apply_container_style()
+
+    def _apply_container_style(self) -> None:
+        p = self.palette()
+        bg = p.color(p.ColorRole.Window).name()
+        border = p.color(p.ColorRole.Mid).name()
+        fg = p.color(p.ColorRole.WindowText).name()
         self.container.setStyleSheet(
-            """
-            #terminalWindowContainer {
-                background-color: #2d2d2d;
-                border: 1px solid #444;
+            f"""
+            #terminalWindowContainer {{
+                background-color: {bg};
+                border: 1px solid {border};
                 border-radius: 5px;
-                color: #e0e0e0;
-            }
+                color: {fg};
+            }}
         """
         )
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            self._apply_container_style()
+        super().changeEvent(event)
 
     # set_facade removed; widgets access facade singleton directly
 
@@ -170,9 +175,12 @@ class TerminalWindow(QWidget):
         if not self._facade:
             return
 
+        _ensure_session()
         controller = self._facade.context_controller
         pil = qpixmap_to_pil(pixmap)
-        processed_img, meta = resize_like_preprocessor(pil)
+        processed_img, meta = resize_like_preprocessor(
+            pil, facade.image_preprocessor.image_processor
+        )
 
         buf = BytesIO()
         processed_img.save(buf, format="PNG")

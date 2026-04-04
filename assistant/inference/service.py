@@ -12,22 +12,19 @@ import torch
 from fusion import get_logger
 from fusion.libs.channel import Channel
 from fusion.libs.entity.change import Change
-from transformers import (
-    AutoProcessor,
-    Qwen2_5_VLForConditionalGeneration,
-    TextIteratorStreamer,
-)
+from transformers import AutoProcessor, TextIteratorStreamer
 
 from assistant.inference.context import ContextItem, ContextManager
 from assistant.inference.interface import wrap_append_item_content_text
 from assistant.inference.qwen_tokens import compile_qwen_context
+from assistant.model_configs import MODEL_ID
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class ModelConfig:
-    model_id: str = "Qwen/Qwen3-VL-4B-Instruct"  # "Qwen/Qwen2.5-VL-3B-Instruct"
+    model_id: str = MODEL_ID
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     precision: Optional[str] = None  # one of: bf16, fp16, fp32, or None for auto
     default_generation_params: Dict[str, Any] | None = None
@@ -37,7 +34,7 @@ class InferenceService:
     def __init__(
         self,
         processor: AutoProcessor,
-        model: Qwen2_5_VLForConditionalGeneration,
+        model: Any,
         config: Optional[ModelConfig] = None,
         *,
         session_id: Optional[str] = None,
@@ -45,7 +42,7 @@ class InferenceService:
         self.context = ContextManager()
         self.config = config or ModelConfig()
         self.processor: AutoProcessor = processor
-        self.model: Qwen2_5_VLForConditionalGeneration = model
+        self.model: Any = model
         self._device = torch.device(self.config.device)
         self._lock = asyncio.Lock()
         # Active streaming threads (keyed by item id) for future cancellation support
@@ -102,6 +99,15 @@ class InferenceService:
     async def _dispatch_generation(self, item: ContextItem) -> None:
         processor = self.processor
         compiled = compile_qwen_context(self.context, processor)
+        input_ids = compiled.processor_inputs.get("input_ids")
+        prompt_tokens = input_ids.shape[1] if input_ids is not None else 0
+        logger.info(
+            "Dispatching generation for item=%s stream=%s tokens=%d images=%d",
+            getattr(item, "id", None),
+            bool((item.request or {}).get("stream")),
+            prompt_tokens,
+            len(compiled.images),
+        )
 
         # Prepare inputs
         inputs = {k: v for k, v in compiled.processor_inputs.items()}
@@ -186,6 +192,12 @@ class InferenceService:
                 meta = dict(updated.metadata or {})
                 meta["tokens_len"] = tokens_len
                 updated.metadata = meta
+            logger.info(
+                "Non-stream generation complete item=%s text_len=%d tokens=%s",
+                getattr(updated, "id", None),
+                len(decoded_full),
+                tokens_len,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Inference failed (non-stream) for item %s: %s",
@@ -334,6 +346,12 @@ class InferenceService:
                     meta = dict(updated.metadata or {})
                     meta["tokens_len"] = tokens_len
                     updated.metadata = meta
+                logger.info(
+                    "Streaming generation complete item=%s text_len=%d tokens=%s",
+                    getattr(updated, "id", None),
+                    len(full_text),
+                    tokens_len,
+                )
         finally:
             if thread.is_alive():
                 thread.join(timeout=0.1)

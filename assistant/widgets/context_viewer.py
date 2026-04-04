@@ -7,6 +7,7 @@ from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QCursor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -53,30 +54,33 @@ class _ImagePreviewPopup(QWidget):
         layout.setSpacing(0)
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setStyleSheet(
-            "background-color: rgba(20, 20, 20, 220); border: 1px solid #555;"
-        )
+        self._label.setStyleSheet("border: 1px solid palette(mid);")
         layout.addWidget(self._label)
 
     def show_pixmap(self, pixmap: QPixmap, anchor: QPoint) -> None:
-        target = pixmap
-        max_width = 480
-        max_height = 360
-        if (
-            pixmap.width() > max_width
-            or pixmap.height() > max_height
-            and pixmap.width() > 0
-            and pixmap.height() > 0
-        ):
+        screen = QApplication.screenAt(anchor)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        screen_rect = screen.availableGeometry()
+        max_width = int(screen_rect.width() * 0.9)
+        max_height = int(screen_rect.height() * 0.9)
+
+        if pixmap.width() > max_width or pixmap.height() > max_height:
             target = pixmap.scaled(
                 max_width,
                 max_height,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+        else:
+            target = pixmap
+
         self._label.setPixmap(target)
         self.resize(self.sizeHint())
-        self.move(anchor)
+        # Keep the popup within screen bounds
+        x = min(anchor.x(), screen_rect.right() - self.width())
+        y = min(anchor.y(), screen_rect.bottom() - self.height())
+        self.move(QPoint(max(x, screen_rect.x()), max(y, screen_rect.y())))
         self.show()
 
 
@@ -104,7 +108,7 @@ class _BaseItemWidget(QFrame):
         self._state = state
         # Frameless & minimal
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setStyleSheet("QFrame { background-color: transparent; }")
+        self.setStyleSheet("QFrame { background: transparent; }")
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 2, 4, 2)
         self._layout.setSpacing(2)
@@ -160,13 +164,15 @@ class _TextItemWidget(_BaseItemWidget):
             # Show placeholder if request in progress (has request summary) else nothing
             if self._state.request_summary:
                 self._body.setText("(…)")
-                self._body.setStyleSheet("QLabel { color: #888; font-style: italic; }")
+                self._body.setStyleSheet(
+                    "QLabel { color: palette(disabled-text); font-style: italic; }"
+                )
             else:
                 self._body.setText("")
-                self._body.setStyleSheet("QLabel { color: #888; }")
+                self._body.setStyleSheet("QLabel { color: palette(disabled-text); }")
         else:
             self._body.setText(trimmed)
-            self._body.setStyleSheet("QLabel { color: #f0f0f0; }")
+            self._body.setStyleSheet("")
         self._notify_size_change()
 
 
@@ -191,13 +197,11 @@ class _ToolCallItemWidget(_BaseItemWidget):
         if not payload.strip():
             self._body.setText("(…)")
             self._body.setStyleSheet(
-                "QLabel { color: #bfa86a; font-style: italic; font-family: monospace; }"
+                "QLabel { font-style: italic; font-family: monospace; }"
             )
         else:
             self._body.setText(payload)
-            self._body.setStyleSheet(
-                "QLabel { color: #ffd27f; font-family: monospace; }"
-            )
+            self._body.setStyleSheet("QLabel { font-family: monospace; }")
         self._notify_size_change()
 
 
@@ -211,9 +215,7 @@ class _ImageItemWidget(_BaseItemWidget):
         self._preview_manager = preview_manager
         self._thumb = QLabel()
         self._thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._thumb.setStyleSheet(
-            "QLabel { background-color: #1f1f1f; border: 1px solid #333; }"
-        )
+        self._thumb.setStyleSheet("QLabel { border: 1px solid palette(mid); }")
         self._insert_before_footer(self._thumb)
         self._full_pixmap: Optional[QPixmap] = None
         self._state.image_b64_changed.connect(self._update_image)
@@ -273,7 +275,8 @@ class _SystemPromptItemWidget(_BaseItemWidget):
 
         title_label = QLabel("System Prompt")
         title_label.setStyleSheet(
-            "QLabel { color: #888; font-weight: bold; font-size: 11px; }"
+            "QLabel { color: palette(disabled-text); font-weight: bold; font-size:"
+            " 11px; }"
         )
         header_layout.addWidget(title_label)
         header_layout.addStretch()
@@ -292,8 +295,8 @@ class _SystemPromptItemWidget(_BaseItemWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
         )
         self._content.setStyleSheet(
-            "QLabel { color: #aaa; background-color: #1a1a1a; padding: 6px; "
-            "border-left: 2px solid #555; font-size: 11px; }"
+            "QLabel { color: palette(text); padding: 6px; "
+            "border-left: 2px solid palette(mid); font-size: 11px; }"
         )
         self._content.setVisible(False)  # Start collapsed
         self._content.setMaximumHeight(0)  # Ensure it takes no space when hidden
@@ -349,7 +352,7 @@ class ContextViewerWidget(QWidget):
 
         self._empty_label = QLabel("No context items yet.")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet("color: #777;")
+        self._empty_label.setStyleSheet("color: palette(disabled-text);")
 
         self._list = QListWidget()
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -411,6 +414,7 @@ class ContextViewerWidget(QWidget):
             self._register_item_widget(state.item_id, list_item, widget)
         self._list.setUpdatesEnabled(True)
         self._update_all_item_sizes()
+        self._list.scrollToBottom()
 
     def _widget_for_state(self, state: ContextItemViewState) -> _BaseItemWidget:
         kind = state.content_kind

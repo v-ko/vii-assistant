@@ -2,11 +2,13 @@ import sys
 
 from fusion.loop import set_main_loop
 from fusion.platform.qt_widgets.qt_main_loop import QtMainLoop
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QAction, QScreen
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from assistant.app_actions import toggle_terminal
 from assistant.app_state import AppState
+from assistant.facade import facade
 from assistant.util import get_logger
 from assistant.view_states.terminal import TerminalViewState
 from assistant.widgets.overlay import ModelVisionOverlay
@@ -23,63 +25,7 @@ class AssistantQtApp(QApplication):
         # Prevent app from closing when all windows are closed
         self.setQuitOnLastWindowClosed(False)
 
-        # Global application stylesheet using CSS inheritance principles
-        # Using wildcard for universal application of disabled states
-        self.setStyleSheet(
-            """
-            QWidget:disabled {
-                background-color: #1a1a1a;
-                color: #555;
-                border-color: #333;
-            }
-
-            QPushButton {
-                border: 1px solid #666;
-                border-radius: 4px;
-                padding: 4px 10px;
-                font-weight: 500;
-                min-height: 26px;
-            }
-            QPushButton:enabled {
-                background-color: #444;
-                color: #f0f0f0;
-            }
-            QPushButton:enabled:hover {
-                background-color: #515151;
-                border-color: #7a7a7a;
-            }
-            QPushButton:enabled:pressed {
-                background-color: #3a3a3a;
-                border-color: #555;
-                padding-top: 5px;
-                padding-bottom: 3px;
-            }
-
-            QComboBox {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 8px;
-            }
-            QComboBox:enabled {
-                background-color: #3a3a3a;
-                color: #e0e0e0;
-            }
-            QComboBox:enabled:hover {
-                background-color: #444;
-            }
-
-            QPlainTextEdit {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px;
-                font-family: 'Fira Code', monospace;
-            }
-            QPlainTextEdit:enabled {
-                background-color: #1f1f1f;
-                color: #f0f0f0;
-            }
-        """
-        )  # Initialize components
+        #  Initialize components
         self.app_state = AppState(parent=self)
         self.terminal_state = TerminalViewState(self.app_state)
         self.terminal_window = TerminalWindow(self.terminal_state)
@@ -143,26 +89,70 @@ class AssistantQtApp(QApplication):
     # --- Screen change binding (moved from facade) ------------------
     def bind_screen_overlay(self, initial_screen):
         """Initialize overlay with screen and connect to screen changes."""
-        # Initialize overlay with the configured screen
         self.initialize_overlay(initial_screen)
 
-        # Connect to future screen changes
         try:
             settings_state = self.terminal_state.app_state.settings_VS
         except Exception:
             return
-        # Avoid duplicate connections
         if getattr(self, "_overlay_bound", False):
             return
         settings_state.screen_changed.connect(self._on_screen_changed)
+
+        self.screenAdded.connect(self._on_screen_added)
+        self.screenRemoved.connect(self._on_screen_removed)
+        self.primaryScreenChanged.connect(self._on_primary_screen_changed)
+        self._watch_screen_geometry(initial_screen)
         self._overlay_bound = True
+
+    def _watch_screen_geometry(self, screen: QScreen) -> None:
+        prev = getattr(self, "_watched_screen", None)
+        if prev is not None:
+            try:
+                prev.geometryChanged.disconnect(self._on_screen_geometry_changed)
+            except RuntimeError:
+                pass
+        self._watched_screen = screen
+        screen.geometryChanged.connect(self._on_screen_geometry_changed)
 
     def _on_screen_changed(self, screen_name: str) -> None:
         if not screen_name:
             return
-        from assistant.facade import facade  # local import to avoid circular
-
         screen = facade.get_screen_by_name(screen_name)
         if screen is None:
             raise RuntimeError(f"Selected screen '{screen_name}' not found")
+        self._watch_screen_geometry(screen)
         self.update_overlay_screen(screen)
+
+    def _on_screen_added(self, screen: QScreen) -> None:
+        log.info(f"Screen added: {screen.name()}")
+        self._repopulate_screen_combo()
+        self.terminal_window.position_window()
+
+    def _on_screen_removed(self, screen: QScreen) -> None:
+        log.info(f"Screen removed: {screen.name()}")
+        from assistant.facade import facade
+
+        settings = self.terminal_state.app_state.settings_VS
+        if screen.name() == settings.screen:
+            fallback = facade.get_default_screen()
+            log.info(f"Watched screen removed, falling back to: {fallback.name()}")
+            settings.screen = fallback.name()
+        self._repopulate_screen_combo()
+        self.terminal_window.position_window()
+
+    def _on_primary_screen_changed(self, screen: QScreen) -> None:
+        log.info(f"Primary screen changed: {screen.name()}")
+        self.terminal_window.position_window()
+
+    def _on_screen_geometry_changed(self, rect: QRect) -> None:
+        log.info(f"Screen geometry changed: {rect}")
+        if self.overlay is not None:
+            self.overlay._setup_full_screen()
+
+    def _repopulate_screen_combo(self) -> None:
+        try:
+            sw = self.terminal_window.model_settings
+            sw.populate_screen_combo()
+        except Exception:
+            pass

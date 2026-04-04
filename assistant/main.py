@@ -7,6 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
+from PySide6.QtCore import QTimer
 
 from assistant.registries.actions import execute_action
 from assistant.server.client import port_is_taken, send_command
@@ -69,6 +70,11 @@ def main(command):
     # Start a new instance (after services injected so set_qt_app can wire them)
     qt_app = AssistantQtApp()
     facade.set_qt_app(qt_app)
+
+    # Configure image preprocessor model (loaded lazily on first use)
+    from assistant.model_configs import MODEL_ID
+
+    facade.set_image_preprocessor_config(MODEL_ID)
 
     # Config already loaded; facade ensures screen is set during set_qt_app
     print(f"Config: {facade.config}")

@@ -3,3 +3,8 @@
 node_modules
 
 fusion-py-src
+papers/*
+
+experiments.md
+papers.md
+work-history.md

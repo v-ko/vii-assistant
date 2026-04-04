@@ -1,4 +1,8 @@
-from PySide6.QtCore import QSignalBlocker, Signal
+import socket
+import threading
+from urllib.parse import urlparse
+
+from PySide6.QtCore import QSignalBlocker, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -12,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from assistant.services.hybrid_segment_service import hfi
+from assistant.services.project_manager import INFERENCE_WS_URL
 from assistant.view_states.settings import SettingsViewState
 
 
@@ -23,10 +29,10 @@ class SettingsWidget(QWidget):
     attach_screen_clicked = Signal()
     attach_clipboard_clicked = Signal()
     # Session control signals
-    start_session_clicked = Signal()
-    stop_session_clicked = Signal()
     new_session_clicked = Signal()
     open_sessions_folder_clicked = Signal()
+    # Internal signal for cross-thread health check result
+    _health_check_result = Signal(bool)
 
     def __init__(self, state: SettingsViewState, parent=None):
         super().__init__(parent)
@@ -53,20 +59,8 @@ class SettingsWidget(QWidget):
         session_controls_layout.setSpacing(6)
         # session_controls_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.start_session_button = QPushButton("▶")
-        self.start_session_button.setToolTip("Begin recording a new session")
-        self.start_session_button.clicked.connect(self.on_start_session_clicked)
-        self.start_session_button.setAccessibleName("Start session")
-        session_controls_layout.addWidget(self.start_session_button)
-
-        self.stop_session_button = QPushButton("⏹")
-        self.stop_session_button.setToolTip("Stop the current session")
-        self.stop_session_button.clicked.connect(self.on_stop_session_clicked)
-        self.stop_session_button.setAccessibleName("Stop session")
-        session_controls_layout.addWidget(self.stop_session_button)
-
         self.new_session_button = QPushButton("New session")
-        self.new_session_button.setToolTip("Create a new session workspace")
+        self.new_session_button.setToolTip("Reset context and start a new session")
         self.new_session_button.clicked.connect(self.on_new_session_clicked)
         self.new_session_button.setAccessibleName("New session")
         session_controls_layout.addWidget(self.new_session_button)
@@ -75,11 +69,7 @@ class SettingsWidget(QWidget):
 
         # Normalize button heights
         uniform_button_height = 30
-        for button in (
-            self.start_session_button,
-            self.stop_session_button,
-            self.new_session_button,
-        ):
+        for button in (self.new_session_button,):
             button.setMinimumWidth(48)
             button.setFixedHeight(uniform_button_height)
             button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -118,10 +108,24 @@ class SettingsWidget(QWidget):
         self.attach_clipboard_button.setFixedHeight(uniform_button_height)
         first_column.addWidget(self.attach_clipboard_button)
 
+        # Server health status label
+        self._health_label = QLabel("Server: checking...")
+        self._health_label.setFixedHeight(uniform_button_height)
+        self._health_label.setStyleSheet("QLabel { color: #888; }")
+        first_column.addWidget(self._health_label)
+
         first_column.addStretch()
 
         # Request in progress flag
         self._request_in_progress = False
+
+        # Health check timer (5 second interval, only pings when visible)
+        self._health_check_result.connect(self._apply_health_result)
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(5000)
+        self._health_timer.timeout.connect(self._schedule_health_check)
+        self._health_timer.start()
+        self._schedule_health_check()
 
         # Second column: Screen selector (client selection removed for now)
         second_column = QVBoxLayout()
@@ -159,14 +163,22 @@ class SettingsWidget(QWidget):
         self.user_query_edit = QPlainTextEdit()
         self.user_query_edit.setPlaceholderText("Describe the user request (markdown)")
         self.user_query_edit.textChanged.connect(self.on_user_query_changed)
-        self.prompt_tabs.addTab(self.user_query_edit, "User Query")
+        self.prompt_tabs.addTab(self.user_query_edit, "Notes")
 
+        system_prompt_container = QWidget()
+        sp_layout = QVBoxLayout(system_prompt_container)
+        sp_layout.setContentsMargins(0, 0, 0, 0)
+        sp_layout.setSpacing(4)
         self.system_prompt_edit = QPlainTextEdit()
         self.system_prompt_edit.setPlaceholderText(
             "Define the system prompt (markdown)"
         )
         self.system_prompt_edit.textChanged.connect(self.on_system_prompt_changed)
-        self.prompt_tabs.addTab(self.system_prompt_edit, "System Prompt")
+        sp_layout.addWidget(self.system_prompt_edit)
+        self.add_tool_prompt_button = QPushButton("Add tool prompt")
+        self.add_tool_prompt_button.clicked.connect(self._on_add_tool_prompt)
+        sp_layout.addWidget(self.add_tool_prompt_button)
+        self.prompt_tabs.addTab(system_prompt_container, "System Prompt")
 
         third_column.addWidget(self.prompt_tabs)
 
@@ -219,22 +231,7 @@ class SettingsWidget(QWidget):
         """Client selection disabled; placeholder for future reintroduction."""
         return
 
-    def on_start_session_clicked(self):
-        """Handle start session button click."""
-        if self._session_state == "started":
-            return
-        self.start_session_clicked.emit()
-
-    def on_stop_session_clicked(self):
-        """Handle stop session button click."""
-        if self._session_state != "started":
-            return
-        self.stop_session_clicked.emit()
-
     def on_new_session_clicked(self):
-        """Handle new session button click."""
-        if self._session_state == "started":
-            return
         self.new_session_clicked.emit()
 
     def on_open_sessions_folder_clicked(self):
@@ -260,17 +257,8 @@ class SettingsWidget(QWidget):
 
     def _update_session_controls(self) -> None:
         state = self._session_state
-        self.start_session_button.setEnabled(state in {"new-session", "paused"})
-        self.start_session_button.setToolTip(
-            "Resume the current session"
-            if state == "paused"
-            else "Begin recording a new session"
-        )
-        self.stop_session_button.setEnabled(state == "started")
-        self.new_session_button.setEnabled(state != "started")
-
-        config_locked = state in {"started", "paused"}
-        self.screen_combo.setEnabled(not config_locked)
+        self.new_session_button.setEnabled(state != "new-session")
+        self.screen_combo.setEnabled(state not in {"started", "paused"})
 
     # client combo removed
 
@@ -323,6 +311,14 @@ class SettingsWidget(QWidget):
             return
         self._state.system_prompt_markdown = text
 
+    def _on_add_tool_prompt(self) -> None:
+        tool_prompt = hfi.generate_tool_prompt()
+        if not tool_prompt:
+            return
+        current = self.system_prompt_edit.toPlainText()
+        separator = "\n\n" if current.strip() else ""
+        self.system_prompt_edit.setPlainText(current + separator + tool_prompt)
+
     @property
     def request_in_progress(self) -> bool:
         """Get the request in progress flag."""
@@ -359,3 +355,27 @@ class SettingsWidget(QWidget):
         enabled = (not self._request_in_progress) and self._context_updates_allowed
         self.attach_screen_button.setEnabled(enabled)
         self.attach_clipboard_button.setEnabled(enabled)
+
+    def _schedule_health_check(self) -> None:
+        if not self.isVisible():
+            return
+        threading.Thread(target=self._do_health_check, daemon=True).start()
+
+    def _do_health_check(self) -> None:
+        parsed = urlparse(INFERENCE_WS_URL)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 8008
+        try:
+            sock = socket.create_connection((host, port), timeout=2)
+            sock.close()
+            self._health_check_result.emit(True)
+        except Exception:
+            self._health_check_result.emit(False)
+
+    def _apply_health_result(self, connected: bool) -> None:
+        if connected:
+            self._health_label.setText("Server: Connected")
+            self._health_label.setStyleSheet("QLabel { color: #4CAF50; }")
+        else:
+            self._health_label.setText("Server: Disconnected")
+            self._health_label.setStyleSheet("QLabel { color: #f44336; }")

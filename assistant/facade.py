@@ -27,6 +27,8 @@ class Facade:
     _session_manager: Optional["SessionManager"] = None
     _app_state: Optional["AppState"] = None
     _config_persistence: Optional[ConfigPersistenceService] = None
+    _image_preprocessor = None
+    _image_preprocessor_model_id: str | None = None
 
     def __init__(self):
         # Minimal setup; external services injected from main to avoid circular deps
@@ -42,6 +44,22 @@ class Facade:
         self._project_manager = manager
         # Wire inference updates to reducer
         self.inference_updates.subscribe(apply_inference_event)
+
+    def set_image_preprocessor_config(self, model_id: str) -> None:
+        self._image_preprocessor_model_id = model_id
+        self._image_preprocessor = None
+
+    @property
+    def image_preprocessor(self):
+        if self._image_preprocessor is None:
+            if self._image_preprocessor_model_id is None:
+                raise RuntimeError("Image preprocessor model not configured")
+            from transformers import AutoProcessor
+
+            self._image_preprocessor = AutoProcessor.from_pretrained(
+                self._image_preprocessor_model_id
+            )
+        return self._image_preprocessor
 
     @property
     def qt_app(self) -> "AssistantQtApp":

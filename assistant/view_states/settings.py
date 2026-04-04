@@ -42,7 +42,7 @@ class SettingsViewState(QObject):
         self._user_query = ""
         self._system_prompt = ""
         self._info_messages: list[str] = []
-        self._context_updates_allowed = False
+        self._context_updates_allowed = True
         self._info_message_enqueued.connect(self._append_info_message)
 
     # --- lifecycle -------------------------------------------------
@@ -84,7 +84,6 @@ class SettingsViewState(QObject):
             return
         self._session_state = value
         self.session_state_changed.emit(value)
-        self.context_updates_allowed = value == "started"
 
     # client_type removed
 

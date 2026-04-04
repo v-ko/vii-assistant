@@ -85,10 +85,10 @@ class ModelVisionOverlay(QWidget):
     def paintEvent(self, event):
         """Paint the overlay with the configured shapes."""
         painter = QPainter(self)
-        log.info(
-            f"Overlay paint event, size: {self.width()}x{self.height()}, shapes:"
-            f" {len(self._shapes)}"
-        )
+        # log.info(
+        #     f"Overlay paint event, size: {self.width()}x{self.height()}, shapes:"
+        #     f" {len(self._shapes)}"
+        # )
 
         # Enable antialiasing for smoother shapes
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

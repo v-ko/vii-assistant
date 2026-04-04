@@ -6,9 +6,6 @@ from typing import Protocol, TypedDict
 
 from PIL import Image
 from qwen_vl_utils import smart_resize
-from transformers import AutoProcessor  # type: ignore
-
-from assistant.model_configs import MODEL_ID
 
 
 class SupportsVisionResize(Protocol):
@@ -22,15 +19,10 @@ class ResizeMetadata(TypedDict):
     height: int
 
 
-qwen_processor = AutoProcessor.from_pretrained(MODEL_ID)
-
-
 def resize_like_preprocessor(
     image: Image.Image,
-    image_processor: SupportsVisionResize = qwen_processor.image_processor,
+    image_processor: SupportsVisionResize,
 ) -> tuple[Image.Image, ResizeMetadata]:
-    """Resize *image* the same way the Qwen processor would."""
-
     resized_height, resized_width = smart_resize(
         image.height,
         image.width,
@@ -70,7 +62,21 @@ def scale_qwen_bbox_xyxy(
     return sx, sy, ex, ey
 
 
-__all__ = [
-    "resize_like_preprocessor",
-    "scale_qwen_bbox_xyxy",
-]
+def scale_qwen_point(
+    point: tuple[int, int],
+    *,
+    input_w: int,
+    input_h: int,
+    orig_w: int,
+    orig_h: int,
+    coords_are_qwen_grid: bool = True,
+) -> tuple[int, int]:
+    x, y = point
+    if coords_are_qwen_grid:
+        rx = int(x / 1000 * input_w)
+        ry = int(y / 1000 * input_h)
+    else:
+        rx, ry = x, y
+    sx = int(rx / input_w * orig_w)
+    sy = int(ry / input_h * orig_h)
+    return sx, sy

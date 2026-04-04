@@ -1,4 +1,4 @@
-"""Utilities for compiling contexts into Qwen2.5-VL inputs."""
+"""Utilities for compiling contexts into Qwen inputs."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ def compile_qwen_context(
 ) -> CompiledQwenContext:
     batch: MessageBatch = context_manager.items_as_qwen_chat_messages()
     messages, images = batch.messages, batch.images
+    logger.info(
+        "Compiling context for Qwen: messages=%d images=%d",
+        len(messages),
+        len(images),
+    )
     resized_images: List[Image.Image] = []
     resize_meta: List[Dict[str, int]] = []
     # Use processor.image_processor via Any to satisfy static typing
@@ -50,12 +55,14 @@ def compile_qwen_context(
         tokenize=False,
         add_generation_prompt=add_generation_prompt,
     )
-    processor_outputs = cast(Any, processor)(  # type: ignore[misc]
-        text=[prompt],
-        images=resized_images,
-        return_tensors="pt",
-        padding=True,
-    )
+    processor_kwargs: Dict[str, Any] = {
+        "text": [prompt],
+        "return_tensors": "pt",
+        "padding": True,
+    }
+    if resized_images:
+        processor_kwargs["images"] = resized_images
+    processor_outputs = cast(Any, processor)(**processor_kwargs)  # type: ignore[misc]
 
     return CompiledQwenContext(
         prompt=prompt,

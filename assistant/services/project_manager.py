@@ -9,21 +9,20 @@ from typing import Any, Optional
 
 from assistant.facade import facade
 from assistant.inference.context import ContextItem, ContextManager
+from assistant.services.context_sync_client import ContextSyncClient
 from assistant.services.hybrid_segment_service import HybridSegmentService
-from assistant.services.inference_client import InferenceClient
 
 from .session_recorder import SessionRecorder, SessionRecorderConfig
 
 TASK_FILENAME = "task.md"
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 SESSIONS_DIRNAME = "sessions"
-WEBSOCKET_URL_ENV_VAR = "VII_ASSISTANT_WS_URL"
-# DEFAULT_WEBSOCKET_URL = "ws://desk:8008/ws/context"
-DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/context"
+DEFAULT_WEBSOCKET_URL = "ws://desk:8008/ws/context"
+# DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/context"
 
 # Resolve inference websocket URL at import time (env override if provided, fallback to default)
 INFERENCE_WS_URL = (
-    os.environ.get(WEBSOCKET_URL_ENV_VAR, DEFAULT_WEBSOCKET_URL).strip()
+    os.environ.get("VII_ASSISTANT_WS_URL", DEFAULT_WEBSOCKET_URL).strip()
     or DEFAULT_WEBSOCKET_URL
 )
 
@@ -69,6 +68,12 @@ class SessionManager:
         created_at = datetime.now(timezone.utc)
         session_id = created_at.strftime("%Y-%m-%d_%H-%M-%S")
         session_path = root / session_id
+        # Append counter suffix on collision (rapid clicks)
+        counter = 1
+        while session_path.exists():
+            session_id = f"{created_at.strftime('%Y-%m-%d_%H-%M-%S')}_{counter}"
+            session_path = root / session_id
+            counter += 1
         session_path.mkdir(parents=True, exist_ok=False)
 
         return SessionMetadata(
@@ -113,7 +118,7 @@ class SessionManager:
         with log_path.open("a", encoding="utf-8") as handle:
             json.dump(entry_with_metadata, handle)
             handle.write("\n")
-        print(f"[SessionManager] activity_log entry: {json.dumps(entry_with_metadata)}")
+        # print(f"[SessionManager] activity_log entry: {json.dumps(entry_with_metadata)}")
 
     @property
     def session_id(self) -> str:
@@ -157,7 +162,7 @@ class ViiProjectManager:
 
         # Session & inference runtime
         self._session_manager: Optional[SessionManager] = None
-        self._inference_client: Optional[InferenceClient] = None
+        self._context_sync_client: Optional[ContextSyncClient] = None
         self._running = False
         # Segment/vision service (always present)
 
@@ -234,13 +239,13 @@ class ViiProjectManager:
         settings_state.session_state = "started"
 
         # Ensure inference client
-        if self._inference_client is None:
+        if self._context_sync_client is None:
             ws_url = INFERENCE_WS_URL
             settings_state.post_info_message(
                 f"Connecting to inference websocket at {ws_url}..."
             )
-            self._inference_client = InferenceClient(url=ws_url)
-            self._inference_client.start()
+            self._context_sync_client = ContextSyncClient(url=ws_url)
+            self._context_sync_client.start()
 
         # Add system prompt as first context item (after client starts)
         # The client subscribes to client_updates channel, so this will be sent
@@ -284,6 +289,10 @@ class ViiProjectManager:
         settings_state = facade.app_state.settings_VS
         if self._session_manager and self._session_manager.is_recording:
             self._session_manager.stop_recording()
+        # Stop old inference client so a fresh one is created on next start
+        if self._context_sync_client:
+            self._context_sync_client.stop()
+            self._context_sync_client = None
         self._session_manager = self.create_session()
         meta = self._session_manager.metadata
 
@@ -310,9 +319,8 @@ class ViiProjectManager:
         terminal_state.output_text = (
             f"New session directory ready: {meta.session_id}\n{meta.path}"
         )
-        # Reset request/progress & disallow context edits until session started
+        # Reset request/progress
         settings_state.request_in_progress = False
-        settings_state.context_updates_allowed = False
 
         settings_state.session_state = "new-session"
         print("Project manager prepared new session")

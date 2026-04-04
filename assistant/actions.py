@@ -8,9 +8,6 @@ from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
 from assistant.facade import facade
 from assistant.inference.context import ContextItem
 from assistant.services.ocr import ocr_sync, start_ocr
-from assistant.services.session_recorder import (  # noqa: F401 (kept for API compatibility)
-    SessionRecorderConfig,
-)
 from assistant.utils.capture_utils import clipboard_image
 
 
@@ -117,7 +114,13 @@ def open_sessions_folder() -> None:
         print(f"Failed to open sessions directory: {sessions_dir}")
 
 
+def _ensure_session() -> None:
+    if facade.app_state.settings_VS.session_state != "started":
+        start_session(screen_name=facade.app_state.settings_VS.screen)
+
+
 def add_user_message(text: str) -> None:
+    _ensure_session()
     controller = facade.context_controller
     cleaned = text.strip()
     if cleaned:

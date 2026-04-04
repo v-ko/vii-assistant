@@ -9,31 +9,48 @@ Overhauled to:
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+
+# Force verbose backend logs unless explicitly overridden
+os.environ.setdefault("LOGLEVEL", "INFO")
 
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fusion import get_logger
 from fusion.libs.entity.change import Change
 from fusion.loop import AsyncioMainLoop, set_main_loop
-from transformers import (
-    AutoProcessor,
-    Qwen2_5_VLForConditionalGeneration,
-    Qwen3VLForConditionalGeneration,
-)
+from transformers import AutoProcessor
 
 from assistant.inference.context import ContextItem
-from assistant.inference.interface import (
-    AppendItemContentTextMessage,
-    ChangeMessage,
-    parse_message,
-    wrap_change,
-)
+from assistant.inference.interface import parse_message, wrap_change
 from assistant.inference.service import InferenceService, ModelConfig
+from assistant.model_configs import MODEL_CLASS
 
 log = get_logger(__name__)
+
+
+def _summarize_change(change: Change) -> str:
+    try:
+        item = change.new_state or change.old_state
+        item_id = getattr(item, "id", None)
+        content = getattr(item, "content", None) if item else None
+        request = getattr(item, "request", None) if item else None
+        content_keys = list(content.keys()) if isinstance(content, dict) else []
+        request_keys = list(request.keys()) if isinstance(request, dict) else []
+        origin = None
+        if item and hasattr(item, "metadata"):
+            meta = getattr(item, "metadata") or {}
+            if isinstance(meta, dict):
+                origin = meta.get("origin")
+        return (
+            f"type={change.change_type.name} id={item_id} "
+            f"content_keys={content_keys} request_keys={request_keys} origin={origin}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"type={getattr(change, 'change_type', '?')} (summary_failed: {exc})"
 
 
 @asynccontextmanager
@@ -60,7 +77,7 @@ async def lifespan(app: FastAPI):
         return torch.float32
 
     dtype = _select_dtype(device, model_config.precision)
-    model = Qwen3VLForConditionalGeneration.from_pretrained(  # Qwen2_5_VLForConditionalGeneration
+    model = MODEL_CLASS.from_pretrained(
         model_config.model_id,
         dtype=dtype,
         #     dtype=torch.bfloat16,
@@ -91,8 +108,9 @@ async def context_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     model_config: ModelConfig = app.state.model_config
     processor: AutoProcessor = app.state.processor
-    model: Qwen2_5_VLForConditionalGeneration = app.state.model
+    model: Any = app.state.model
     session_id = secrets.token_hex(4)
+    log.info("WS accepted session=%s", session_id)
     service = InferenceService(
         processor,
         model,
@@ -100,8 +118,37 @@ async def context_ws(websocket: WebSocket) -> None:
         session_id=session_id,
     )
 
+    # TODO: review this method
     def _on_client_update(change: Change) -> None:
-        asyncio.create_task(service.handle_change(change))
+        log.info(
+            "WS session=%s client_update forwarded to inference %s",
+            session_id,
+            _summarize_change(change),
+        )
+
+        async def _safe_handle() -> None:
+            try:
+                await service.handle_change(change)
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "WS session=%s inference handle_change failed: %s",
+                    session_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(_safe_handle())
+        task.add_done_callback(
+            lambda t: (
+                log.error(
+                    "WS session=%s inference task exception: %s",
+                    session_id,
+                    t.exception(),
+                )
+                if t.exception()
+                else None
+            )
+        )
 
     client_sub = service.client_updates.subscribe(_on_client_update)
 
@@ -112,15 +159,29 @@ async def context_ws(websocket: WebSocket) -> None:
             log.error(f"Failed to send WS message: {exc}", exc_info=True)
 
     # Send current state as a series of CREATE changes
+    initial_count = 0
     for item in service.context.items_sorted():
+        initial_count += 1
         await _safe_send_json(wrap_change(Change.CREATE(item)))
+    log.info("WS session=%s sent %d initial context items", session_id, initial_count)
 
     # Subscribe to inference updates and forward to websocket
     def _on_inference_update(evt):  # evt: Change | AppendItemContentTextMessage
         async def _forward() -> None:
             if isinstance(evt, Change):
+                log.info(
+                    "WS session=%s outbound inference change %s",
+                    session_id,
+                    _summarize_change(evt),
+                )
                 await _safe_send_json(wrap_change(evt))
             elif isinstance(evt, dict) and evt.get("type") == "AppendItemContentText":
+                log.info(
+                    "WS session=%s outbound append fragment item_id=%s text_len=%d",
+                    session_id,
+                    evt.get("payload", {}).get("item_id"),
+                    len(evt.get("payload", {}).get("text", "")),
+                )
                 await _safe_send_json(evt)
             else:
                 log.warning(f"Unknown inference update event type: {evt!r}")
@@ -133,6 +194,16 @@ async def context_ws(websocket: WebSocket) -> None:
         while True:
             try:
                 raw = await websocket.receive_json()
+                # Avoid logging large blobs; log shape/keys only
+                rtype = raw.get("type") if isinstance(raw, dict) else type(raw)
+                payload = raw.get("payload") if isinstance(raw, dict) else None
+                payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
+                log.info(
+                    "WS session=%s recv type=%s payload_keys=%s",
+                    session_id,
+                    rtype,
+                    payload_keys,
+                )
             except WebSocketDisconnect as exc:  # normal close
                 code = getattr(exc, "code", None)
                 reason = getattr(exc, "reason", "")
@@ -170,7 +241,17 @@ async def context_ws(websocket: WebSocket) -> None:
                 continue
 
             try:
+                log.info(
+                    "WS session=%s inbound change %s",
+                    session_id,
+                    _summarize_change(change),
+                )
                 repo_change = await service.context.apply_change(change)
+                log.info(
+                    "WS session=%s applied change %s",
+                    session_id,
+                    _summarize_change(repo_change),
+                )
                 service.client_updates.push(repo_change)
             except Exception as exc:  # noqa: BLE001
                 log.error(
@@ -193,5 +274,8 @@ async def context_ws(websocket: WebSocket) -> None:
                 await _safe_send_json({"error": f"apply_change: {exc}"})
                 continue
     finally:
-        inference_sub.unsubscribe()
-        client_sub.unsubscribe()
+        try:
+            inference_sub.unsubscribe()
+            client_sub.unsubscribe()
+        finally:
+            log.info("WS session=%s closed", session_id)

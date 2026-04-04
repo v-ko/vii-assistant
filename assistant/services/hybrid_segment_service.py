@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Optional, TypedDict
 
@@ -9,16 +10,23 @@ from PIL import Image
 from PySide6.QtGui import QGuiApplication
 
 from assistant.facade import facade
-from assistant.image_ops import resize_like_preprocessor, scale_qwen_bbox_xyxy
+from assistant.image_ops import (
+    resize_like_preprocessor,
+    scale_qwen_bbox_xyxy,
+    scale_qwen_point,
+)
 from assistant.inference.context import ContentType, ContextItem
+from assistant.inference.function_interpreter import HybridFunctionInterpreter
 from assistant.util import Shape
 
 log = get_logger(__name__)
 
+# Create module-level HFI instance
+hfi = HybridFunctionInterpreter()
 
-def locate(
-    x1: int, y1: int, x2: int, y2: int
-) -> Rectangle:  # placeholder for future screenshot logic
+
+@hfi.function(description="Locate region using xyxy format (x1, y1, x2, y2)")
+def locate(x1: int, y1: int, x2: int, y2: int) -> Rectangle:
     """locate function expecting xyxy format (x1, y1, x2, y2) like models output.
 
     Converts to xywh format for Rectangle.
@@ -28,17 +36,23 @@ def locate(
     return Rectangle(x1, y1, width, height)
 
 
-_SEG_LINE = re.compile(
-    r"^\s*(?:"  # start line, optional assignment prefix
-    r"(output\.[A-Za-z0-9_.]+)\s*=\s*"  # group(1) lhs if present
-    r")?(Rectangle|locate)\s*\((?P<args>[^)]*)\)\s*$"
+@hfi.function(
+    description="Create rectangle using xywh format (x, y, width, height)",
 )
+def bbox(x: int, y: int, width: int, height: int) -> Rectangle:
+    return Rectangle(x, y, width, height)
+
+
+@hfi.function(description="Mark a point at (x, y) in Qwen grid coordinates")
+def point(x: int, y: int) -> tuple[int, int]:
+    return (x, y)
 
 
 class SegmentOutput(TypedDict, total=False):
     bbox: list[Rectangle]
     # image may eventually be a PIL Image; for now we also allow a Rectangle region
     image: list[Rectangle] | list[Image.Image]
+    points: list[tuple[int, int]]
 
 
 class HybridSegmentService:
@@ -58,7 +72,7 @@ class HybridSegmentService:
             return
         if not last_ai_text:
             return
-        log.info(f"Processing AI text for segments: {last_ai_text[:200]}...")
+        # log.info(f"Processing AI text for segments: {last_ai_text[:200]}...")
         output_model = self._parse_output(last_ai_text)
         rects: list[Rectangle] = []
         # Collect all bboxes
@@ -70,17 +84,19 @@ class HybridSegmentService:
         for img_val in img_list:
             if isinstance(img_val, Rectangle):
                 rects.append(img_val)
-        log.info(f"Extracted {len(rects)} rectangles from AI output")
-        if not rects:
-            # Clear overlay on no shapes
-            log.info("No rectangles found, clearing overlay")
+        points = output_model.get("points", [])
+        # log.info(
+        #     f"Extracted {len(rects)} rectangles and {len(points)} points from AI output"
+        # )
+        if not rects and not points:
+            # log.info("No shapes found, clearing overlay")
             try:
                 facade.qt_app.overlay.set_shapes([])
             except Exception:
                 pass
             return
-        shapes = self._convert_to_shapes(rects)
-        log.info(f"Converted {len(rects)} rectangles to {len(shapes)} shapes")
+        shapes = self._convert_to_shapes(rects, points)
+        log.info(f"Converted to {len(shapes)} overlay shapes")
         try:
             facade.qt_app.overlay.set_shapes(shapes)
             log.info("Successfully set overlay shapes")
@@ -104,69 +120,118 @@ class HybridSegmentService:
         return None
 
     def _parse_output(self, text: str) -> SegmentOutput:
-        out: SegmentOutput = {"bbox": [], "image": []}
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
+        out: SegmentOutput = {"bbox": [], "image": [], "points": []}
+
+        self._parse_json_blocks(text, out)
+
+        for line in text.splitlines():
+            if not line.strip():
                 continue
-            m = _SEG_LINE.match(line)
-            if not m:
+
+            parsed = hfi.parse_line(line)
+            if parsed is None:
                 continue
-            lhs = m.group(1)  # may be None for bare call
-            tool = m.group(2)
-            args_raw = m.group("args")
-            log.debug(f"Parsing segment line: lhs={lhs}, tool={tool}, args={args_raw}")
-            parts = [p.strip() for p in args_raw.split(",") if p.strip()]
-            if len(parts) != 4:
-                log.error(
-                    "Segment parse error (arg count != 4)"
-                    + (f" lhs={lhs}" if lhs else "")
-                    + f" tool={tool} raw='{args_raw}'"
-                )
-                continue
+
+            lhs, func_name, args = parsed
+            log.debug(f"Parsing segment line: lhs={lhs}, func={func_name}, args={args}")
+
             try:
-                a, b, c, d = [int(p) for p in parts]
-            except ValueError:
+                result = hfi.execute_call(func_name, args)
+            except Exception as e:
                 log.error(
-                    "Segment parse error (non-integer args)"
+                    f"Segment parse error: {e}"
                     + (f" lhs={lhs}" if lhs else "")
-                    + f" tool={tool} parts={parts}"
+                    + f" func={func_name} args={args}"
                 )
                 continue
-            # Rectangle expects xywh, locate expects xyxy
-            if tool == "Rectangle":
-                rect = Rectangle(a, b, c, d)
-                log.info(
-                    f"Parsed Rectangle({a}, {b}, {c}, {d}) [xywh] ->"
-                    f" Rectangle{rect.as_tuple()}"
+
+            if func_name == "point":
+                log.info(f"Parsed point({', '.join(args)}) -> {result}")
+                out["points"].append(result)  # type: ignore[union-attr]
+                continue
+
+            if not isinstance(result, Rectangle):
+                log.error(
+                    f"Function {func_name} did not return Rectangle, got {type(result)}"
                 )
-            else:  # locate
-                rect = locate(a, b, c, d)
+                continue
+
+            if func_name == "bbox":
                 log.info(
-                    f"Parsed locate({a}, {b}, {c}, {d}) [xyxy] ->"
-                    f" Rectangle{rect.as_tuple()} [xywh]"
+                    f"Parsed bbox({', '.join(args)}) [xywh] ->"
+                    f" Rectangle{result.as_tuple()}"
                 )
+            elif func_name == "locate":
+                log.info(
+                    f"Parsed locate({', '.join(args)}) [xyxy] ->"
+                    f" Rectangle{result.as_tuple()} [xywh]"
+                )
+
             if lhs:
                 if lhs not in ("output.bbox", "output.image"):
                     log.error(f"Segment parse ignore (invalid lhs root): {lhs}")
                     continue
                 if lhs.endswith("bbox"):
-                    out["bbox"].append(rect)  # type: ignore[union-attr]
+                    out["bbox"].append(result)  # type: ignore[union-attr]
                 else:
-                    out["image"].append(rect)  # type: ignore[union-attr]
+                    out["image"].append(result)  # type: ignore[union-attr]
             else:
-                # Bare invocation policy - collect all locates/rectangles
-                if tool == "Rectangle":
-                    out["bbox"].append(rect)  # type: ignore[union-attr]
-                elif tool == "locate":
-                    out["image"].append(rect)  # type: ignore[union-attr]
-        log.info(
-            f"Parse complete: bbox count={len(out.get('bbox', []))}, image"
-            f" count={len(out.get('image', []))}"
-        )
+                if func_name == "bbox":
+                    out["bbox"].append(result)  # type: ignore[union-attr]
+                elif func_name == "locate":
+                    out["image"].append(result)  # type: ignore[union-attr]
+
+        # log.info(
+        #     f"Parse complete: bbox={len(out.get('bbox', []))},"
+        #     f" image={len(out.get('image', []))},"
+        #     f" points={len(out.get('points', []))}"
+        # )
         return out
 
-    def _convert_to_shapes(self, rects: list[Rectangle]) -> list[Shape]:
+    def _parse_json_blocks(self, text: str, out: SegmentOutput) -> None:
+        for m in re.finditer(r"```json\s*\n(.*?)```", text, re.DOTALL):
+            raw = m.group(1).strip()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                log.error(f"JSON block parse error: {e}")
+                continue
+
+            items: list[dict] = []
+            if isinstance(data, dict):
+                items = [data]
+            elif isinstance(data, list):
+                items = [d for d in data if isinstance(d, dict)]
+            else:
+                log.error(f"JSON block has unexpected type: {type(data)}")
+                continue
+
+            for item in items:
+                self._parse_json_item(item, out)
+
+    def _parse_json_item(self, item: dict, out: SegmentOutput) -> None:
+        bbox_val = item.get("bbox_2d") or item.get("bbox")
+        if isinstance(bbox_val, list) and len(bbox_val) == 4:
+            try:
+                x1, y1, x2, y2 = (int(v) for v in bbox_val)
+                rect = Rectangle(x1, y1, x2 - x1, y2 - y1)
+                log.info(f"JSON bbox {bbox_val} [xyxy] -> Rectangle{rect.as_tuple()}")
+                out["bbox"].append(rect)  # type: ignore[union-attr]
+            except (ValueError, TypeError) as e:
+                log.error(f"JSON bbox conversion error: {e}")
+
+        point_val = item.get("point")
+        if isinstance(point_val, list) and len(point_val) == 2:
+            try:
+                px, py = int(point_val[0]), int(point_val[1])
+                log.info(f"JSON point [{px}, {py}]")
+                out["points"].append((px, py))  # type: ignore[union-attr]
+            except (ValueError, TypeError) as e:
+                log.error(f"JSON point conversion error: {e}")
+
+    def _convert_to_shapes(
+        self, rects: list[Rectangle], points: list[tuple[int, int]] | None = None
+    ) -> list[Shape]:
         # Acquire screen geometry (watched screen per settings)
         try:
             screen = facade.current_watched_screen()
@@ -212,7 +277,7 @@ class HybridSegmentService:
 
         for r in rects:
             # Interpret x,y,width,height as Qwen grid xywh -> convert to xyxy first
-            # Qwen lines expected may already be xywh or xyxy; spec given: Rectangle(x,y,w,h)
+            # Qwen lines expected may already be xywh or xyxy; spec given: bbox(x,y,w,h)
             x1 = r.x()
             y1 = r.y()
             x2 = r.right()
@@ -244,7 +309,22 @@ class HybridSegmentService:
                 "color": "#FF0000",
             }
             shapes.append(rect_shape)
+
+        for pt in points or []:
+            sx, sy = scale_qwen_point(
+                pt,
+                input_w=input_w,
+                input_h=input_h,
+                orig_w=orig_w,
+                orig_h=orig_h,
+                coords_are_qwen_grid=True,
+            )
+            log.info(f"Scaled point {pt} to screen: ({sx}, {sy})")
+            point_shape: Shape = {
+                "type": "point",
+                "geometry": (int(sx), int(sy)),
+                "color": "#00FF00",
+            }
+            shapes.append(point_shape)
+
         return shapes
-
-
-__all__ = ["HybridSegmentService", "locate"]

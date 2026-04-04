@@ -40,7 +40,7 @@ def test_hybrid_segment_uses_image_size_metadata(monkeypatch):
     text_item = ContextItem()
     text_item.position = 100
     text_item.size = 0
-    text_item.content = {"text": "output.bbox = Rectangle(0,0,1000,1000)"}
+    text_item.content = {"text": "output.bbox = bbox(0,0,1000,1000)"}
     text_item.request = {"model": "qwen"}
     ctx_mgr.insert(text_item)
 
