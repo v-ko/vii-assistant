@@ -128,9 +128,9 @@ class ExperimentsManager:
         request_item.position = controller.next_position()
         request_item.content = {"text": ""}
         request_item.request = {
-            "stream": True,
-            "max_new_tokens": config.get("max_new_tokens", 256),
-            "temperature": config.get("temperature", 0.0),
+            "stream": bool(config.get("stream", True)),
+            "generation_params": dict(config.get("generation_params") or {}),
+            "chat_template_params": dict(config.get("chat_template_params") or {}),
         }
         request_item.metadata = {"origin": "user"}
         controller.create(request_item)

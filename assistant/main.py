@@ -57,9 +57,7 @@ def main(command):
     from assistant.facade import facade
     from assistant.inference.context import ContextManager
     from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
-    from assistant.qt_app import AssistantQtApp
     from assistant.server.desktop_server import DesktopServer
-    from assistant.services.ollama_client import OllamaClient
     from assistant.services.project_manager import ViiProjectManager
 
     # Instantiate services first then inject into facade to avoid circular imports
@@ -69,6 +67,8 @@ def main(command):
     )
 
     # Start a new instance (after services injected so set_qt_app can wire them)
+    from assistant.qt_app import AssistantQtApp  # Deferred to speed up command handling
+
     qt_app = AssistantQtApp()
     facade.set_qt_app(qt_app)
 

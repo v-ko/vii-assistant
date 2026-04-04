@@ -148,6 +148,14 @@ class SettingsWidget(QWidget):
         self.open_sessions_folder_button.setFixedHeight(uniform_button_height)
         second_column.addWidget(self.open_sessions_folder_button)
 
+        self.open_app_config_button = QPushButton("Open app config")
+        self.open_app_config_button.setToolTip(
+            "Open the persisted app configuration file"
+        )
+        self.open_app_config_button.clicked.connect(self._on_open_app_config)
+        self.open_app_config_button.setFixedHeight(uniform_button_height)
+        second_column.addWidget(self.open_app_config_button)
+
         # Model load button + state label
         self.set_model_button = QPushButton("Set model")
         self.set_model_button.setFixedHeight(uniform_button_height)
@@ -516,6 +524,16 @@ class SettingsWidget(QWidget):
 
     def _on_open_experiment_config(self):
         config_path = facade.experiments_manager.config_path
+        if not config_path.exists():
+            raise Exception(f"Experiment config not found: {config_path}")
+        print(f"Opening experiment config: {config_path}")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+    def _on_open_app_config(self):
+        config_path = facade.config.config_file
+        if not config_path.exists():
+            raise Exception(f"App config not found: {config_path}")
+        print(f"Opening app config: {config_path}")
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
 
     def _update_experiment_buttons(self):

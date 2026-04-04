@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 from PIL import Image
 from transformers import AutoProcessor
@@ -18,16 +18,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CompiledQwenContext:
     prompt: str
-    messages: List[Dict[str, Any]]
-    images: List[Image.Image]
-    processor_inputs: Dict[str, Any]
-    resize_metadata: List[Dict[str, int]]
+    messages: list[dict[str, Any]]
+    images: list[Image.Image]
+    processor_inputs: dict[str, Any]
+    resize_metadata: list[dict[str, int]]
 
 
 def compile_qwen_context(
     context_manager: ContextManager,
     processor: AutoProcessor,
     add_generation_prompt: bool = True,
+    chat_template_kwargs: dict[str, Any] | None = None,
 ) -> CompiledQwenContext:
     batch: MessageBatch = context_manager.items_as_qwen_chat_messages()
     messages, images = batch.messages, batch.images
@@ -36,8 +37,8 @@ def compile_qwen_context(
         len(messages),
         len(images),
     )
-    resized_images: List[Image.Image] = []
-    resize_meta: List[Dict[str, int]] = []
+    resized_images: list[Image.Image] = []
+    resize_meta: list[dict[str, int]] = []
     # Use processor.image_processor via Any to satisfy static typing
     _pp: Any = processor
     for idx, image in enumerate(images):
@@ -48,14 +49,15 @@ def compile_qwen_context(
                 f" {resized.width}x{resized.height}"
             )
         resized_images.append(resized)
-        resize_meta.append(cast(Dict[str, int], meta))
+        resize_meta.append(cast(dict[str, int], meta))
 
     prompt = cast(Any, processor).apply_chat_template(  # type: ignore[attr-defined]
         messages,
         tokenize=False,
         add_generation_prompt=add_generation_prompt,
+        **(chat_template_kwargs or {}),
     )
-    processor_kwargs: Dict[str, Any] = {
+    processor_kwargs: dict[str, Any] = {
         "text": [prompt],
         "return_tensors": "pt",
         "padding": True,

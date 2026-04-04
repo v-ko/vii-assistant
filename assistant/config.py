@@ -17,6 +17,10 @@ class Config:
             "screen": "",  # Will be set to actual screen in init
             "system_prompt": "",
             "selected_model": "qwen3_vl_4b",
+            "default_generation_params": {
+                "max_new_tokens": 256,
+                "temperature": 0.0,
+            },
         }
 
         self._init_config()

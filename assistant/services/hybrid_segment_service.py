@@ -212,7 +212,7 @@ class HybridSegmentService:
             except (ValueError, TypeError) as e:
                 log.error(f"JSON bbox conversion error: {e}")
 
-        point_val = item.get("point")
+        point_val = item.get("point_2d") or item.get("point")
         if isinstance(point_val, list) and len(point_val) == 2:
             try:
                 px, py = int(point_val[0]), int(point_val[1])

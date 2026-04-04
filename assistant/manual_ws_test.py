@@ -114,9 +114,11 @@ async def main() -> None:
             "size": [0, 0],
             "content": {"text": "Please answer now."},
             "request": {
-                "max_new_tokens": MAX_NEW_TOKENS,
-                "temperature": TEMPERATURE,
                 "stream": STREAM,
+                "generation_params": {
+                    "max_new_tokens": MAX_NEW_TOKENS,
+                    "temperature": TEMPERATURE,
+                },
             },
             "metadata": None,
         }

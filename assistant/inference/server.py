@@ -104,6 +104,7 @@ async def context_ws(websocket: WebSocket) -> None:
     model_manager: ModelManager = app.state.model_manager
     session_id = secrets.token_hex(4)
     log.info("WS accepted session=%s", session_id)
+
     service = InferenceService(
         model_manager,
         session_id=session_id,

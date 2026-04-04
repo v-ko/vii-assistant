@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import threading
-from typing import TYPE_CHECKING, Any, Dict, Optional, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from fusion import get_logger
@@ -16,6 +16,7 @@ from transformers import TextIteratorStreamer
 from assistant.inference.context import ContextItem, ContextManager
 from assistant.inference.interface import wrap_append_item_content_text
 from assistant.inference.qwen_tokens import compile_qwen_context
+from assistant.model_configs import MODEL_SPECS
 
 if TYPE_CHECKING:
     from assistant.inference.model_manager import ModelManager
@@ -27,12 +28,10 @@ class InferenceService:
     def __init__(
         self,
         model_manager: ModelManager,
-        default_generation_params: Dict[str, Any] | None = None,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> None:
         self.context = ContextManager()
         self.model_manager = model_manager
-        self._default_generation_params = default_generation_params
         self._lock = asyncio.Lock()
         # Active streaming threads (keyed by item id) for future cancellation support
         self._active_streams: dict[str, threading.Thread] = {}
@@ -73,18 +72,40 @@ class InferenceService:
 
     # --- Internal helpers ---
 
+    def _build_request_params(
+        self, request: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        spec = MODEL_SPECS.get(self.model_manager.current_model_key or "", {})
+        gen_params: dict[str, Any] = {
+            "max_new_tokens": 128,
+            "do_sample": False,
+        }
+        gen_params.update(spec.get("generation_params") or {})
+
+        chat_template_params = dict(spec.get("chat_template_params") or {})
+        if request:
+            gen_params.update(request.get("generation_params") or {})
+            chat_template_params.update(request.get("chat_template_params") or {})
+        return gen_params, chat_template_params
+
     async def _dispatch_generation(self, item: ContextItem) -> None:
         model, processor = await self.model_manager.get_model()
         device = self.model_manager.device
-        compiled = compile_qwen_context(self.context, processor)
+        gen_params, chat_template_params = self._build_request_params(item.request)
+        compiled = compile_qwen_context(
+            self.context,
+            processor,
+            chat_template_kwargs=chat_template_params,
+        )
         input_ids = compiled.processor_inputs.get("input_ids")
         prompt_tokens = input_ids.shape[1] if input_ids is not None else 0
         logger.info(
-            "Dispatching generation for item=%s stream=%s tokens=%d images=%d",
+            "Dispatching generation for item=%s stream=%s tokens=%d images=%d template_keys=%s",
             getattr(item, "id", None),
             bool((item.request or {}).get("stream")),
             prompt_tokens,
             len(compiled.images),
+            sorted(chat_template_params),
         )
 
         # Prepare inputs
@@ -102,21 +123,9 @@ class InferenceService:
             "image_grid_thw",
             "video_grid_thw",
         }
-        model_kwargs: Dict[str, Any] = {
+        model_kwargs: dict[str, Any] = {
             k: v for k, v in inputs.items() if k in allowed and v is not None
         }
-
-        gen_params: Dict[str, Any] = {
-            "max_new_tokens": 128,
-            "do_sample": False,
-        }
-        if self._default_generation_params:
-            gen_params.update(self._default_generation_params)
-        if item.request:
-            gen_params.update(item.request)
-        # Remove non-generation control keys so HF generate doesn't error
-        for _k in ("stream", "completed", "result", "error_message"):
-            gen_params.pop(_k, None)
         temperature = gen_params.get("temperature")
         if temperature is not None:
             temp_f = float(temperature)
@@ -141,9 +150,9 @@ class InferenceService:
         updated: ContextItem,
         model: Any,
         processor: Any,
-        inputs: Dict[str, Any],
-        model_kwargs: Dict[str, Any],
-        gen_params: Dict[str, Any],
+        inputs: dict[str, Any],
+        model_kwargs: dict[str, Any],
+        gen_params: dict[str, Any],
     ) -> None:
         try:
             model.eval()
@@ -203,8 +212,8 @@ class InferenceService:
         updated: ContextItem,
         model: Any,
         processor: Any,
-        model_kwargs: Dict[str, Any],
-        gen_params: Dict[str, Any],
+        model_kwargs: dict[str, Any],
+        gen_params: dict[str, Any],
     ) -> None:
         tokenizer = getattr(processor, "tokenizer", None)
         if tokenizer is None:

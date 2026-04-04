@@ -15,13 +15,13 @@ class ModelVisionOverlay(QWidget):
             parent,
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.X11BypassWindowManagerHint,
+            | Qt.WindowType.X11BypassWindowManagerHint
+            | Qt.WindowType.WindowTransparentForInput,
         )
 
         self._state = state
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self.default_color = QColor(255, 0, 0, 50)
         self.shape_width = 2
@@ -61,19 +61,10 @@ class ModelVisionOverlay(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.X11BypassWindowManagerHint
+            | Qt.WindowType.WindowTransparentForInput
         )
 
-        # Make the widget transparent to user events (click-through)
-        # This is critical for allowing clicks to pass through
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        # Show in full screen mode
         self.showFullScreen()
-
-        # Ensure the attribute is still set after showing
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        log.info("Overlay configured for click-through transparency")
 
     def paintEvent(self, event):
         painter = QPainter(self)

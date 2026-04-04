@@ -13,14 +13,17 @@ def _summarize_request(item: ContextItem) -> str:
     payload = item.request or {}
     if not isinstance(payload, dict):
         return ""
+    generation_params = payload.get("generation_params")
+    if not isinstance(generation_params, dict):
+        generation_params = {}
     parts: list[str] = []
     status = payload.get("result")
     if status:
         parts.append(f"result={status}")
-    temperature = payload.get("temperature")
+    temperature = generation_params.get("temperature")
     if temperature is not None:
         parts.append(f"temp={temperature}")
-    max_tokens = payload.get("max_new_tokens")
+    max_tokens = generation_params.get("max_new_tokens")
     if max_tokens is not None:
         parts.append(f"max_tokens={max_tokens}")
     if not parts:

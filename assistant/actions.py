@@ -135,10 +135,10 @@ def add_user_message(text: str) -> None:
     request_item.position = controller.next_position()
     request_item.size = 0
     request_item.content = {"text": ""}
+    generation_params = facade.config.get("default_generation_params", {})
     request_item.request = {
         "stream": True,
-        "max_new_tokens": 256,
-        "temperature": 0.0,
+        "generation_params": dict(generation_params or {}),
     }
     request_item.metadata = {"origin": "user"}
     controller.create(request_item)

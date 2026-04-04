@@ -18,6 +18,11 @@ MODEL_SPECS = {
         "id": "Qwen/Qwen3.5-4B",
         "class": Qwen3_5ForConditionalGeneration,
         "display_name": "Qwen3.5 4B",
+        "chat_template_params": {
+            "enable_thinking": False,
+        },
+        # "generation_params": {
+        # },
     },
 }
 

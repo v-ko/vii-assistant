@@ -44,9 +44,9 @@ class _ImagePreviewPopup(QWidget):
             None,
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint,
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowTransparentForInput,
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setWindowOpacity(0.98)
         layout = QVBoxLayout(self)
