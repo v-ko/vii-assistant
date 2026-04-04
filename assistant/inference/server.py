@@ -81,21 +81,28 @@ async def status() -> dict[str, Any]:
     }
 
 
-@app.post("/model/load")
+@app.post("/model")
 async def load_model(body: LoadModelRequest) -> dict[str, Any]:
     mm: ModelManager = app.state.model_manager
     model_key = body.model_key
 
-    if model_key is None or model_key == "none":
-        await mm.unload_model()
-        return {"status": "ok", "model": mm.get_state_dict()}
+    if not model_key:
+        return {"status": "error", "message": "model_key is required"}
 
     if model_key not in MODEL_SPECS:
         return {"status": "error", "message": f"Unknown model key: {model_key}"}
 
-    # Fire-and-forget: start loading in background so the HTTP response is immediate
+    # Fire-and-forget: start loading in background so the HTTP response is immediate.
+    # ModelManager.load_model auto-unloads any previously loaded model.
     asyncio.create_task(mm.load_model(model_key))
     return {"status": "accepted", "model": mm.get_state_dict()}
+
+
+@app.delete("/model")
+async def unload_model() -> dict[str, Any]:
+    mm: ModelManager = app.state.model_manager
+    await mm.unload_model()
+    return {"status": "ok", "model": mm.get_state_dict()}
 
 
 @app.websocket("/ws/context")

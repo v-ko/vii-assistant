@@ -10,7 +10,7 @@ from torch import nn
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration as QwenModel
 
 from assistant.image_ops import resize_like_preprocessor
-from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_CLASS_MAP, MODEL_SPECS
+from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Ordered variety of image sizes to stress resizing & positional embedding logic
@@ -52,7 +52,7 @@ def main() -> None:
 
     print(f"Loading processor and model from {config.model_id} ...")
     processor = AutoProcessor.from_pretrained(config.model_id)
-    modelClass = MODEL_CLASS_MAP[config.model_id]
+    modelClass = MODEL_SPECS[DEFAULT_MODEL_KEY]["class"]
     model = modelClass.from_pretrained(config.model_id, torch_dtype=dtype)
     model.to(device)  # type: ignore[call-arg]
     model.eval()

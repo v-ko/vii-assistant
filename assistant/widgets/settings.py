@@ -495,15 +495,18 @@ class SettingsWidget(QWidget):
         ).start()
 
     def _do_model_load(self, model_key: str) -> None:
-        url = f"{INFERENCE_HTTP_BASE}/model/load"
-        payload = json.dumps({"model_key": model_key}).encode()
-        try:
+        url = f"{INFERENCE_HTTP_BASE}/model"
+        if model_key == "none":
+            req = urllib.request.Request(url, method="DELETE")
+        else:
+            payload = json.dumps({"model_key": model_key}).encode()
             req = urllib.request.Request(
                 url,
                 data=payload,
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
+        try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
             model_info = data.get("model", {})
