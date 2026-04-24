@@ -11,8 +11,9 @@ from fusion.libs.entity.change import Change
 from fusion.platform.qt_widgets.utils import qpixmap_to_pil
 
 from assistant.actions import _ensure_session
-from assistant.image_ops import resize_like_preprocessor
+from assistant.image_ops import resize_to_target
 from assistant.inference.context import ContextItem
+from assistant.model_configs import get_resolution_for_model
 from assistant.util import get_logger
 from assistant.utils.capture_utils import take_screenshot
 from assistant.view_states.overlay import OverlayMode
@@ -96,11 +97,20 @@ class ExperimentsManager:
         self._clear_context()
         controller = self._facade.context_controller
 
+        # Load config first — we need resolution info for preprocessing
+        config = self._load_config()
+
         # Attach image to context
         pil = qpixmap_to_pil(pixmap)
-        processed_img, meta = resize_like_preprocessor(
-            pil, self._facade.image_preprocessor.image_processor
-        )
+
+        # Resolve target resolution (model default or experiment override)
+        res_override = None
+        if config.get("resolution"):
+            res_override = tuple(config["resolution"])
+
+        model_key = self._facade.app_state.settings_VS.selected_model
+        target_w, target_h = get_resolution_for_model(model_key, override=res_override)
+        processed_img, meta = resize_to_target(pil, target_w, target_h)
         buf = BytesIO()
         processed_img.save(buf, format="PNG")
         encoded = b64encode(buf.getvalue()).decode("ascii")
@@ -114,8 +124,7 @@ class ExperimentsManager:
         )
         controller.create(img_item)
 
-        # Load config and add prompt
-        config = self._load_config()
+        # Add prompt
         text_item = ContextItem.create_text(
             position=controller.next_position(),
             text=config["prompt"],

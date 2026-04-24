@@ -34,6 +34,29 @@ def resize_like_preprocessor(
     return resized_image, ResizeMetadata(width=resized_width, height=resized_height)
 
 
+def resize_to_target(
+    image: Image.Image,
+    target_w: int,
+    target_h: int,
+) -> tuple[Image.Image, ResizeMetadata]:
+    """Resize image to exact target dimensions, fitting within the frame
+    while preserving aspect ratio (no distortion). The image is scaled to
+    fill as much of the target as possible, then center-padded with black
+    on the shorter axis.
+    """
+    src_w, src_h = image.size
+    scale = min(target_w / src_w, target_h / src_h)
+    scaled_w = round(src_w * scale)
+    scaled_h = round(src_h * scale)
+    scaled = image.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+
+    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+    paste_x = (target_w - scaled_w) // 2
+    paste_y = (target_h - scaled_h) // 2
+    canvas.paste(scaled, (paste_x, paste_y))
+    return canvas, ResizeMetadata(width=target_w, height=target_h)
+
+
 def scale_qwen_bbox_xyxy(
     bbox_xyxy: tuple[int, int, int, int],
     *,
