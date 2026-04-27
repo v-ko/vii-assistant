@@ -35,6 +35,7 @@ class ModelVisionOverlay(QWidget):
     def _bind_state(self):
         self._state.mode_changed.connect(lambda _: self.update())
         self._state.shapes_changed.connect(lambda _: self.update())
+        self._state.gt_shapes_changed.connect(lambda _: self.update())
         self._state.sample_image_changed.connect(lambda _: self.update())
         self._state.screen_name_changed.connect(self._apply_screen)
 
@@ -85,8 +86,15 @@ class ModelVisionOverlay(QWidget):
         painter.setPen(outline_pen)
         painter.drawRect(self.rect())
 
-        # Draw each shape
-        for idx, shape in enumerate(self._state.shapes):
+        # Draw each shape (predictions)
+        self._draw_shapes(painter, self._state.shapes)
+
+        # Draw ground truth shapes
+        self._draw_shapes(painter, self._state.gt_shapes)
+
+    def _draw_shapes(self, painter: QPainter, shapes: list):
+        """Draw a list of shapes on the painter."""
+        for idx, shape in enumerate(shapes):
             shape_type = shape.get("type", "")
             geometry = shape.get("geometry", None)
 

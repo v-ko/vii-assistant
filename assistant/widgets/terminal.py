@@ -20,7 +20,7 @@ from assistant.actions import (
     ocr_clipboard,
     open_sessions_folder,
 )
-from assistant.facade import facade  # module-level singleton
+from assistant.facade import vii  # module-level singleton
 from assistant.image_ops import resize_to_target
 from assistant.inference.context import ContextItem
 from assistant.model_configs import MODEL_SPECS, get_resolution_for_model
@@ -42,7 +42,7 @@ class TerminalWindow(QWidget):
         )
         self._state = state
         # direct access through imported singleton
-        self._facade: Optional["Facade"] = facade
+        self._facade: Optional["Facade"] = vii
         # Make the window background transparent
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setup_ui()

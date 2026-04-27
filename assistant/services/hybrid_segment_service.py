@@ -9,7 +9,7 @@ from fusion.util.rectangle import Rectangle
 from PIL import Image
 from PySide6.QtGui import QGuiApplication
 
-from assistant.facade import facade
+from assistant.facade import vii
 from assistant.image_ops import scale_qwen_bbox_xyxy, scale_qwen_point
 from assistant.inference.context import ContentType, ContextItem
 from assistant.inference.function_interpreter import HybridFunctionInterpreter
@@ -86,15 +86,15 @@ class HybridSegmentService:
         #     f"Extracted {len(rects)} rectangles and {len(points)} points from AI output"
         # )
         if not rects and not points:
-            facade.app_state.overlay_VS.shapes = []
+            vii.app_state.overlay_VS.shapes = []
             return
         shapes = self._convert_to_shapes(rects, points)
         log.info(f"Converted to {len(shapes)} overlay shapes")
-        facade.app_state.overlay_VS.shapes = shapes
+        vii.app_state.overlay_VS.shapes = shapes
 
     # --- internals ---
     def _last_ai_text(self) -> Optional[str]:
-        ctx_mgr = facade.context_manager
+        ctx_mgr = vii.context_manager
         items = list(ctx_mgr.items_sorted())
         # iterate reverse; pick first assistant-origin text item
         for item in reversed(items):
@@ -238,7 +238,7 @@ class HybridSegmentService:
     ) -> list[Shape]:
         # Acquire screen geometry (watched screen per settings)
         try:
-            screen = facade.current_watched_screen()
+            screen = vii.current_watched_screen()
         except Exception:
             screen = QGuiApplication.primaryScreen()
         if not screen:
@@ -251,7 +251,7 @@ class HybridSegmentService:
         # Use explicit image_size metadata from the last image context item if available.
         input_w = orig_w
         input_h = orig_h
-        for it in facade.context_manager.items_reversed():
+        for it in vii.context_manager.items_reversed():
             if "image" in (it.content or {}):
                 sz_meta = (it.metadata or {}).get("image_size")  # type: ignore[union-attr]
                 if sz_meta and isinstance(sz_meta, dict):
@@ -265,7 +265,7 @@ class HybridSegmentService:
 
         if input_w == orig_w and input_h == orig_h:
             log.info("No image metadata found, using model's configured resolution")
-            model_key = facade.app_state.settings_VS.selected_model
+            model_key = vii.app_state.settings_VS.selected_model
             target_w, target_h = get_resolution_for_model(model_key)
             input_w = target_w
             input_h = target_h

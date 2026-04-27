@@ -9,7 +9,6 @@ os.environ.setdefault("LOGLEVEL", "INFO")
 import click
 from PySide6.QtCore import QTimer
 
-from assistant.registries.actions import execute_action
 from assistant.server.client import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
@@ -54,7 +53,7 @@ def main(command):
 
         sys.exit(1)
 
-    from assistant.facade import facade
+    from assistant.facade import vii
     from assistant.inference.context import ContextManager
     from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
     from assistant.server.desktop_server import DesktopServer
@@ -62,30 +61,39 @@ def main(command):
 
     # Instantiate services first then inject into facade to avoid circular imports
     ctx_manager = ContextManager()
-    facade.set_project_manager(
-        ViiProjectManager(facade.config.config_dir, context_manager=ctx_manager)
+    vii.set_project_manager(
+        ViiProjectManager(vii.config.config_dir, context_manager=ctx_manager)
     )
 
     # Start a new instance (after services injected so set_qt_app can wire them)
-    from assistant.qt_app import AssistantQtApp  # Deferred to speed up command handling
+    from assistant.qml_app import AssistantQmlApp  # QML-based UI
 
-    qt_app = AssistantQtApp()
-    facade.set_qt_app(qt_app)
+    qt_app = AssistantQmlApp()
+    vii.set_qt_app(qt_app)
 
     # Configure image preprocessor model (loaded lazily on first use)
-    facade.set_image_preprocessor_config(MODEL_SPECS[DEFAULT_MODEL_KEY]["id"])
+    vii.set_image_preprocessor_config(MODEL_SPECS[DEFAULT_MODEL_KEY]["id"])
 
     # Config already loaded; facade ensures screen is set during set_qt_app
-    print(f"Config: {facade.config}")
+    print(f"Config: {vii.config}")
+
+    # Auto-load the configured model on the inference server
+    from assistant.terminal_actions import set_model
+
+    set_model(vii.app_state.settings_VS.selected_model)
 
     # Start desktop server as independent service
     desktop_server = DesktopServer(DEFAULT_DESKTOP_SERVER_PORT)
     desktop_server.start()
 
-    # If this is a first start and --command was provided,
-    # show the terminal directly
+    # If this is a first start and --command was provided, execute it
     if command:
-        execute_action(command)
+        from assistant.terminal_actions import toggle_terminal
+
+        commands = {"toggle_terminal": toggle_terminal}
+        if command not in commands:
+            raise ValueError(f"Unknown command: {command!r}")
+        commands[command]()
 
     sys.exit(qt_app.exec())
 

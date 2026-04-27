@@ -16,6 +16,7 @@ class OverlayMode(Enum):
 class OverlayViewState(QObject):
     mode_changed = Signal(OverlayMode)
     shapes_changed = Signal(list)
+    gt_shapes_changed = Signal(list)
     sample_image_changed = Signal(object)  # QImage | None
     screen_name_changed = Signal(str)
 
@@ -23,6 +24,7 @@ class OverlayViewState(QObject):
         super().__init__(parent)
         self._mode = OverlayMode.WORK
         self._shapes: list[Shape] = []
+        self._gt_shapes: list[Shape] = []
         self._sample_image: QImage | None = None
         self._screen_name: str = ""
 
@@ -47,6 +49,15 @@ class OverlayViewState(QObject):
         self.shapes_changed.emit(value)
 
     @property
+    def gt_shapes(self) -> list[Shape]:
+        return self._gt_shapes
+
+    @gt_shapes.setter
+    def gt_shapes(self, value: list[Shape]) -> None:
+        self._gt_shapes = value
+        self.gt_shapes_changed.emit(value)
+
+    @property
     def sample_image(self) -> QImage | None:
         return self._sample_image
 
@@ -68,5 +79,6 @@ class OverlayViewState(QObject):
 
     def clear(self) -> None:
         self.shapes = []
+        self.gt_shapes = []
         self.sample_image = None
         self.mode = OverlayMode.WORK

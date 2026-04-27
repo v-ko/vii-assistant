@@ -42,6 +42,15 @@ def compile_qwen_context(
         {"width": img.width, "height": img.height} for img in images
     ]
 
+    if not messages:
+        return CompiledQwenContext(
+            prompt="",
+            messages=[],
+            images=[],
+            processor_inputs={},
+            resize_metadata=[],
+        )
+
     prompt = cast(Any, processor).apply_chat_template(  # type: ignore[attr-defined]
         messages,
         tokenize=False,

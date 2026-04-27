@@ -16,7 +16,7 @@ from assistant.services.config_persistence_service import ConfigPersistenceServi
 from assistant.util import get_screen_by_name
 
 if TYPE_CHECKING:
-    from assistant.qt_app import AssistantQtApp
+    from assistant.qml_app import AssistantQmlApp
     from assistant.services.project_manager import SessionManager, ViiProjectManager
 
 from fusion import get_logger
@@ -64,7 +64,7 @@ class Facade:
         return self._image_preprocessor
 
     @property
-    def qt_app(self) -> "AssistantQtApp":
+    def qt_app(self) -> "AssistantQmlApp":
         if self._qt_app is None:
             raise RuntimeError("Qt app instance not set")
         return self._qt_app
@@ -118,7 +118,7 @@ class Facade:
             raise RuntimeError(f"Configured screen '{screen_name}' not found")
         return scr
 
-    def set_qt_app(self, app: "AssistantQtApp"):
+    def set_qt_app(self, app):
         if self._qt_app is not None:
             raise RuntimeError("set_qt_app called more than once")
         self._qt_app = app
@@ -208,21 +208,17 @@ def on_context_store_changes(delta: Delta, origin: str | None = None) -> None:
     May fire from any thread (sync client asyncio thread, daemon threads).
     Marshals the view state update to the Qt main thread via call_delayed.
     """
-    import threading
-
     keys = list(delta.asdict().keys())
     print(
         f"[TRACE] on_context_store_changes: origin={origin} keys={keys} thread={threading.current_thread().name}"
     )
-    import fusion
-
     fusion.call_delayed(_apply_store_delta_to_view, 0, args=[delta])
 
 
 def _apply_store_delta_to_view(delta: Delta) -> None:
     """Runs on the Qt main thread — safe to mutate QObject view states."""
-    app_ctx_view = facade.app_state.context_VS
-    ctx_mgr = facade.context_manager
+    app_ctx_view = vii.app_state.context_VS
+    ctx_mgr = vii.context_manager
 
     for key, change_data in delta.asdict().items():
         if OP_SEP in key:
@@ -230,7 +226,7 @@ def _apply_store_delta_to_view(delta: Delta) -> None:
             entity = ctx_mgr._repo.find_one(id=entity_id)
             if entity and isinstance(entity, ContextItem):
                 app_ctx_view.apply_entity(entity)
-            facade.project_manager.hybrid_segment_service.handle_context_change()
+            vii.project_manager.hybrid_segment_service.handle_context_change()
         else:
             eid, reverse, forward = change_data
             change = Change(eid, reverse, forward)
@@ -240,11 +236,11 @@ def _apply_store_delta_to_view(delta: Delta) -> None:
                 entity = ctx_mgr._repo.find_one(id=eid)
                 if entity and isinstance(entity, ContextItem):
                     app_ctx_view.apply_entity(entity)
-            facade.project_manager.hybrid_segment_service.handle_context_change()
+            vii.project_manager.hybrid_segment_service.handle_context_change()
 
             # Notify experiments manager (if active)
-            if facade._experiments_manager is not None:
-                facade._experiments_manager._on_inference_update(change)
+            if vii._experiments_manager is not None:
+                vii._experiments_manager._on_inference_update(change)
 
 
-facade = Facade()
+vii = Facade()

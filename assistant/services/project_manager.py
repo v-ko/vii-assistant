@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from assistant.facade import facade
+from assistant.facade import vii
 from assistant.inference.context import ContextItem, ContextManager
 from assistant.services.context_sync_client import ContextSyncClient
 from assistant.services.hybrid_segment_service import HybridSegmentService
@@ -202,7 +202,7 @@ class ViiProjectManager:
         manager: Optional[SessionManager] = None,
         screen_name: str | None = None,
     ) -> SessionManager:
-        settings_state = facade.app_state.settings_VS
+        settings_state = vii.app_state.settings_VS
         if settings_state.session_state == "started":
             return self._session_manager or self.create_session()
 
@@ -211,7 +211,7 @@ class ViiProjectManager:
             self._session_manager = manager or self.create_session()
             meta = self._session_manager.metadata
             try:
-                facade.qt_app.terminal_state.output_text = (
+                vii.qt_app.terminal_state.output_text = (
                     f"Session directory ready: {meta.session_id}\n{meta.path}"
                 )
             except Exception:
@@ -226,7 +226,7 @@ class ViiProjectManager:
             target_screen = get_screen_by_name(screen_name)
         if target_screen is None:
             try:
-                target_screen = facade.current_watched_screen()
+                target_screen = vii.current_watched_screen()
             except Exception:
                 target_screen = None
         if target_screen is not None and hasattr(target_screen, "geometry"):
@@ -271,7 +271,7 @@ class ViiProjectManager:
                     text=system_prompt_text.strip(),
                     origin="system",
                 )
-                facade.context_controller.create(system_item)
+                vii.context_controller.create(system_item)
 
         if not self._running:
             self._running = True
@@ -288,7 +288,7 @@ class ViiProjectManager:
         return self._session_manager
 
     def pause_session(self, *, new_state: str = "paused") -> None:
-        settings_state = facade.app_state.settings_VS
+        settings_state = vii.app_state.settings_VS
         if settings_state.session_state != "started":
             return
         if self._session_manager and self._session_manager.is_recording:
@@ -298,7 +298,7 @@ class ViiProjectManager:
         print("Project manager paused session")
 
     def new_session(self) -> None:
-        settings_state = facade.app_state.settings_VS
+        settings_state = vii.app_state.settings_VS
         if self._session_manager and self._session_manager.is_recording:
             self._session_manager.stop_recording()
         # Stop old inference client so a fresh one is created on next start
@@ -309,17 +309,17 @@ class ViiProjectManager:
         meta = self._session_manager.metadata
 
         # --- Reset UI + context state ---
-        app_state = facade.app_state
-        terminal_state = facade.qt_app.terminal_state
+        app_state = vii.app_state
+        terminal_state = vii.qt_app.terminal_state
 
         # Clear context repository and propagate deletions via store.on_changes
-        facade.context_controller.clear()
+        vii.context_controller.clear()
 
         # Clear info/status messages
         settings_state.clear_info_messages()
 
         # Clear overlay shapes
-        facade.app_state.overlay_VS.clear()
+        vii.app_state.overlay_VS.clear()
 
         # Reset terminal output
         terminal_state.output_text = (
@@ -348,7 +348,7 @@ class ViiProjectManager:
 
     # --- Automation helpers -------------------------------------------
     def current_system_prompt(self) -> str:
-        return facade.app_state.settings_VS.system_prompt_markdown or ""
+        return vii.app_state.settings_VS.system_prompt_markdown or ""
 
     def is_running(self) -> bool:
         return self._running

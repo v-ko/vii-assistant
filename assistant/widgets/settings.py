@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from assistant.facade import facade
+from assistant.facade import vii
 from assistant.model_configs import AVAILABLE_MODELS
 from assistant.services.hybrid_segment_service import hfi
 from assistant.services.project_manager import INFERENCE_HTTP_BASE
@@ -518,31 +518,31 @@ class SettingsWidget(QWidget):
             self._do_health_check()
 
     def _on_step_experiment(self):
-        facade.experiments_manager.step()
+        vii.experiments_manager.step()
         self._update_experiment_buttons()
 
     def _on_stop_experiment(self):
-        facade.experiments_manager.stop()
+        vii.experiments_manager.stop()
         self._update_experiment_buttons()
 
     def _on_open_experiment_config(self):
-        config_path = facade.experiments_manager.config_path
+        config_path = vii.experiments_manager.config_path
         if not config_path.exists():
             raise Exception(f"Experiment config not found: {config_path}")
         print(f"Opening experiment config: {config_path}")
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
 
     def _on_open_app_config(self):
-        config_path = facade.config.config_file
+        config_path = vii.config.config_file
         if not config_path.exists():
             raise Exception(f"App config not found: {config_path}")
         print(f"Opening app config: {config_path}")
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
 
     def _update_experiment_buttons(self):
-        running = facade.experiments_manager.running
+        running = vii.experiments_manager.running
         self.stop_experiment_button.setEnabled(running)
         self.experiment_status_label.setText(
-            f"Status: {facade.experiments_manager.state.value}"
-            f" (step {facade.experiments_manager._current_step})"
+            f"Status: {vii.experiments_manager.state.value}"
+            f" (step {vii.experiments_manager._current_step})"
         )

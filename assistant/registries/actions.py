@@ -1,13 +1,5 @@
 from PySide6.QtCore import QObject, Signal, Slot
 
-_actions = {}
-
-
-def action(func):
-    """Decorator to register a command."""
-    _actions[func.__name__] = func
-    return func
-
 
 class FunctionExecutor(QObject):
     """Helper class to execute functions on the main thread."""
@@ -35,11 +27,3 @@ executor = FunctionExecutor()
 def execute_on_main_thread(func, *args, **kwargs):
     """Execute a function on the main thread."""
     executor.execute(func, *args, **kwargs)
-
-
-def execute_action(action_name):
-    """Execute a command."""
-    if action_name in _actions:
-        _actions[action_name]()
-    else:
-        print(f"Command not found: {action_name}")

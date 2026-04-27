@@ -65,6 +65,13 @@ class ExperimentsManager:
     def running(self) -> bool:
         return self._state == ExperimentState.RUNNING
 
+    def _abort_step(self, reason: str):
+        """Reset experiment state after an error so the overlay is restored."""
+        log.error(f"Experiment step aborted: {reason}")
+        self._waiting_for_response = False
+        self._facade.app_state.overlay_VS.clear()
+        self._state = ExperimentState.IDLE
+
     def step(self):
         if self._waiting_for_response:
             log.warning("Still waiting for response from previous step")
@@ -85,12 +92,22 @@ class ExperimentsManager:
         screen = self._facade.current_watched_screen()
         pixmap = take_screenshot(screen)
         if pixmap is None:
-            log.error("Failed to capture screenshot")
+            self._abort_step("Failed to capture screenshot")
             return
 
         # Set sample image on overlay
         overlay_vs.sample_image = pixmap.toImage()
 
+        try:
+            self._submit_step(pixmap)
+        except Exception:
+            log.exception("Error during experiment step setup")
+            self._abort_step("Exception during step setup")
+            return
+
+        # TODO: display ground truth (no-op for now)
+
+    def _submit_step(self, pixmap):
         _ensure_session()
         self._clear_context()
         controller = self._facade.context_controller
@@ -144,8 +161,6 @@ class ExperimentsManager:
 
         self._waiting_for_response = True
 
-        # TODO: display ground truth (no-op for now)
-
     def stop(self):
         if not self.running:
             return
@@ -169,7 +184,15 @@ class ExperimentsManager:
             return
         # Check if this is a completed inference response
         request = change.forward_component.get("request")
-        if not isinstance(request, dict) or request.get("result") != "success":
+        if not isinstance(request, dict):
+            return
+
+        result = request.get("result")
+        if not result:
+            return  # still in progress
+
+        if result != "success":
+            self._abort_step(f"Inference failed with result={result}")
             return
 
         self._waiting_for_response = False

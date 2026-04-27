@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import DEVNULL, Popen
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QMessageBox
 
-from assistant.facade import facade
+from assistant.facade import vii
 from assistant.inference.context import ContextItem
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.utils.capture_utils import clipboard_image
@@ -23,11 +24,9 @@ def ocr_clipboard() -> None:
     pixmap = clipboard_image()
     if not pixmap:
         msg = "No image found in clipboard for OCR"
-        facade.qt_app.terminal_state.output_text = msg
+        vii.qt_app.terminal_state.output_text = msg
         # Attempt desktop notification mirroring success path UX
         try:  # pragma: no cover (depends on notify-send availability)
-            from subprocess import DEVNULL, Popen  # local import
-
             Popen(
                 ["notify-send", "Assistant OCR", msg],
                 start_new_session=True,
@@ -38,7 +37,7 @@ def ocr_clipboard() -> None:
             pass
         return
 
-    settings = facade.app_state.settings_VS
+    settings = vii.app_state.settings_VS
     settings.request_in_progress = True
 
     def _finished(text: str):
@@ -51,12 +50,10 @@ def ocr_clipboard() -> None:
             notify_text = text
         except Exception as e:  # pragma: no cover
             text_local = f"{text}\n(Clipboard copy failed: {e})"
-            facade.qt_app.terminal_state.output_text = text_local
+            vii.qt_app.terminal_state.output_text = text_local
         else:
-            facade.qt_app.terminal_state.output_text = text
+            vii.qt_app.terminal_state.output_text = text
         if notify_text:
-            from subprocess import DEVNULL, Popen  # local import
-
             snippet = (
                 notify_text.strip().splitlines()[0]
                 if notify_text.strip()
@@ -93,21 +90,21 @@ def get_clipboard_ocr_text(lang: str = "eng") -> str:
 
 def start_session(*, screen_name: str | None = None) -> None:
     """Delegate to AutomationService to start a session."""
-    facade.project_manager.start_session(screen_name=screen_name)
+    vii.project_manager.start_session(screen_name=screen_name)
 
 
 def pause_or_stop_session(*, new_state: str) -> None:
     """Pause (stop recording) the active session."""
-    facade.project_manager.pause_session(new_state=new_state)
+    vii.project_manager.pause_session(new_state=new_state)
 
 
 def new_session() -> None:
     """Prepare a brand new session directory without starting recording."""
-    facade.project_manager.new_session()
+    vii.project_manager.new_session()
 
 
 def open_sessions_folder() -> None:
-    sessions_dir: Path = facade.project_manager.sessions_root
+    sessions_dir: Path = vii.project_manager.sessions_root
     sessions_dir.mkdir(parents=True, exist_ok=True)
     url = QUrl.fromLocalFile(str(sessions_dir))
     opened = QDesktopServices.openUrl(url)
@@ -116,8 +113,8 @@ def open_sessions_folder() -> None:
 
 
 def _ensure_session() -> None:
-    if facade.app_state.settings_VS.session_state != "started":
-        start_session(screen_name=facade.app_state.settings_VS.screen)
+    if vii.app_state.settings_VS.session_state != "started":
+        start_session(screen_name=vii.app_state.settings_VS.screen)
 
 
 def add_user_message(text: str) -> None:
@@ -125,7 +122,7 @@ def add_user_message(text: str) -> None:
     _ensure_session()
 
     # Guard: warn if no model is loaded on the server
-    settings_vs = facade.app_state.settings_VS
+    settings_vs = vii.app_state.settings_VS
     model_state = settings_vs.server_model_state
     if model_state != "loaded":
         QMessageBox.warning(
@@ -136,7 +133,7 @@ def add_user_message(text: str) -> None:
         )
         return
 
-    controller = facade.context_controller
+    controller = vii.context_controller
     cleaned = text.strip()
     if cleaned:
         print(f"[TRACE] add_user_message: creating text item")
@@ -151,7 +148,7 @@ def add_user_message(text: str) -> None:
     request_item.position = controller.next_position()
     request_item.size = 0
     request_item.content = {"text": ""}
-    generation_params = facade.config.get("default_generation_params", {})
+    generation_params = vii.config.get("default_generation_params", {})
     request_item.request = {
         "stream": True,
         "generation_params": dict(generation_params or {}),
