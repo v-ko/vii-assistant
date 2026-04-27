@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from fusion import get_logger
-from fusion.libs.channel import Channel
-from fusion.libs.entity.change import Change
+from fusion.libs.model import load_from_dict
+from fusion.storage.change import Change
 from transformers import TextIteratorStreamer
 
 from assistant.inference.context import ContextItem, ContextManager
-from assistant.inference.interface import wrap_append_item_content_text
+from assistant.inference.context_store import ContextStore
 from assistant.inference.qwen_tokens import compile_qwen_context
 from assistant.model_configs import MODEL_SPECS
 
@@ -33,13 +33,9 @@ class InferenceService:
         self.context = ContextManager()
         self.model_manager = model_manager
         self._lock = asyncio.Lock()
-        # Active streaming threads (keyed by item id) for future cancellation support
         self._active_streams: dict[str, threading.Thread] = {}
+        self._dispatched_requests: set[str] = set()
         self.session_id = session_id or secrets.token_hex(4)
-        prefix = f"inference-{self.session_id}"
-        # Channels scoped per inference session
-        self.client_updates: Channel = Channel(f"{prefix}-client-updates")
-        self.inference_updates: Channel = Channel(f"{prefix}-inference-updates")
 
     # No startup needed: model and processor are provided via constructor
 
@@ -47,15 +43,25 @@ class InferenceService:
         # Only react to new/updated items coming from client channel
         if change.is_delete():
             return
-        if not change.new_state:
+        if not change.forward_component:
             return
-        if not hasattr(change.new_state, "request"):
-            logger.info("per-item tokenization not implemented yet")
-            return
-        item = change.new_state
+        # Reconstruct the entity from the forward component
+        forward = change.forward_component
+        if change.is_create():
+            item = load_from_dict(dict(forward))
+        else:
+            # For updates, we need to get the existing entity and apply the forward diff
+            existing = self.context._repo.find_one(id=change.entity_id)
+            if existing is None:
+                logger.info("Entity %s not found for update", change.entity_id)
+                return
+            from fusion.libs.model import dump_to_dict
+
+            merged = {**dump_to_dict(existing), **forward}
+            item = load_from_dict(merged)
         if not isinstance(item, ContextItem):
             raise TypeError(f"Expected ContextItem, got {type(item).__name__}")
-        if not item.request:
+        if not hasattr(item, "request") or not item.request:
             logger.info(
                 "Ignoring context item %s without request", getattr(item, "id", None)
             )
@@ -66,6 +72,12 @@ class InferenceService:
                 getattr(item, "id", None),
             )
             return
+
+        item_id = str(getattr(item, "id", ""))
+        if item_id in self._dispatched_requests:
+            logger.info("Skipping already-dispatched request item %s", item_id)
+            return
+        self._dispatched_requests.add(item_id)
 
         async with self._lock:
             await self._dispatch_generation(item)
@@ -97,6 +109,12 @@ class InferenceService:
             processor,
             chat_template_kwargs=chat_template_params,
         )
+        if not compiled.messages:
+            logger.warning(
+                "No messages compiled for item=%s, skipping generation",
+                getattr(item, "id", None),
+            )
+            return
         input_ids = compiled.processor_inputs.get("input_ids")
         prompt_tokens = input_ids.shape[1] if input_ids is not None else 0
         logger.info(
@@ -122,6 +140,9 @@ class InferenceService:
             "pixel_values_videos",
             "image_grid_thw",
             "video_grid_thw",
+            "image_position_ids",
+            "mm_token_type_ids",
+            "token_type_ids",
         }
         model_kwargs: dict[str, Any] = {
             k: v for k, v in inputs.items() if k in allowed and v is not None
@@ -203,9 +224,7 @@ class InferenceService:
             req["completed"] = True
             updated.request = req
         finally:
-            ch = self.context.update(updated)
-            if self.inference_updates:
-                self.inference_updates.push(ch)
+            self.context.update(updated)
 
     async def _generate_stream(
         self,
@@ -281,10 +300,9 @@ class InferenceService:
                     await asyncio.sleep(0)
                     continue
                 pieces.append(chunk_s)
-                if self.inference_updates:
-                    self.inference_updates.push(
-                        wrap_append_item_content_text(str(updated.id), chunk_s)
-                    )
+                # Push streaming chunk as a custom delta op through the store
+                store: ContextStore = self.context._repo
+                store.text_append(str(updated.id), chunk_s)
                 # Give event loop a chance to process outbound messages / cancellation
                 await asyncio.sleep(0)
         except Exception as exc:  # noqa: BLE001
@@ -351,6 +369,4 @@ class InferenceService:
             if drain_thread.is_alive():
                 drain_thread.join(timeout=0.1)
             self._active_streams.pop(uid, None)
-            ch = self.context.update(updated)
-            if self.inference_updates:
-                self.inference_updates.push(ch)
+            self.context.update(updated)

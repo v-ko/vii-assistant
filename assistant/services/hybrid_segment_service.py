@@ -10,13 +10,10 @@ from PIL import Image
 from PySide6.QtGui import QGuiApplication
 
 from assistant.facade import facade
-from assistant.image_ops import (
-    resize_like_preprocessor,
-    scale_qwen_bbox_xyxy,
-    scale_qwen_point,
-)
+from assistant.image_ops import scale_qwen_bbox_xyxy, scale_qwen_point
 from assistant.inference.context import ContentType, ContextItem
 from assistant.inference.function_interpreter import HybridFunctionInterpreter
+from assistant.model_configs import get_resolution_for_model
 from assistant.util import Shape
 
 log = get_logger(__name__)
@@ -181,25 +178,40 @@ class HybridSegmentService:
         return out
 
     def _parse_json_blocks(self, text: str, out: SegmentOutput) -> None:
+        # 1) Fenced ```json ... ``` blocks
         for m in re.finditer(r"```json\s*\n(.*?)```", text, re.DOTALL):
             raw = m.group(1).strip()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as e:
-                log.error(f"JSON block parse error: {e}")
-                continue
+            self._try_load_json_block(raw, out)
 
-            items: list[dict] = []
-            if isinstance(data, dict):
-                items = [data]
-            elif isinstance(data, list):
-                items = [d for d in data if isinstance(d, dict)]
-            else:
-                log.error(f"JSON block has unexpected type: {type(data)}")
-                continue
+        # 2) Bare JSON objects/arrays not inside code fences, e.g.:
+        #    {"bbox": [100, 100, 200, 200]}  or  [{"point": [50, 60]}]
+        # Strip fenced blocks first to avoid double-parsing
+        stripped = re.sub(r"```json\s*\n.*?```", "", text, flags=re.DOTALL)
+        for m in re.finditer(
+            r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])",
+            stripped,
+            re.DOTALL,
+        ):
+            raw = m.group(1).strip()
+            self._try_load_json_block(raw, out)
 
-            for item in items:
-                self._parse_json_item(item, out)
+    def _try_load_json_block(self, raw: str, out: SegmentOutput) -> None:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+
+        items: list[dict] = []
+        if isinstance(data, dict):
+            items = [data]
+        elif isinstance(data, list):
+            items = [d for d in data if isinstance(d, dict)]
+        else:
+            log.error(f"JSON block has unexpected type: {type(data)}")
+            return
+
+        for item in items:
+            self._parse_json_item(item, out)
 
     def _parse_json_item(self, item: dict, out: SegmentOutput) -> None:
         bbox_val = item.get("bbox_2d") or item.get("bbox")
@@ -252,19 +264,12 @@ class HybridSegmentService:
                         break
 
         if input_w == orig_w and input_h == orig_h:
-            # Fallback derive resized dims to mimic model policy for scaling
-            log.info("No image metadata found, deriving resized dimensions")
-
-            class _DummyProcessor:
-                patch_size = 28
-                min_pixels = 4 * patch_size * patch_size
-                max_pixels = 16384 * patch_size * patch_size
-
-            synthetic = Image.new("RGB", (orig_w, orig_h))
-            _, meta = resize_like_preprocessor(synthetic, _DummyProcessor())
-            input_w = meta["width"]
-            input_h = meta["height"]
-            log.info(f"Derived input dimensions: {input_w}x{input_h}")
+            log.info("No image metadata found, using model's configured resolution")
+            model_key = facade.app_state.settings_VS.selected_model
+            target_w, target_h = get_resolution_for_model(model_key)
+            input_w = target_w
+            input_h = target_h
+            log.info(f"Model resolution: {input_w}x{input_h}")
         shapes: list[Shape] = []
 
         for r in rects:

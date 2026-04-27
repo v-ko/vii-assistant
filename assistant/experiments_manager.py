@@ -7,8 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fusion.libs.entity.change import Change
-from fusion.platform.qt_widgets.utils import qpixmap_to_pil
+from fusion.storage.change import Change
 
 from assistant.actions import _ensure_session
 from assistant.image_ops import resize_to_target
@@ -16,6 +15,7 @@ from assistant.inference.context import ContextItem
 from assistant.model_configs import get_resolution_for_model
 from assistant.util import get_logger
 from assistant.utils.capture_utils import take_screenshot
+from assistant.utils.image_utils import qpixmap_to_pil
 from assistant.view_states.overlay import OverlayMode
 
 if TYPE_CHECKING:
@@ -41,8 +41,6 @@ class ExperimentsManager:
         self._results: list[dict] = []
         self._config: dict = {}
         self._config_path: Path = DEFAULT_EXPERIMENT_CONFIG
-
-        self._facade.inference_updates.subscribe(self._on_inference_update)
 
     @property
     def config_path(self) -> Path:
@@ -162,20 +160,21 @@ class ExperimentsManager:
     def _clear_context(self):
         self._facade.context_controller.clear()
 
-    def _on_inference_update(self, evt):
+    def _on_inference_update(self, change: Change):
+        """Called by facade's on_context_store_changes for each change."""
         if not self.running or not self._waiting_for_response:
             return
 
-        if not isinstance(evt, Change):
+        if not change.forward_component:
             return
-        item = evt.new_state
-        if not isinstance(item, ContextItem):
-            return
-        if not item.request or item.request.get("result") != "success":
+        # Check if this is a completed inference response
+        request = change.forward_component.get("request")
+        if not isinstance(request, dict) or request.get("result") != "success":
             return
 
         self._waiting_for_response = False
-        response_text = item.content.get("text", "")
+        content = change.forward_component.get("content", {})
+        response_text = content.get("text", "") if isinstance(content, dict) else ""
         self._results.append(
             {
                 "step": self._current_step,

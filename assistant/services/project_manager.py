@@ -147,9 +147,8 @@ class ViiProjectManager:
     - Persist task & system prompt
     - Manage sessions (create/start/stop/new)
     - Own context manager reference (facade delegates through here)
-    - Host websocket inference client + channels (client_updates / inference_updates)
+    - Host websocket inference client (WebSocketSyncService receiver)
     - Provide current_system_prompt accessor
-    - Wire inference updates to reducer (apply_context_event)
     """
 
     hybrid_segment_service: HybridSegmentService  # always present after __init__
@@ -164,7 +163,7 @@ class ViiProjectManager:
         self._system_prompt_path = self.project_root / SYSTEM_PROMPT_FILENAME
         self._sessions_root = self.project_root / SESSIONS_DIRNAME
 
-        # Context (channels now owned by facade)
+        # Context store (on_changes wired in facade)
         self.context_manager = context_manager
 
         # Session & inference runtime
@@ -251,20 +250,28 @@ class ViiProjectManager:
             settings_state.post_info_message(
                 f"Connecting to inference websocket at {ws_url}..."
             )
-            self._context_sync_client = ContextSyncClient(url=ws_url)
+            store = self.context_manager._repo
+            self._context_sync_client = ContextSyncClient(url=ws_url, store=store)
+            self._context_sync_client.set_settings_state(settings_state)
             self._context_sync_client.start()
 
-        # Add system prompt as first context item (after client starts)
-        # The client subscribes to client_updates channel, so this will be sent
-        # when connection is established
-        system_prompt_text = self.current_system_prompt()
-        if system_prompt_text and system_prompt_text.strip():
-            system_item = ContextItem.create_text(
-                position=0,
-                text=system_prompt_text.strip(),
-                origin="system",
-            )
-            facade.context_controller.create(system_item)
+            # Block until the sync handshake completes. The receiver gets
+            # full_state from the server (which clears the local store),
+            # so ALL items must be added after this point.
+            if not self._context_sync_client.wait_ready(timeout=5.0):
+                settings_state.post_info_message(
+                    "Warning: sync handshake did not complete in time"
+                )
+
+            # Add system prompt as first context item
+            system_prompt_text = self.current_system_prompt()
+            if system_prompt_text and system_prompt_text.strip():
+                system_item = ContextItem.create_text(
+                    position=0,
+                    text=system_prompt_text.strip(),
+                    origin="system",
+                )
+                facade.context_controller.create(system_item)
 
         if not self._running:
             self._running = True
@@ -305,7 +312,7 @@ class ViiProjectManager:
         app_state = facade.app_state
         terminal_state = facade.qt_app.terminal_state
 
-        # Clear context repository and propagate deletions to view + client channel
+        # Clear context repository and propagate deletions via store.on_changes
         facade.context_controller.clear()
 
         # Clear info/status messages

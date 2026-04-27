@@ -3,6 +3,8 @@
 node_modules
 
 fusion-py-src
+
+.vscode/
 papers/*
 
 experiments.md

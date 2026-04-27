@@ -9,8 +9,12 @@ from PIL import Image
 from torch import nn
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration as QwenModel
 
-from assistant.image_ops import resize_like_preprocessor
-from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
+from assistant.image_ops import resize_to_target
+from assistant.model_configs import (
+    DEFAULT_MODEL_KEY,
+    MODEL_SPECS,
+    get_resolution_for_model,
+)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Ordered variety of image sizes to stress resizing & positional embedding logic
@@ -76,9 +80,8 @@ def main() -> None:
     for size in config.image_sizes:
         print("\n" + "=" * 10 + f" Processing image {size}x{size} " + "=" * 10)
         image = _build_gradient_image(size)
-        manual_resized_image, resize_meta = resize_like_preprocessor(
-            image, processor.image_processor
-        )
+        target_w, target_h = get_resolution_for_model(DEFAULT_MODEL_KEY)
+        manual_resized_image, resize_meta = resize_to_target(image, target_w, target_h)
 
         inputs = processor(
             text=[prompt], images=[image], return_tensors="pt", padding=True

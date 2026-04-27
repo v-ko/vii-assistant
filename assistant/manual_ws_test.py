@@ -1,7 +1,7 @@
 """Manual websocket test: send prompt + image + request and print responses.
 
 Usage:
-  python -m assistant.scripts.manual_ws_test --url ws://desk_local:8000/ws/context
+  python -m assistant.manual_ws_test --url ws://desk_local:8000/ws/context
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from io import BytesIO
 
 import numpy as np
 import websockets
-from fusion.libs.entity import load_from_dict
-from fusion.libs.entity.change import Change
+from fusion.storage.ws_sync_service import WebSocketSyncService
 from PIL import Image
 
 from assistant.inference.context import ContextItem  # needed to init registry
+from assistant.inference.context_store import ContextStore
 
 # --- Configuration (hard-coded) ---
 STREAM = True  # set False to test non-streaming
@@ -37,106 +37,63 @@ def build_gradient_b64(size: int = 224) -> str:
 
 
 async def main() -> None:
+    store = ContextStore()
+
+    # Print any changes received from the server
+    def on_changes(delta, origin=None):
+        for key, change_data in delta.asdict().items():
+            eid, reverse, forward = change_data
+            print(f"<- {key}: {json.dumps(forward)[:500]}")
+
+    store.on_changes = on_changes
+
+    sync = WebSocketSyncService(store, role="receiver")
+
     async with websockets.connect("ws://localhost:8000/ws/context") as ws:
-        print("Connected. Waiting for initial messages...")
+        print("Connected. Running sync as receiver...")
 
-        async def recv_loop():
-            try:
-                async for raw in ws:
-                    try:
-                        payload = json.loads(raw)
-                    except Exception:
-                        print("<-", raw)
-                        continue
-                    mtype = payload.get("type") if isinstance(payload, dict) else None
-                    if mtype == "AppendItemContentText":
-                        print(
-                            f"<- STREAM {payload['payload']['item_id']}:"
-                            f" {payload['payload']['text']!r}"
-                        )
-                    else:
-                        print("<-", json.dumps(payload)[:2000])
-            except Exception as exc:  # noqa: BLE001
-                print("Receive loop ended:", exc)
+        async def send(msg: dict) -> None:
+            await ws.send(json.dumps(msg))
 
-        recv_task = asyncio.create_task(recv_loop())
+        async def receive() -> dict:
+            raw = await ws.recv()
+            return json.loads(raw)
+
+        # Start sync in a background task
+        sync_task = asyncio.create_task(sync.run(send, receive))
+
+        # Wait a moment for full_state exchange
+        await asyncio.sleep(1.0)
 
         # 1) Prompt item
-        prompt_item = {
-            "type_name": "ContextItem",
-            "id": "prompt-1",
-            "position": 0,
-            "size": [0, 0],
-            "content": {"text": "Describe the dominant colors in this image."},
-            "request": None,
-            "metadata": None,
-        }
-        if "type_name" not in prompt_item:
-            prompt_item["type_name"] = "ContextItem"
-        prompt_entity = load_from_dict(prompt_item)
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "Change",
-                    "payload": Change.CREATE(prompt_entity).as_safe_delta_dict(),
-                }
-            )
-        )
+        prompt_item = ContextItem()
+        prompt_item.position = 0
+        prompt_item.content = {"text": "Describe the dominant colors in this image."}
+        store.insert_one(prompt_item)
 
         # 2) Image item
         image_b64 = build_gradient_b64(256)
-        image_item = {
-            "type_name": "ContextItem",
-            "id": "image-1",
-            "position": 1,
-            "size": [0, 0],
-            "content": {"image": image_b64},
-            "request": None,
-            "metadata": None,
-        }
-        if "type_name" not in image_item:
-            image_item["type_name"] = "ContextItem"
-        image_entity = load_from_dict(image_item)
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "Change",
-                    "payload": Change.CREATE(image_entity).as_safe_delta_dict(),
-                }
-            )
-        )
+        image_item = ContextItem()
+        image_item.position = 1
+        image_item.content = {"image": image_b64}
+        store.insert_one(image_item)
 
         # 3) Request item
-        request_item = {
-            "type_name": "ContextItem",
-            "id": "request-1",
-            "position": 2,
-            "size": [0, 0],
-            "content": {"text": "Please answer now."},
-            "request": {
-                "stream": STREAM,
-                "generation_params": {
-                    "max_new_tokens": MAX_NEW_TOKENS,
-                    "temperature": TEMPERATURE,
-                },
+        request_item = ContextItem()
+        request_item.position = 2
+        request_item.content = {"text": "Please answer now."}
+        request_item.request = {
+            "stream": STREAM,
+            "generation_params": {
+                "max_new_tokens": MAX_NEW_TOKENS,
+                "temperature": TEMPERATURE,
             },
-            "metadata": None,
         }
-        if "type_name" not in request_item:
-            request_item["type_name"] = "ContextItem"
-        request_entity = load_from_dict(request_item)
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "Change",
-                    "payload": Change.CREATE(request_entity).as_safe_delta_dict(),
-                }
-            )
-        )
+        store.insert_one(request_item)
 
         print("Sent prompt, image and request. Waiting for responses...")
         await asyncio.sleep(WAIT_SECONDS)
-        recv_task.cancel()
+        sync_task.cancel()
         try:
             await ws.close()
         except Exception:

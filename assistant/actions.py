@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
+from PySide6.QtWidgets import QMessageBox
 
 from assistant.facade import facade
 from assistant.inference.context import ContextItem
@@ -120,10 +121,25 @@ def _ensure_session() -> None:
 
 
 def add_user_message(text: str) -> None:
+    print(f"[TRACE] add_user_message called with text={text!r}")
     _ensure_session()
+
+    # Guard: warn if no model is loaded on the server
+    settings_vs = facade.app_state.settings_VS
+    model_state = settings_vs.server_model_state
+    if model_state != "loaded":
+        QMessageBox.warning(
+            None,
+            "No model loaded",
+            "No model is loaded on the inference server.\n"
+            "Please select and load a model first.",
+        )
+        return
+
     controller = facade.context_controller
     cleaned = text.strip()
     if cleaned:
+        print(f"[TRACE] add_user_message: creating text item")
         text_item = ContextItem.create_text(
             position=controller.next_position(),
             text=cleaned,
@@ -141,4 +157,6 @@ def add_user_message(text: str) -> None:
         "generation_params": dict(generation_params or {}),
     }
     request_item.metadata = {"origin": "user"}
+    print(f"[TRACE] add_user_message: creating request item")
     controller.create(request_item)
+    print(f"[TRACE] add_user_message: done")

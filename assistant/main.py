@@ -19,8 +19,8 @@ try:
     fusion_pkg_version = version("python-fusion")
 except PackageNotFoundError:
     fusion_pkg_version = None
-if not fusion_pkg_version or not fusion_pkg_version.startswith("0.9"):
-    raise RuntimeError("Required fusion version >=0.9")
+if not fusion_pkg_version or not fusion_pkg_version.startswith("0.1"):
+    raise RuntimeError("Required fusion version >=0.10")
 
 
 @click.command()

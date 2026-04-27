@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from fusion.libs.entity.change import Change
 from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
 
@@ -196,22 +195,8 @@ class ContextViewerState(QObject):
     def get_item(self, item_id: str) -> ContextItemViewState | None:
         return self._items.get(item_id)
 
-    def apply_change(self, change: Change) -> None:
-        # Deletion
-        if change.is_delete():
-            if isinstance(change.old_state, ContextItem):
-                key: str = str(change.old_state.id)
-                state = self._items.pop(key, None)
-                if state is not None:
-                    state.setParent(None)
-                    state.deleteLater()
-                    self.items_changed.emit()
-            return
-
-        # Creation / update
-        item = change.new_state
-        if not isinstance(item, ContextItem):  # Ignore irrelevant changes
-            return
+    def apply_entity(self, item: ContextItem) -> None:
+        """Create or update a view state entry from a ContextItem entity."""
         key: str = str(item.id)
         state = self._items.get(key)
         created = False
@@ -223,9 +208,17 @@ class ContextViewerState(QObject):
         if created or refresh_needed:
             self.items_changed.emit()
 
-    def apply_changes(self, changes: Iterable[Change]) -> None:
-        for change in changes:
-            self.apply_change(change)
+    def remove_entity(self, entity_id: str) -> None:
+        """Remove a view state entry by entity id."""
+        state = self._items.pop(entity_id, None)
+        if state is not None:
+            state.setParent(None)
+            state.deleteLater()
+            self.items_changed.emit()
+
+    def apply_changes(self, changes: Iterable) -> None:
+        # Kept for compatibility but not used in the new flow
+        pass
 
     def replace_all(self, items: Iterable[ContextItem]) -> None:
         current_ids = set(self._items.keys())

@@ -2,7 +2,6 @@ from base64 import b64encode
 from io import BytesIO
 from typing import TYPE_CHECKING, Optional
 
-from fusion.platform.qt_widgets.utils import qpixmap_to_pil
 from PySide6.QtCore import (
     QCoreApplication,
     QEasingCurve,
@@ -22,9 +21,11 @@ from assistant.actions import (
     open_sessions_folder,
 )
 from assistant.facade import facade  # module-level singleton
-from assistant.image_ops import resize_like_preprocessor
+from assistant.image_ops import resize_to_target
 from assistant.inference.context import ContextItem
+from assistant.model_configs import MODEL_SPECS, get_resolution_for_model
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
+from assistant.utils.image_utils import qpixmap_to_pil
 from assistant.widgets.context_viewer import ContextViewerWidget
 from assistant.widgets.settings import SettingsWidget
 
@@ -83,16 +84,14 @@ class TerminalWindow(QWidget):
         bg = p.color(p.ColorRole.Window).name()
         border = p.color(p.ColorRole.Mid).name()
         fg = p.color(p.ColorRole.WindowText).name()
-        self.container.setStyleSheet(
-            f"""
+        self.container.setStyleSheet(f"""
             #terminalWindowContainer {{
                 background-color: {bg};
                 border: 1px solid {border};
                 border-radius: 5px;
                 color: {fg};
             }}
-        """
-        )
+        """)
 
     def changeEvent(self, event):
         if event.type() == QEvent.Type.PaletteChange:
@@ -176,9 +175,16 @@ class TerminalWindow(QWidget):
         _ensure_session()
         controller = self._facade.context_controller
         pil = qpixmap_to_pil(pixmap)
-        processed_img, meta = resize_like_preprocessor(
-            pil, facade.image_preprocessor.image_processor
-        )
+        model_key = self._facade.app_state.settings_VS.selected_model
+        spec = MODEL_SPECS.get(model_key, {})
+        if not spec.get("vision"):
+            log.warning(
+                "Selected model %r is not a vision model — skipping image attachment",
+                model_key,
+            )
+            return
+        target_w, target_h = get_resolution_for_model(model_key)
+        processed_img, meta = resize_to_target(pil, target_w, target_h)
 
         buf = BytesIO()
         processed_img.save(buf, format="PNG")

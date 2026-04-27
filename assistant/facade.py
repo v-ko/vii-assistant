@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Optional
 
-from fusion.libs.channel import Channel
-from fusion.libs.entity.change import Change
+import fusion
+from fusion.storage.change import Change
+from fusion.storage.delta import Delta
 from PySide6.QtGui import QGuiApplication, QScreen
 
 from assistant.app_state import AppState
 from assistant.config import Config
 from assistant.inference.context import ContextManager
+from assistant.inference.context_store import OP_SEP, ContextStore
 from assistant.services.config_persistence_service import ConfigPersistenceService
 from assistant.util import get_screen_by_name
 
@@ -33,19 +36,16 @@ class Facade:
     _experiments_manager = None
 
     def __init__(self):
-        # Minimal setup; external services injected from main to avoid circular deps
         self._config = Config()
         self._session_manager = None
-        # Channels for context sync
-        self.client_updates = Channel("client-updates")
-        self.inference_updates = Channel("inference-updates")
         self.context_controller = ContextController(self)
 
     # --- explicit service setters (must be called early in main) ---------
     def set_project_manager(self, manager: ViiProjectManager):
         self._project_manager = manager
-        # Wire inference updates to reducer
-        self.inference_updates.subscribe(apply_inference_event)
+        # Wire store.on_changes to update view state + hybrid segment service
+        store = manager.context_manager._repo
+        store.on_changes = on_context_store_changes
 
     def set_image_preprocessor_config(self, model_id: str) -> None:
         self._image_preprocessor_model_id = model_id
@@ -171,7 +171,7 @@ from assistant.inference.context import ContextItem
 
 
 class ContextController:
-    """Handles context item CRUD for client operations and publishes updates on client-updates."""
+    """Handles context item CRUD for client operations."""
 
     def __init__(self, facade_ref: "Facade") -> None:
         self._facade = facade_ref
@@ -182,32 +182,19 @@ class ContextController:
 
     def create(self, item: ContextItem) -> Change:
         self._ensure_session_started()
-        change = self._facade.context_manager.insert(item)
-        self._broadcast(change)
-        return change
+        return self._facade.context_manager.insert(item)
 
     def update(self, item: ContextItem) -> Change:
         self._ensure_session_started()
-        change = self._facade.context_manager.update(item)
-        self._broadcast(change)
-        return change
+        return self._facade.context_manager.update(item)
 
     def delete(self, item: ContextItem) -> Change:
         self._ensure_session_started()
-        change = self._facade.context_manager.remove(item)
-        self._broadcast(change)
-        return change
+        return self._facade.context_manager.remove(item)
 
     def clear(self) -> list[Change]:
         self._ensure_session_started()
-        changes = self._facade.context_manager.clear()
-        for change in changes:
-            self._broadcast(change)
-        return changes
-
-    def _broadcast(self, change: Change) -> None:
-        self._facade.app_state.context_VS.apply_change(change)
-        self._facade.client_updates.push(change)
+        return self._facade.context_manager.clear()
 
     def _ensure_session_started(self) -> None:
         session_state = self._facade.app_state.settings_VS.session_state
@@ -215,37 +202,49 @@ class ContextController:
             raise RuntimeError("Cannot modify context without an active session.")
 
 
-def apply_inference_event(evt):
-    log.info(f"Applying inference event: {evt}")
-    ctx_mgr = facade.context_manager
+def on_context_store_changes(delta: Delta, origin: str | None = None) -> None:
+    """Callback wired to the client-side ContextStore.on_changes.
+
+    May fire from any thread (sync client asyncio thread, daemon threads).
+    Marshals the view state update to the Qt main thread via call_delayed.
+    """
+    import threading
+
+    keys = list(delta.asdict().keys())
+    print(
+        f"[TRACE] on_context_store_changes: origin={origin} keys={keys} thread={threading.current_thread().name}"
+    )
+    import fusion
+
+    fusion.call_delayed(_apply_store_delta_to_view, 0, args=[delta])
+
+
+def _apply_store_delta_to_view(delta: Delta) -> None:
+    """Runs on the Qt main thread — safe to mutate QObject view states."""
     app_ctx_view = facade.app_state.context_VS
-    if isinstance(evt, Change):
-        if evt.is_create() and isinstance(evt.new_state, ContextItem):
-            repo_change = ctx_mgr.insert(evt.new_state)
-        elif evt.is_delete() and isinstance(evt.old_state, ContextItem):
-            repo_change = ctx_mgr.remove(evt.old_state)
-        elif evt.new_state and isinstance(evt.new_state, ContextItem):
-            repo_change = ctx_mgr.update(evt.new_state)
+    ctx_mgr = facade.context_manager
+
+    for key, change_data in delta.asdict().items():
+        if OP_SEP in key:
+            entity_id = key.split(OP_SEP, 1)[0]
+            entity = ctx_mgr._repo.find_one(id=entity_id)
+            if entity and isinstance(entity, ContextItem):
+                app_ctx_view.apply_entity(entity)
+            facade.project_manager.hybrid_segment_service.handle_context_change()
         else:
-            return
-        app_ctx_view.apply_change(repo_change)
-        facade.project_manager.hybrid_segment_service.handle_context_change()
-    elif isinstance(evt, dict) and evt.get("type") == "AppendItemContentText":
-        payload = evt["payload"]
-        item_id = payload["item_id"]
-        text = payload["text"]
-        for existing in ctx_mgr.items_sorted():  # TODO: optimize lookup
-            if str(existing.id) == str(item_id):
-                if not isinstance(existing.content, dict):
-                    existing.content = {}
-                prior = existing.content.get("text", "")
-                existing.content["text"] = f"{prior}{text}"
-                repo_change = ctx_mgr.update(existing)
-                app_ctx_view.apply_change(repo_change)
-                facade.project_manager.hybrid_segment_service.handle_context_change()
-                break
-    else:
-        return
+            eid, reverse, forward = change_data
+            change = Change(eid, reverse, forward)
+            if change.is_delete():
+                app_ctx_view.remove_entity(eid)
+            else:
+                entity = ctx_mgr._repo.find_one(id=eid)
+                if entity and isinstance(entity, ContextItem):
+                    app_ctx_view.apply_entity(entity)
+            facade.project_manager.hybrid_segment_service.handle_context_change()
+
+            # Notify experiments manager (if active)
+            if facade._experiments_manager is not None:
+                facade._experiments_manager._on_inference_update(change)
 
 
 facade = Facade()

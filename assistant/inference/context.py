@@ -13,10 +13,12 @@ from dataclasses import field
 from enum import StrEnum
 from typing import Any, Generator, NamedTuple, Optional, TypedDict, cast
 
-from fusion.libs.entity import Entity, entity_type
-from fusion.libs.entity.change import Change
-from fusion.storage.in_memory_repository import InMemoryRepository
+from fusion.libs.model import Entity, entity_type, load_from_dict
+from fusion.storage.change import Change
+from fusion.storage.in_memory_store import InMemoryStore
 from PIL import Image
+
+from assistant.inference.context_store import ContextStore
 
 
 class ContextItemMetadata(TypedDict, total=False):
@@ -105,7 +107,7 @@ CONTEXT_POSITION_STEP = 100
 
 class ContextManager:
     def __init__(self) -> None:
-        self._repo = InMemoryRepository(types_for_cached_type_filtering=(ContextItem,))
+        self._repo = ContextStore(types_for_cached_type_filtering=(ContextItem,))
         # Cache of sorted item ids (position, id) for fast listing
         self._sorted_ids: list[str] = []
         # No dirty flag; list rebuilt eagerly on mutations that can affect ordering
@@ -113,9 +115,7 @@ class ContextManager:
     # --- cache internals ---
     def _rebuild_sorted_ids(self) -> None:
         items: list[ContextItem] = []
-        for entity in self._repo.find_cached(
-            type=ContextItem
-        ):  # avoid copy for sort source
+        for entity in self._repo.find(type=ContextItem):
             if isinstance(entity, ContextItem):
                 items.append(entity)
         items.sort(key=lambda item: (item.position, item.id))
@@ -196,7 +196,7 @@ class ContextManager:
             return 0
         # retrieve last entity (already cached) and read position
         last_id = ids[-1]
-        for entity in self._repo.find_cached(id=last_id):  # direct cached entity
+        for entity in self._repo.find(id=last_id):  # direct cached entity
             if isinstance(entity, ContextItem):
                 return entity.position + CONTEXT_POSITION_STEP
         return 0
@@ -205,13 +205,13 @@ class ContextManager:
     async def apply_change(self, change: Change) -> Change:
         # Map incoming Change to repo operations
         if change.is_create():
-            new = change.new_state
+            new = load_from_dict(dict(change.forward_component))
             if not isinstance(new, ContextItem):
                 raise TypeError("Expected ContextItem for CREATE")
             repo_change = self._repo.insert_one(new)
             self._rebuild_sorted_ids()
         elif change.is_delete():
-            old = change.old_state
+            old = self._repo.find_one(id=change.entity_id)
             if not isinstance(old, ContextItem):
                 raise TypeError("Expected ContextItem for DELETE")
             repo_change = self._repo.remove_one(old)
@@ -221,9 +221,13 @@ class ContextManager:
             except ValueError:
                 pass
         else:  # update
-            new = change.new_state
-            if not isinstance(new, ContextItem):
-                raise TypeError("Expected ContextItem for UPDATE")
+            existing = self._repo.find_one(id=change.entity_id)
+            if existing is None:
+                raise TypeError("Expected existing ContextItem for UPDATE")
+            updated_dict = {**existing.asdict(), **change.forward_component}
+            new = ContextItem(
+                **{k: v for k, v in updated_dict.items() if k != "type_name"}
+            )
             repo_change = self._repo.update_one(new)
             # Update may change position => rebuild ordering
             self._rebuild_sorted_ids()
