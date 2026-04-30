@@ -19,6 +19,7 @@ class OverlayViewState(QObject):
     gt_shapes_changed = Signal(list)
     sample_image_changed = Signal(object)  # QImage | None
     screen_name_changed = Signal(str)
+    dimmed_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -27,6 +28,7 @@ class OverlayViewState(QObject):
         self._gt_shapes: list[Shape] = []
         self._sample_image: QImage | None = None
         self._screen_name: str = ""
+        self._dimmed: bool = False
 
     @property
     def mode(self) -> OverlayMode:
@@ -77,8 +79,20 @@ class OverlayViewState(QObject):
         self._screen_name = value
         self.screen_name_changed.emit(value)
 
+    @property
+    def dimmed(self) -> bool:
+        return self._dimmed
+
+    @dimmed.setter
+    def dimmed(self, value: bool) -> None:
+        if self._dimmed == value:
+            return
+        self._dimmed = value
+        self.dimmed_changed.emit(value)
+
     def clear(self) -> None:
         self.shapes = []
         self.gt_shapes = []
         self.sample_image = None
+        self.dimmed = False
         self.mode = OverlayMode.WORK

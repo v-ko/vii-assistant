@@ -11,7 +11,7 @@ import io
 import json
 from dataclasses import field
 from enum import StrEnum
-from typing import Any, Generator, NamedTuple, Optional, TypedDict, cast
+from typing import Any, Generator, NamedTuple, Optional, TypedDict
 
 from fusion.libs.model import Entity, entity_type, load_from_dict
 from fusion.storage.change import Change
@@ -108,43 +108,34 @@ CONTEXT_POSITION_STEP = 100
 class ContextManager:
     def __init__(self) -> None:
         self._repo = ContextStore(types_for_cached_type_filtering=(ContextItem,))
-        # Cache of sorted item ids (position, id) for fast listing
-        self._sorted_ids: list[str] = []
-        # No dirty flag; list rebuilt eagerly on mutations that can affect ordering
 
-    # --- cache internals ---
-    def _rebuild_sorted_ids(self) -> None:
-        items: list[ContextItem] = []
-        for entity in self._repo.find(type=ContextItem):
-            if isinstance(entity, ContextItem):
-                items.append(entity)
+    @property
+    def store(self) -> ContextStore:
+        return self._repo
+
+    def _get_sorted_items(self) -> list[ContextItem]:
+        items: list[ContextItem] = [
+            entity
+            for entity in self._repo.find(type=ContextItem)
+            if isinstance(entity, ContextItem)
+        ]
         items.sort(key=lambda item: (item.position, item.id))
-        # Coerce id to str to keep cache homogenous (Entity.id may be tuple for composite keys)
-        self._sorted_ids = [str(item.id) for item in items]
-
-    def _sorted_item_ids(self) -> list[str]:
-        if not self._sorted_ids:
-            self._rebuild_sorted_ids()
-        return self._sorted_ids
+        return items
 
     def items_sorted(self) -> Generator[ContextItem]:
-        for item_id in self._sorted_item_ids():
-            for entity in self._repo.find(id=item_id):
-                if isinstance(entity, ContextItem):
-                    yield cast(ContextItem, entity)
-        # return [cast(ContextItem, item.copy()) for item in self._sorted_items()]
+        yield from self._get_sorted_items()
 
     def items_reversed(self) -> Generator[ContextItem]:
-        for item_id in reversed(self._sorted_item_ids()):
-            for entity in self._repo.find(id=item_id):
-                if isinstance(entity, ContextItem):
-                    yield cast(ContextItem, entity)
+        yield from reversed(self._get_sorted_items())
 
     def items_as_qwen_chat_messages(self) -> MessageBatch:
         messages: list[dict[str, Any]] = []
         images: list[Image.Image] = []
         current: Optional[dict[str, Any]] = None
         for item in self.items_sorted():
+            # Skip pending request items (empty placeholders awaiting generation)
+            if item.request and not item.request.get("result"):
+                continue
             kind = item.content_type()
             origin = (item.metadata or {}).get("origin")
             role = (
@@ -190,16 +181,10 @@ class ContextManager:
         return MessageBatch(messages=messages, images=images)
 
     def next_position(self) -> int:
-        # Use cache to find last item's position without copying all
-        ids = self._sorted_item_ids()
-        if not ids:
+        items = self._get_sorted_items()
+        if not items:
             return 0
-        # retrieve last entity (already cached) and read position
-        last_id = ids[-1]
-        for entity in self._repo.find(id=last_id):  # direct cached entity
-            if isinstance(entity, ContextItem):
-                return entity.position + CONTEXT_POSITION_STEP
-        return 0
+        return items[-1].position + CONTEXT_POSITION_STEP
 
     # --- CRUD helpers ---
     async def apply_change(self, change: Change) -> Change:
@@ -209,17 +194,11 @@ class ContextManager:
             if not isinstance(new, ContextItem):
                 raise TypeError("Expected ContextItem for CREATE")
             repo_change = self._repo.insert_one(new)
-            self._rebuild_sorted_ids()
         elif change.is_delete():
             old = self._repo.find_one(id=change.entity_id)
             if not isinstance(old, ContextItem):
                 raise TypeError("Expected ContextItem for DELETE")
             repo_change = self._repo.remove_one(old)
-            # Deletion removes an id; reflect removal without full rebuild if large list
-            try:
-                self._sorted_ids.remove(str(old.id))
-            except ValueError:
-                pass
         else:  # update
             existing = self._repo.find_one(id=change.entity_id)
             if existing is None:
@@ -229,41 +208,21 @@ class ContextManager:
                 **{k: v for k, v in updated_dict.items() if k != "type_name"}
             )
             repo_change = self._repo.update_one(new)
-            # Update may change position => rebuild ordering
-            self._rebuild_sorted_ids()
         return repo_change
 
     # Server-side helpers to mutate context state
     def insert(self, item: ContextItem) -> Change:
-        change = self._repo.insert_one(item)
-        self._rebuild_sorted_ids()
-        return change
+        return self._repo.insert_one(item)
 
     def update(self, item: ContextItem) -> Change:
-        change = self._repo.update_one(item)
-        self._rebuild_sorted_ids()
-        return change
+        return self._repo.update_one(item)
 
     def remove(self, item: ContextItem) -> Change:
-        change = self._repo.remove_one(item)
-        try:
-            self._sorted_ids.remove(str(item.id))
-        except ValueError:
-            # If id not present (e.g. cache not initialized), fallback to rebuild
-            if self._sorted_ids:
-                pass
-        return change
+        return self._repo.remove_one(item)
 
     def clear(self) -> list[Change]:
-        """Remove all context items and return the list of deletion Change objects.
-
-        The caller is responsible for propagating these deletions to any view state
-        or downstream consumers (e.g., pushing over channels). This keeps the
-        manager ignorant of UI concerns.
-        """
+        """Remove all context items and return the list of deletion Change objects."""
         changes: list[Change] = []
-        # Collect current items (already sorted for deterministic removal order)
         for item in self.items_sorted():
             changes.append(self._repo.remove_one(item))
-        self._sorted_ids = []  # emptied
         return changes

@@ -7,9 +7,10 @@ fusion-py-src
 .vscode/
 papers/*
 
-experiments.md
-papers.md
+vii-work-log.md
+research-notes.md
 work-history.md
+deliverable-work.md
 assistant/experiments/*
 tmp/*
 

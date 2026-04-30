@@ -291,6 +291,31 @@ Rectangle {
                 ColumnLayout {
                     spacing: 6
 
+                    ComboBox {
+                        id: experimentConfigCombo
+                        Layout.fillWidth: true
+                        textRole: "name"
+                        model: ListModel { id: experimentConfigModel }
+
+                        Component.onCompleted: {
+                            var configs = backend.getExperimentConfigs()
+                            experimentConfigModel.clear()
+                            var selectedIdx = 0
+                            for (var i = 0; i < configs.length; i++) {
+                                experimentConfigModel.append(configs[i])
+                                if (configs[i].selected) selectedIdx = i
+                            }
+                            currentIndex = selectedIdx
+                        }
+
+                        onCurrentIndexChanged: {
+                            if (currentIndex >= 0 && experimentConfigModel.count > 0) {
+                                var item = experimentConfigModel.get(currentIndex)
+                                if (item) backend.setExperimentConfig(item.path)
+                            }
+                        }
+                    }
+
                     RowLayout {
                         spacing: 4
 

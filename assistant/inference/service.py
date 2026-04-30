@@ -194,6 +194,9 @@ class InferenceService:
             req["result"] = "success"
             req["completed"] = True
             updated.request = req
+            # Mark as assistant-originated now that generation is done
+            meta = dict(updated.metadata or {})
+            meta["origin"] = "assistant"
             # tokens length
             try:
                 tokens_len = (
@@ -202,9 +205,8 @@ class InferenceService:
             except Exception:
                 tokens_len = None
             if tokens_len is not None:
-                meta = dict(updated.metadata or {})
                 meta["tokens_len"] = tokens_len
-                updated.metadata = meta
+            updated.metadata = meta
             logger.info(
                 "Non-stream generation complete item=%s text_len=%d tokens=%s",
                 getattr(updated, "id", None),
@@ -344,6 +346,9 @@ class InferenceService:
                 req["result"] = "success"
                 req["completed"] = True
                 updated.request = req
+                # Mark as assistant-originated now that generation is done
+                meta = dict(updated.metadata or {})
+                meta["origin"] = "assistant"
                 try:
                     encoded = tokenizer(full_text, add_special_tokens=False)  # type: ignore[call-arg]
                     tokens_len = (
@@ -354,9 +359,8 @@ class InferenceService:
                 except Exception:
                     tokens_len = None
                 if tokens_len is not None:
-                    meta = dict(updated.metadata or {})
                     meta["tokens_len"] = tokens_len
-                    updated.metadata = meta
+                updated.metadata = meta
                 logger.info(
                     "Streaming generation complete item=%s text_len=%d tokens=%s",
                     getattr(updated, "id", None),

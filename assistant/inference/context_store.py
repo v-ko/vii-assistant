@@ -12,12 +12,15 @@ which mutates the cached entity in-place (no pop→copy→reinsert cycle).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Generator
 
 from fusion.logging import get_logger
 from fusion.storage.change import Change
 from fusion.storage.delta import Delta, DeltaData
 from fusion.storage.in_memory_store import InMemoryStore
+
+if TYPE_CHECKING:
+    from assistant.inference.context import ContextItem
 
 log = get_logger(__name__)
 
@@ -27,6 +30,18 @@ OP_SEP = "@"
 
 class ContextStore(InMemoryStore):
     """InMemoryStore extended with custom delta operations."""
+
+    # ------------------------------------------------------------------
+    # Typed accessors
+    # ------------------------------------------------------------------
+
+    def item(self, item_id: str) -> "ContextItem | None":
+        """Get a ContextItem by ID."""
+        return self.find_one(id=item_id)
+
+    def items(self) -> Generator["ContextItem", None, None]:
+        """Iterate all ContextItems in the store."""
+        yield from self.find()
 
     # ------------------------------------------------------------------
     # text_append — streaming token patch

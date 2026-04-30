@@ -101,6 +101,22 @@ class QmlBackend(QObject):
     def openExperimentConfig(self):
         open_experiment_config()
 
+    @Slot(result=list)
+    def getExperimentConfigs(self) -> list:
+        from assistant.experiments_manager import EXPERIMENTS_DIR
+
+        configs = sorted(EXPERIMENTS_DIR.glob("*.json"))
+        current = vii.experiments_manager.config_path
+        return [
+            {"name": p.stem, "path": str(p), "selected": p == current} for p in configs
+        ]
+
+    @Slot(str)
+    def setExperimentConfig(self, path: str):
+        from pathlib import Path
+
+        vii.experiments_manager.config_path = Path(path)
+
     # ── Data queries (non-mutating, no @action needed) ───────────
 
     @Slot(result=list)
