@@ -24,14 +24,19 @@ class CompiledQwenContext:
 
 
 def compile_qwen_context(
-    context_manager: ContextManager,
+    context_manager: ContextManager | None,
     processor: AutoProcessor,
     add_generation_prompt: bool = True,
     chat_template_kwargs: dict[str, Any] | None = None,
+    messages_override: MessageBatch | None = None,
 ) -> CompiledQwenContext:
-    batch: MessageBatch = context_manager.items_as_qwen_chat_messages()
+    if messages_override is not None:
+        batch = messages_override
+    else:
+        assert context_manager is not None
+        batch = context_manager.items_as_qwen_chat_messages()
     messages, images = batch.messages, batch.images
-    logger.info(
+    logger.debug(
         "Compiling context for Qwen: messages=%d images=%d",
         len(messages),
         len(images),

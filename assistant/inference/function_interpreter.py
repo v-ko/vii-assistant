@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import ast
 import inspect
-import re
 from typing import Any, Callable, TypeVar, get_type_hints
 
 from fusion import get_logger
@@ -44,7 +44,15 @@ class HybridFunctionInterpreter:
 
     def __init__(self) -> None:
         self._functions: dict[str, FunctionDefinition] = {}
-        self._call_pattern: re.Pattern[str] | None = None
+        self.variables: dict[str, Any] = {}
+
+    def resolve_arg(self, arg_str: str) -> Any:
+        """Resolve a string expression to a Python value using ast."""
+        try:
+            node = ast.parse(arg_str.strip(), mode="eval").body
+            return self._resolve_node(node)
+        except SyntaxError:
+            return arg_str.strip()
 
     def function(
         self,
@@ -75,7 +83,6 @@ class HybridFunctionInterpreter:
             )
 
             self._functions[func_name] = func_def
-            self._call_pattern = None  # Invalidate cached pattern
 
             log.debug(
                 f"Registered function '{func_name}' with params: {func_def.parameters}"
@@ -85,43 +92,41 @@ class HybridFunctionInterpreter:
 
         return decorator
 
-    def _build_call_pattern(self) -> re.Pattern[str]:
-        """Build regex pattern matching all registered function names."""
-        if not self._functions:
-            # Match nothing if no functions registered
-            return re.compile(r"(?!.*)")
-
-        func_names = "|".join(re.escape(name) for name in self._functions.keys())
-        # Pattern: optional assignment, function name, args in parens
-        pattern = (
-            r"^\s*(?:"
-            r"(?P<lhs>[A-Za-z0-9_.]+)\s*=\s*"
-            r")?(?P<func>" + func_names + r")\s*\((?P<args>[^)]*)\)\s*$"
-        )
-        return re.compile(pattern)
-
     def parse_line(self, line: str) -> tuple[str | None, str, list[str]] | None:
-        """Parse a single line for a function call.
+        """Parse a single line for a registered function call using ast.
 
         Returns:
-            Tuple of (lhs, func_name, args_list) if match found, None otherwise
-            lhs is the assignment target (if present), func_name is the function,
-            args_list is the comma-separated arguments as strings
+            Tuple of (lhs, func_name, args_list) if match found, None otherwise.
+            args_list contains string representations of each argument.
         """
-        if self._call_pattern is None:
-            self._call_pattern = self._build_call_pattern()
-
-        match = self._call_pattern.match(line.strip())
-        if not match:
+        try:
+            tree = ast.parse(line.strip(), mode="exec")
+        except SyntaxError:
             return None
 
-        lhs = match.group("lhs")
-        func_name = match.group("func")
-        args_raw = match.group("args")
+        if not tree.body:
+            return None
 
-        args_list = [arg.strip() for arg in args_raw.split(",") if arg.strip()]
+        stmt = tree.body[0]
 
-        return (lhs, func_name, args_list)
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            if not isinstance(stmt.value, ast.Call):
+                return None
+            fname = self._func_name_from_node(stmt.value.func)
+            if fname is None or fname not in self._functions:
+                return None
+            lhs = self._target_str(stmt.targets[0])
+            args = [ast.unparse(a) for a in stmt.value.args]
+            return (lhs, fname, args)
+
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            fname = self._func_name_from_node(stmt.value.func)
+            if fname is None or fname not in self._functions:
+                return None
+            args = [ast.unparse(a) for a in stmt.value.args]
+            return (None, fname, args)
+
+        return None
 
     def execute_call(
         self,
@@ -197,40 +202,146 @@ class HybridFunctionInterpreter:
 
         return func_def.func(*converted_args)
 
-    def parse_and_execute(
+    def execute_tool_calls(
         self,
         text: str,
-        type_converters: dict[type, Callable[[str], Any]] | None = None,
-    ) -> list[tuple[str | None, Any]]:
-        """Parse text for function calls and execute them.
+    ) -> list[tuple[str | None, str, Any, list[Any]]]:
+        """Parse and execute a code block with variable tracking.
 
-        Args:
-            text: Multi-line text potentially containing function calls
-            type_converters: Optional dict mapping types to converter functions
+        Uses ast.parse for robust Python syntax handling. Processes:
+        - Assignments with function calls: ``var = func(args)``
+        - Dict key assignments: ``var['key'] = func(args)``
+        - Bare function calls: ``func(args)``
+        - Variable/dict assignments: ``var = expr``, ``var = {}``
 
-        Returns:
-            List of (lhs, result) tuples for each successful execution.
-            lhs is the assignment target if specified, result is the return value
+        Returns list of (lhs, func_name, result, resolved_args) for each
+        executed function call.
         """
-        results: list[tuple[str | None, Any]] = []
+        results: list[tuple[str | None, str, Any, list[Any]]] = []
 
         for line in text.splitlines():
-            parsed = self.parse_line(line)
-            if parsed is None:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                tree = ast.parse(line, mode="exec")
+            except SyntaxError:
                 continue
 
-            lhs, func_name, args = parsed
-            try:
-                result = self.execute_call(func_name, args, type_converters)
-                results.append((lhs, result))
-                log.debug(
-                    f"Executed {func_name}({', '.join(args)}) -> {result}"
-                    + (f" (assigned to {lhs})" if lhs else "")
-                )
-            except Exception as e:
-                log.error(f"Failed to execute {func_name}({', '.join(args)}): {e}")
+            for stmt in tree.body:
+                if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                    target = stmt.targets[0]
+                    value = stmt.value
+
+                    if isinstance(value, ast.Call):
+                        fname = self._func_name_from_node(value.func)
+                        if fname and fname in self._functions:
+                            resolved_args = [self._resolve_node(a) for a in value.args]
+                            try:
+                                result = self._call_function(fname, resolved_args)
+                            except Exception as e:
+                                log.error(f"Failed to execute {fname}: {e}")
+                                continue
+                            lhs_str = self._target_str(target)
+                            self._assign_to_target(target, result)
+                            results.append((lhs_str, fname, result, resolved_args))
+                            log.debug(f"Executed {lhs_str} = {fname}(...) -> {result}")
+                            continue
+
+                    # Plain assignment: var = expr
+                    resolved = self._resolve_node(value)
+                    self._assign_to_target(target, resolved)
+                    log.debug(f"Assigned {self._target_str(target)} = {resolved!r}")
+
+                elif isinstance(stmt, ast.Expr):
+                    if isinstance(stmt.value, ast.Call):
+                        fname = self._func_name_from_node(stmt.value.func)
+                        if fname and fname in self._functions:
+                            resolved_args = [
+                                self._resolve_node(a) for a in stmt.value.args
+                            ]
+                            try:
+                                result = self._call_function(fname, resolved_args)
+                            except Exception as e:
+                                log.error(f"Failed to execute {fname}: {e}")
+                                continue
+                            results.append((None, fname, result, resolved_args))
+                            log.debug(f"Executed {fname}(...) -> {result}")
 
         return results
+
+    def _call_function(self, func_name: str, resolved_args: list[Any]) -> Any:
+        """Call a registered function with already-resolved Python values."""
+        if func_name not in self._functions:
+            raise KeyError(f"Function '{func_name}' not registered")
+        func_def = self._functions[func_name]
+        return func_def.func(*resolved_args)
+
+    def _resolve_node(self, node: ast.expr) -> Any:
+        """Resolve an AST expression node to a Python value."""
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id in self.variables:
+                return self.variables[node.id]
+            return node.id
+        if isinstance(node, ast.Subscript):
+            obj = self._resolve_node(node.value)
+            key = self._resolve_node(node.slice)
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return None
+        if isinstance(node, ast.Dict):
+            return {
+                self._resolve_node(k): self._resolve_node(v)
+                for k, v in zip(node.keys, node.values)
+                if k is not None
+            }
+        if isinstance(node, ast.List):
+            return [self._resolve_node(el) for el in node.elts]
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            val = self._resolve_node(node.operand)
+            if isinstance(val, (int, float)):
+                return -val
+        return ast.unparse(node)
+
+    def _func_name_from_node(self, node: ast.expr) -> str | None:
+        """Extract dotted function name (e.g. 'curator.push') from a Call's func."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parts: list[str] = []
+            n: ast.expr = node
+            while isinstance(n, ast.Attribute):
+                parts.append(n.attr)
+                n = n.value
+            if isinstance(n, ast.Name):
+                parts.append(n.id)
+                return ".".join(reversed(parts))
+        return None
+
+    def _target_str(self, node: ast.expr) -> str:
+        """Convert an assignment target to a display string."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Subscript):
+            base = self._target_str(node.value)
+            key = self._resolve_node(node.slice)
+            return f"{base}['{key}']"
+        if isinstance(node, ast.Attribute):
+            base = self._target_str(node.value)
+            return f"{base}.{node.attr}"
+        return ast.unparse(node)
+
+    def _assign_to_target(self, target: ast.expr, value: Any) -> None:
+        """Assign a value into self.variables based on AST target shape."""
+        if isinstance(target, ast.Name):
+            self.variables[target.id] = value
+        elif isinstance(target, ast.Subscript):
+            obj = self._resolve_node(target.value)
+            key = self._resolve_node(target.slice)
+            if isinstance(obj, dict):
+                obj[key] = value
 
     def get_function(self, name: str) -> FunctionDefinition | None:
         """Get a registered function by name."""
@@ -264,6 +375,3 @@ class HybridFunctionInterpreter:
             else:
                 lines.append(f"{sig}\n    ...\n")
         return "\n".join(lines)
-
-
-__all__ = ["HybridFunctionInterpreter", "FunctionDefinition"]

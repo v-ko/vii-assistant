@@ -46,24 +46,40 @@ Rectangle {
             visible: count > 0
             model: contextModel
 
+            // Auto-scroll: follow the bottom while userAtBottom is true.
+            // Only user-initiated scrolling (drag/flick/wheel/scrollbar) can toggle it off.
+            property bool userAtBottom: true
+            property real _bottomThreshold: 30  // px tolerance
+
+            onContentYChanged: {
+                if (!moving && !vScrollBar.pressed) return
+                let atEnd = atYEnd || (contentHeight - contentY - height < _bottomThreshold)
+                if (userAtBottom !== atEnd) {
+                    userAtBottom = atEnd
+                    console.log("[QML scroll] userAtBottom =", userAtBottom)
+                }
+            }
+
             ScrollBar.vertical: ScrollBar {
+                id: vScrollBar
                 policy: ScrollBar.AlwaysOn
             }
 
-            // Auto-scroll to bottom when items are added
             onCountChanged: {
-                Qt.callLater(function() {
-                    contextListView.positionViewAtEnd()
-                })
+                userAtBottom = true
+                Qt.callLater(function() { contextListView.positionViewAtEnd() })
             }
 
-            // Auto-scroll when existing items are updated (e.g. streaming text)
             Connections {
                 target: contextModel
+                function onModelReset() {
+                    contextListView.userAtBottom = true
+                    Qt.callLater(function() { contextListView.positionViewAtEnd() })
+                }
                 function onDataChanged() {
-                    Qt.callLater(function() {
-                        contextListView.positionViewAtEnd()
-                    })
+                    if (contextListView.userAtBottom) {
+                        Qt.callLater(function() { contextListView.positionViewAtEnd() })
+                    }
                 }
             }
 
@@ -78,7 +94,6 @@ Rectangle {
                 required property string contentKind
                 required property string text
                 required property string imageB64
-                required property string toolCall
                 required property string requestSummary
                 required property string origin
 
@@ -90,7 +105,6 @@ Rectangle {
                     sourceComponent: {
                         if (delegateRoot.origin === "system") return systemPromptDelegate
                         if (delegateRoot.contentKind === "image") return imageDelegate
-                        if (delegateRoot.contentKind === "tool_call") return toolCallDelegate
                         return textDelegate
                     }
 
@@ -100,7 +114,6 @@ Rectangle {
                             if ("origin" in item) item.origin = Qt.binding(function() { return delegateRoot.origin })
                             if ("requestSummary" in item) item.requestSummary = Qt.binding(function() { return delegateRoot.requestSummary })
                             if ("imageB64" in item) item.imageB64 = Qt.binding(function() { return delegateRoot.imageB64 })
-                            if ("toolCall" in item) item.toolCall = Qt.binding(function() { return delegateRoot.toolCall })
                         }
                     }
                 }
@@ -122,19 +135,25 @@ Rectangle {
 
             Button {
                 id: sendButton
-                text: "Send"
-                enabled: settingsState ? (settingsState.context_updates_allowed && !settingsState.request_in_progress) : true
-                onClicked: submitMessage()
+                property bool isGenerating: settingsState ? settingsState.assistant_working : false
+                text: isGenerating ? "\u25A0" : "Send"
+                enabled: isGenerating || (settingsState ? settingsState.context_updates_allowed : true)
+                onIsGeneratingChanged: console.log("[QML] sendButton.isGenerating =", isGenerating)
+                onClicked: {
+                    if (isGenerating) {
+                        appVM.stopAssistant()
+                    } else {
+                        submitMessage()
+                    }
+                }
             }
         }
     }
 
     function submitMessage() {
         let txt = messageInput.text.trim()
-        if (txt.length > 0) {
-            backend.submitMessage(txt)
-            messageInput.clear()
-        }
+        appVM.submitMessage(txt)
+        messageInput.clear()
     }
 
     // ── Delegates ───────────────────────────────────────────────
@@ -291,49 +310,6 @@ Rectangle {
     }
 
     Component {
-        id: toolCallDelegate
-
-        Rectangle {
-            id: toolCallItem
-            property string toolCall: ""
-            property string origin: ""
-
-            implicitHeight: tcCol.implicitHeight + 12
-            radius: 4
-            color: Qt.rgba(palette.mid.r, palette.mid.g, palette.mid.b, 0.12)
-            border.color: Qt.rgba(palette.mid.r, palette.mid.g, palette.mid.b, 0.3)
-            border.width: 1
-
-            ColumnLayout {
-                id: tcCol
-                anchors.fill: parent
-                anchors.margins: 6
-                spacing: 2
-
-                Label {
-                    text: "tool_call"
-                    font.bold: true
-                    font.pixelSize: 11
-                    color: palette.placeholderText
-                }
-
-                TextEdit {
-                    text: toolCallItem.toolCall.trim() || "(…)"
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                    color: palette.text
-                    font.family: "monospace"
-                    font.italic: toolCallItem.toolCall.trim().length === 0
-                    readOnly: true
-                    selectByMouse: true
-                    selectionColor: palette.highlight
-                    selectedTextColor: palette.highlightedText
-                }
-            }
-        }
-    }
-
-    Component {
         id: systemPromptDelegate
 
         Rectangle {
@@ -354,33 +330,36 @@ Rectangle {
                 spacing: 2
 
                 // Clickable header
-                RowLayout {
-                    spacing: 4
+                Item {
+                    Layout.fillWidth: true
+                    implicitHeight: spHeaderRow.implicitHeight
 
-                    Label {
-                        text: spItem.expanded ? "▼" : "▶"
-                        font.pixelSize: 11
-                        color: palette.dark
+                    RowLayout {
+                        id: spHeaderRow
+                        anchors.fill: parent
+                        spacing: 4
+
+                        Label {
+                            text: spItem.expanded ? "▼" : "▶"
+                            font.pixelSize: 11
+                            color: palette.dark
+                        }
+
+                        Label {
+                            text: "System Prompt"
+                            font.bold: true
+                            font.pixelSize: 11
+                            color: palette.dark
+                        }
+
+                        Item { Layout.fillWidth: true }
                     }
 
-                    Label {
-                        text: "System Prompt"
-                        font.bold: true
-                        font.pixelSize: 11
-                        color: palette.dark
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: spItem.expanded = !spItem.expanded
                     }
-
-                    Item { Layout.fillWidth: true }
-                }
-
-                // Make header row clickable
-                MouseArea {
-                    anchors.top: parent.top
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    height: 24
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: spItem.expanded = !spItem.expanded
                 }
 
                 // Collapsible content

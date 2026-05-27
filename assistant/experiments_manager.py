@@ -12,14 +12,13 @@ from PIL import Image
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage
 
-from assistant.actions import _ensure_session
 from assistant.experiments.data_loaders import (
     DATA_LOADER_REGISTRY,
     DataLoader,
     ScreenGrabDataLoader,
 )
 from assistant.image_ops import resize_to_target
-from assistant.inference.context import ContextItem
+from assistant.inference.context import ImageItem, TextItem
 from assistant.model_configs import get_resolution_for_model
 from assistant.util import get_logger
 from assistant.view_states.overlay import OverlayMode
@@ -162,7 +161,6 @@ class ExperimentsManager:
             return
 
     def _submit_step(self, image: Image.Image, prompt: str):
-        _ensure_session()
         self._clear_context()
         controller = self._facade.context_controller
 
@@ -180,33 +178,31 @@ class ExperimentsManager:
         processed_img.save(buf, format="PNG")
         encoded = b64encode(buf.getvalue()).decode("ascii")
 
-        img_item = ContextItem.create_image(
-            position=controller.next_position(),
-            image_b64=encoded,
-            width=meta["width"],
-            height=meta["height"],
-            origin="experiment",
-        )
+        img_item = ImageItem()
+        img_item.position = controller.next_position()
+        img_item.image_b64 = encoded
+        img_item.width = meta["width"]
+        img_item.height = meta["height"]
+        img_item.size = meta["width"] * meta["height"]
+        img_item.origin = "experiment"
         controller.create(img_item)
 
         # Add prompt
-        text_item = ContextItem.create_text(
-            position=controller.next_position(),
-            text=prompt,
-            origin="user",
-        )
+        text_item = TextItem()
+        text_item.position = controller.next_position()
+        text_item.text = prompt
+        text_item.origin = "user"
         controller.create(text_item)
 
         # Trigger inference
-        request_item = ContextItem()
+        request_item = TextItem()
         request_item.position = controller.next_position()
-        request_item.content = {"text": ""}
+        request_item.origin = "assistant"
         request_item.request = {
             "stream": bool(config.get("stream", True)),
             "generation_params": dict(config.get("generation_params") or {}),
             "chat_template_params": dict(config.get("chat_template_params") or {}),
         }
-        request_item.metadata = {"origin": "user"}
         controller.create(request_item)
 
         self._pending_request_id = request_item.id
@@ -261,7 +257,7 @@ class ExperimentsManager:
         # the diff, which may lack content when streaming was used)
         assert self._pending_request_id is not None
         entity = self._facade.context_manager.store.item(self._pending_request_id)
-        response_text = entity.content.get("text", "") if entity else ""
+        response_text = entity.text if entity and isinstance(entity, TextItem) else ""
 
         self._pending_request_id = None
 

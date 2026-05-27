@@ -1,76 +1,107 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
-from typing import Optional, TypedDict
+from typing import Any
 
+import httpx
 from fusion import get_logger
+from fusion.libs.model import dump_to_dict
+from fusion.storage.change import Change
+from fusion.storage.delta import Delta
 from fusion.util.rectangle import Rectangle
 from PIL import Image
 from PySide6.QtGui import QGuiApplication
 
+from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
-from assistant.image_ops import scale_qwen_bbox_xyxy, scale_qwen_point
-from assistant.inference.context import ContentType, ContextItem
-from assistant.inference.function_interpreter import HybridFunctionInterpreter
+from assistant.image_ops import resize_to_target, scale_qwen_bbox_xyxy, scale_qwen_point
+from assistant.inference.context import (
+    ContextItem,
+    ImageItem,
+    TextItem,
+)
+from assistant.inference.context_store import OP_SEP
 from assistant.model_configs import get_resolution_for_model
+from assistant.services.action_gate import ActionGate, PendingAction
+from assistant.services.curator_client import push_item
+from assistant.services.overlay_manager import OverlayManager
+from assistant.services.segment_parsing import (
+    ExtractedToolCall,
+    ToolCallResult,
+    extract_tool_calls_from_message,
+    format_tool_result_message,
+    hfi,
+    message_tool_run_id,
+    parse_segment_output,
+)
 from assistant.util import Shape
+from assistant.utils.capture_utils import take_screenshot
+from assistant.utils.image_utils import qpixmap_to_pil
+from assistant.view_states.settings import ExecutionMode
 
 log = get_logger(__name__)
 
-# Create module-level HFI instance
-hfi = HybridFunctionInterpreter()
-
-
-@hfi.function(description="Locate region using xyxy format (x1, y1, x2, y2)")
-def locate(x1: int, y1: int, x2: int, y2: int) -> Rectangle:
-    """locate function expecting xyxy format (x1, y1, x2, y2) like models output.
-
-    Converts to xywh format for Rectangle.
-    """
-    width = x2 - x1
-    height = y2 - y1
-    return Rectangle(x1, y1, width, height)
-
-
-@hfi.function(
-    description="Create rectangle using xywh format (x, y, width, height)",
-)
-def bbox(x: int, y: int, width: int, height: int) -> Rectangle:
-    return Rectangle(x, y, width, height)
-
-
-@hfi.function(description="Mark a point at (x, y) in Qwen grid coordinates")
-def point(x: int, y: int) -> tuple[int, int]:
-    return (x, y)
-
-
-class SegmentOutput(TypedDict, total=False):
-    bbox: list[Rectangle]
-    # image may eventually be a PIL Image; for now we also allow a Rectangle region
-    image: list[Rectangle] | list[Image.Image]
-    points: list[tuple[int, int]]
-
 
 class HybridSegmentService:
-    """Parses last assistant text output for Rectangle/locate lines and updates overlay.
+    """Watches context changes for overlay updates and agent tool execution.
 
-    Coordinate conversion: assumes emitted Rectangle/locate coordinates are in Qwen 0..1000 grid.
+    Pure parsing/extraction lives in segment_parsing module.
+    This class manages in-flight state and performs side effects
+    (overlay updates, tool invocation, context insertion).
     """
 
-    def __init__(self) -> None:
-        pass
+    MAX_TURNS = 25
 
-    # External entrypoint (invoked on context updates)
-    def handle_context_change(self) -> None:
-        try:
-            last_ai_text = self._last_ai_text()
-        except Exception:
+    def __init__(self) -> None:
+        self._processed_tool_call_ids: set[str] = set()
+        self._in_flight_tool_call_ids: set[str] = set()
+        self._processed_message_tool_runs: set[str] = set()
+        self._in_flight_message_tool_runs: set[str] = set()
+        self._turn_count: int = 0
+        self._stopped: bool = False
+        # Non-reentrant guard — only one processing chain at a time
+        self._processing: bool = False
+        # Last known pointer position (screen coords) for scroll
+        self._pointer_x: int | None = None
+        self._pointer_y: int | None = None
+        # Action gate for USER_APPROVE mode
+        self.action_gate = ActionGate()
+        # Guard overlays for AUTO mode
+        self.overlay_manager = OverlayManager()
+
+    def reset_turns(self) -> None:
+        self._turn_count = 0
+        self._stopped = False
+
+    def changed_context_items(self, delta: Delta) -> list[ContextItem]:
+        items: list[ContextItem] = []
+        seen: set[str] = set()
+        ctx_mgr = vii.context_manager
+
+        for key, change_data in delta.asdict().items():
+            if OP_SEP in key:
+                entity_id = key.split(OP_SEP, 1)[0]
+            else:
+                change = Change(*change_data)
+                if change.is_delete():
+                    continue
+                entity_id = change.entity_id
+
+            if entity_id in seen:
+                continue
+            seen.add(entity_id)
+            entity = ctx_mgr._store.find_one(id=entity_id)
+            if isinstance(entity, ContextItem):
+                items.append(entity)
+        return items
+
+    def update_overlay_from_text(self, text: str) -> None:
+        if not text.strip():
             return
-        if not last_ai_text:
-            return
-        # log.info(f"Processing AI text for segments: {last_ai_text[:200]}...")
-        output_model = self._parse_output(last_ai_text)
+        output_model = parse_segment_output(text)
         rects: list[Rectangle] = []
         # Collect all bboxes
         bbox_list = output_model.get("bbox", [])
@@ -87,194 +118,62 @@ class HybridSegmentService:
         # )
         if not rects and not points:
             vii.app_state.overlay_VS.shapes = []
-            return
-        shapes = self._convert_to_shapes(rects, points)
-        log.info(f"Converted to {len(shapes)} overlay shapes")
-        vii.app_state.overlay_VS.shapes = shapes
-
-    # --- internals ---
-    def _last_ai_text(self) -> Optional[str]:
-        ctx_mgr = vii.context_manager
-        items = list(ctx_mgr.items_sorted())
-        # iterate reverse; pick first assistant-origin text item
-        for item in reversed(items):
-            try:
-                # Treat presence of request field as marker for AI message output now
-                if item.request is not None and item.content_type() is ContentType.TEXT:
-                    txt = str(item.content.get("text") or "")
-                    if txt.strip():
-                        return txt
-            except Exception:
-                continue
-        return None
-
-    def _parse_output(self, text: str) -> SegmentOutput:
-        out: SegmentOutput = {"bbox": [], "image": [], "points": []}
-
-        self._parse_json_blocks(text, out)
-
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-
-            parsed = hfi.parse_line(line)
-            if parsed is None:
-                continue
-
-            lhs, func_name, args = parsed
-            log.debug(f"Parsing segment line: lhs={lhs}, func={func_name}, args={args}")
-
-            try:
-                result = hfi.execute_call(func_name, args)
-            except Exception as e:
-                log.error(
-                    f"Segment parse error: {e}"
-                    + (f" lhs={lhs}" if lhs else "")
-                    + f" func={func_name} args={args}"
-                )
-                continue
-
-            if func_name == "point":
-                log.info(f"Parsed point({', '.join(args)}) -> {result}")
-                out["points"].append(result)  # type: ignore[union-attr]
-                continue
-
-            if not isinstance(result, Rectangle):
-                log.error(
-                    f"Function {func_name} did not return Rectangle, got {type(result)}"
-                )
-                continue
-
-            if func_name == "bbox":
-                log.info(
-                    f"Parsed bbox({', '.join(args)}) [xywh] ->"
-                    f" Rectangle{result.as_tuple()}"
-                )
-            elif func_name == "locate":
-                log.info(
-                    f"Parsed locate({', '.join(args)}) [xyxy] ->"
-                    f" Rectangle{result.as_tuple()} [xywh]"
-                )
-
-            if lhs:
-                if lhs not in ("output.bbox", "output.image"):
-                    log.error(f"Segment parse ignore (invalid lhs root): {lhs}")
-                    continue
-                if lhs.endswith("bbox"):
-                    out["bbox"].append(result)  # type: ignore[union-attr]
-                else:
-                    out["image"].append(result)  # type: ignore[union-attr]
-            else:
-                if func_name == "bbox":
-                    out["bbox"].append(result)  # type: ignore[union-attr]
-                elif func_name == "locate":
-                    out["image"].append(result)  # type: ignore[union-attr]
-
-        # log.info(
-        #     f"Parse complete: bbox={len(out.get('bbox', []))},"
-        #     f" image={len(out.get('image', []))},"
-        #     f" points={len(out.get('points', []))}"
-        # )
-        return out
-
-    def _parse_json_blocks(self, text: str, out: SegmentOutput) -> None:
-        # 1) Fenced ```json ... ``` blocks
-        for m in re.finditer(r"```json\s*\n(.*?)```", text, re.DOTALL):
-            raw = m.group(1).strip()
-            self._try_load_json_block(raw, out)
-
-        # 2) Bare JSON objects/arrays not inside code fences, e.g.:
-        #    {"bbox": [100, 100, 200, 200]}  or  [{"point": [50, 60]}]
-        # Strip fenced blocks first to avoid double-parsing
-        stripped = re.sub(r"```json\s*\n.*?```", "", text, flags=re.DOTALL)
-        for m in re.finditer(
-            r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])",
-            stripped,
-            re.DOTALL,
-        ):
-            raw = m.group(1).strip()
-            self._try_load_json_block(raw, out)
-
-    def _try_load_json_block(self, raw: str, out: SegmentOutput) -> None:
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return
-
-        items: list[dict] = []
-        if isinstance(data, dict):
-            items = [data]
-        elif isinstance(data, list):
-            items = [d for d in data if isinstance(d, dict)]
         else:
-            log.error(f"JSON block has unexpected type: {type(data)}")
-            return
+            output_w, output_h = self._resolve_output_resolution()
+            input_w, input_h = self._resolve_input_resolution(output_w, output_h)
+            shapes = self._convert_to_shapes(
+                rects,
+                points,
+                input_w=input_w,
+                input_h=input_h,
+                output_w=output_w,
+                output_h=output_h,
+            )
+            log.info(f"Converted to {len(shapes)} overlay shapes")
+            vii.app_state.overlay_VS.shapes = shapes
 
-        for item in items:
-            self._parse_json_item(item, out)
-
-    def _parse_json_item(self, item: dict, out: SegmentOutput) -> None:
-        bbox_val = item.get("bbox_2d") or item.get("bbox")
-        if isinstance(bbox_val, list) and len(bbox_val) == 4:
-            try:
-                x1, y1, x2, y2 = (int(v) for v in bbox_val)
-                rect = Rectangle(x1, y1, x2 - x1, y2 - y1)
-                log.info(f"JSON bbox {bbox_val} [xyxy] -> Rectangle{rect.as_tuple()}")
-                out["bbox"].append(rect)  # type: ignore[union-attr]
-            except (ValueError, TypeError) as e:
-                log.error(f"JSON bbox conversion error: {e}")
-
-        point_val = item.get("point_2d") or item.get("point")
-        if isinstance(point_val, list) and len(point_val) == 2:
-            try:
-                px, py = int(point_val[0]), int(point_val[1])
-                log.info(f"JSON point [{px}, {py}]")
-                out["points"].append((px, py))  # type: ignore[union-attr]
-            except (ValueError, TypeError) as e:
-                log.error(f"JSON point conversion error: {e}")
-
-    def _convert_to_shapes(
-        self, rects: list[Rectangle], points: list[tuple[int, int]] | None = None
-    ) -> list[Shape]:
-        # Acquire screen geometry (watched screen per settings)
+    def _resolve_output_resolution(self) -> tuple[int, int]:
+        """Get the target screen resolution for overlay rendering."""
         try:
             screen = vii.current_watched_screen()
         except Exception:
             screen = QGuiApplication.primaryScreen()
         if not screen:
             log.error("No screen available for shape conversion")
-            return []
+            return 0, 0
         geo = screen.geometry()
-        orig_w = int(geo.width())
-        orig_h = int(geo.height())
-        log.info(f"Screen geometry: {orig_w}x{orig_h}")
-        # Use explicit image_size metadata from the last image context item if available.
-        input_w = orig_w
-        input_h = orig_h
-        for it in vii.context_manager.items_reversed():
-            if "image" in (it.content or {}):
-                sz_meta = (it.metadata or {}).get("image_size")  # type: ignore[union-attr]
-                if sz_meta and isinstance(sz_meta, dict):
-                    iw = sz_meta.get("width")
-                    ih = sz_meta.get("height")
-                    if isinstance(iw, int) and isinstance(ih, int):
-                        input_w = iw
-                        input_h = ih
-                        log.info(f"Found image size in metadata: {input_w}x{input_h}")
-                        break
+        w, h = int(geo.width()), int(geo.height())
+        log.info(f"Screen geometry: {w}x{h}")
+        return w, h
 
-        if input_w == orig_w and input_h == orig_h:
-            log.info("No image metadata found, using model's configured resolution")
-            model_key = vii.app_state.settings_VS.selected_model
-            target_w, target_h = get_resolution_for_model(model_key)
-            input_w = target_w
-            input_h = target_h
-            log.info(f"Model resolution: {input_w}x{input_h}")
+    def _resolve_input_resolution(
+        self, fallback_w: int, fallback_h: int
+    ) -> tuple[int, int]:
+        """Get the resolution the model saw — from the last image item or model config."""
+        for it in vii.context_manager.items_reversed():
+            if isinstance(it, ImageItem):
+                log.info(f"Found image size: {it.width}x{it.height}")
+                return it.width, it.height
+
+        log.info("No image metadata found, using model's configured resolution")
+        model_key = vii.app_state.settings_VS.selected_model
+        w, h = get_resolution_for_model(model_key)
+        log.info(f"Model resolution: {w}x{h}")
+        return w, h
+
+    def _convert_to_shapes(
+        self,
+        rects: list[Rectangle],
+        points: list[tuple[int, int]] | None = None,
+        *,
+        input_w: int,
+        input_h: int,
+        output_w: int,
+        output_h: int,
+    ) -> list[Shape]:
         shapes: list[Shape] = []
 
         for r in rects:
-            # Interpret x,y,width,height as Qwen grid xywh -> convert to xyxy first
-            # Qwen lines expected may already be xywh or xyxy; spec given: bbox(x,y,w,h)
             x1 = r.x()
             y1 = r.y()
             x2 = r.right()
@@ -283,23 +182,20 @@ class HybridSegmentService:
                 f"Processing rectangle: x1={x1}, y1={y1}, x2={x2}, y2={y2} (from Qwen"
                 " grid)"
             )
-            # Cast to int to satisfy typing contract (Rectangle may yield float via right()/bottom() in future changes)
             sx, sy, ex, ey = scale_qwen_bbox_xyxy(
                 (int(x1), int(y1), int(x2), int(y2)),
                 input_w=input_w,
                 input_h=input_h,
-                orig_w=orig_w,
-                orig_h=orig_h,
+                orig_w=output_w,
+                orig_h=output_h,
                 coords_are_qwen_grid=True,
             )
             log.info(f"Scaled to screen: sx={sx}, sy={sy}, ex={ex}, ey={ey}")
             w = max(0, ex - sx)
             h = max(0, ey - sy)
-            # Use fusion Rectangle for final shape geometry
             final = Rectangle(sx, sy, w, h)
             gx, gy, gw, gh = final.as_tuple()
             log.info(f"Final shape geometry: x={gx}, y={gy}, w={gw}, h={gh}")
-            # Cast to int for Shape geometry contract
             rect_shape: Shape = {
                 "type": "rect",
                 "geometry": (int(gx), int(gy), int(gw), int(gh)),
@@ -312,8 +208,8 @@ class HybridSegmentService:
                 pt,
                 input_w=input_w,
                 input_h=input_h,
-                orig_w=orig_w,
-                orig_h=orig_h,
+                orig_w=output_w,
+                orig_h=output_h,
                 coords_are_qwen_grid=True,
             )
             log.info(f"Scaled point {pt} to screen: ({sx}, {sy})")
@@ -325,3 +221,744 @@ class HybridSegmentService:
             shapes.append(point_shape)
 
         return shapes
+
+    # ------------------------------------------------------------------
+    # Agent tool execution
+    # ------------------------------------------------------------------
+
+    async def process_completed_assistant_message(self, item: TextItem) -> None:
+        """Process a completed assistant message. Non-reentrant: if already
+        processing, the call is skipped."""
+        if self._processing:
+            return
+        self._processing = True
+        try:
+            await self._process_completed_assistant_message(item)
+        finally:
+            self._processing = False
+
+    async def _process_completed_assistant_message(self, item: TextItem) -> None:
+        text = str(item.text or "")
+        if not text.strip():
+            return
+
+        # Don't process cancelled messages
+        if isinstance(item.request, dict) and item.request.get("cancelled_by_user"):
+            return
+
+        run_id = message_tool_run_id(item)
+        if run_id in self._processed_message_tool_runs:
+            return
+        if run_id in self._in_flight_message_tool_runs:
+            return
+
+        calls = extract_tool_calls_from_message(item)
+        if not calls:
+            # Final response — no more work to do
+            vii.app_state.settings_VS.assistant_working = False
+            return
+
+        pending_calls = [
+            call
+            for call in calls
+            if call.id not in self._processed_tool_call_ids
+            and call.id not in self._in_flight_tool_call_ids
+        ]
+        if not pending_calls:
+            self._processed_message_tool_runs.add(run_id)
+            return
+
+        self._in_flight_message_tool_runs.add(run_id)
+        for call in pending_calls:
+            self._in_flight_tool_call_ids.add(call.id)
+
+        try:
+            results = await self._invoke_tool_calls_for_message(item, pending_calls)
+            if results:
+                self._insert_tool_results_and_maybe_continue(item, results)
+                self._processed_message_tool_runs.add(run_id)
+                for result in results:
+                    self._processed_tool_call_ids.add(result.call_id)
+        finally:
+            self._in_flight_message_tool_runs.discard(run_id)
+            for call in pending_calls:
+                self._in_flight_tool_call_ids.discard(call.id)
+
+    # Tools that perform side-effects (input actions) and need approval
+    _ACTION_TOOLS = {"click_at", "scroll", "move_pointer", "type_text", "key_combo"}
+
+    async def _invoke_tool_calls_for_message(
+        self, item: TextItem, calls: list[ExtractedToolCall]
+    ) -> list[ToolCallResult]:
+        results: list[ToolCallResult] = []
+
+        # Separate action tools from read-only tools
+        action_calls = [c for c in calls if c.name in self._ACTION_TOOLS]
+        read_only_calls = [c for c in calls if c.name not in self._ACTION_TOOLS]
+
+        # Execute read-only tools immediately
+        for call in read_only_calls:
+            if self._stopped:
+                break
+            try:
+                resolved_args = [hfi.resolve_arg(expr) for expr in call.arg_exprs]
+                result = await self._invoke_tool_call(call, resolved_args)
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "Tool call failed: message=%s call=%s tool=%s error=%s",
+                    item.id,
+                    call.id,
+                    call.name,
+                    exc,
+                    exc_info=True,
+                )
+                result = ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message=str(exc),
+                )
+            results.append(result)
+
+        # Gate action tools based on execution mode
+        if action_calls and not self._stopped:
+            settings = vii.app_state.settings_VS
+            mode = settings.execution_mode
+
+            if mode == ExecutionMode.USER_APPROVE.value:
+                # Show pending actions in overlay and wait for user confirmation
+                pending = [
+                    PendingAction(
+                        call_id=c.id,
+                        tool_name=c.name,
+                        description=str(c.arg_exprs),
+                    )
+                    for c in action_calls
+                ]
+                self.overlay_manager.show_pending_actions(pending)
+                gate_result = await self.action_gate.await_confirmation(pending)
+                self.overlay_manager.clear_pending_actions()
+
+                if not gate_result.confirmed:
+                    # User rejected — mark all as cancelled
+                    for call in action_calls:
+                        results.append(
+                            ToolCallResult(
+                                call_id=call.id,
+                                name=call.name,
+                                status="error",
+                                message="cancelled by user",
+                            )
+                        )
+                    return results
+
+            # Execute action tools (auto mode or after user confirmed)
+            for call in action_calls:
+                if self._stopped:
+                    break
+                try:
+                    resolved_args = [hfi.resolve_arg(expr) for expr in call.arg_exprs]
+                    result = await self._invoke_tool_call(call, resolved_args)
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "Tool call failed: message=%s call=%s tool=%s error=%s",
+                        item.id,
+                        call.id,
+                        call.name,
+                        exc,
+                        exc_info=True,
+                    )
+                    result = ToolCallResult(
+                        call_id=call.id,
+                        name=call.name,
+                        status="error",
+                        message=str(exc),
+                    )
+                results.append(result)
+
+        return results
+
+    async def _invoke_tool_call(
+        self, call: ExtractedToolCall, resolved_args: list[Any]
+    ) -> ToolCallResult:
+        if call.name == "crop_text":
+            description = str(resolved_args[0]) if resolved_args else ""
+            extracted = await self._exec_crop_text(description)
+            if extracted is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="crop_text failed",
+                )
+            self._update_variable(call.assign_to, extracted)
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                value=extracted,
+                message=extracted,
+            )
+
+        if call.name == "crop_image":
+            description = str(resolved_args[0]) if resolved_args else ""
+            cropped_b64, width, height = await self._exec_crop_image(description)
+            if cropped_b64 is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="crop_image failed",
+                )
+            self._update_variable(call.assign_to, cropped_b64)
+            image_item = self._insert_image_tool_item(
+                cropped_b64, width, height, origin="tool"
+            )
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                value=cropped_b64,
+                context_item_id=str(image_item.id),
+                message=f"image item {image_item.id} ({width}x{height})",
+            )
+
+        if call.name == "look_at":
+            description = str(resolved_args[0]) if resolved_args else ""
+            cropped_b64, width, height = await self._exec_crop_image(description)
+            if cropped_b64 is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="look_at failed",
+                )
+            image_item = self._insert_image_tool_item(
+                cropped_b64, width, height, origin="zoom"
+            )
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                value=cropped_b64,
+                context_item_id=str(image_item.id),
+                message=f"zoom image item {image_item.id} ({width}x{height})",
+            )
+
+        if call.name == "look_at_whole_screen":
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                message="returned to whole-screen view",
+            )
+
+        if call.name == "curator.push":
+            feed_name = str(resolved_args[0]) if resolved_args else "default"
+            content = resolved_args[1] if len(resolved_args) > 1 else {}
+            metadata = resolved_args[2] if len(resolved_args) > 2 else None
+            if not isinstance(content, dict):
+                content = {}
+            if metadata is not None and not isinstance(metadata, dict):
+                metadata = None
+            # Coerce content values to strings (LLM may produce non-string values)
+            for key in ("text", "title", "url", "image", "video"):
+                if key in content and content[key] is not None:
+                    content[key] = str(content[key])
+            # Ensure there's a text field so the item is renderable
+            if "text" not in content and "url" not in content:
+                content["text"] = content.get("title", "(no content)")
+            response = await push_item(feed_name, content, metadata)
+            if response.get("status") != "ok":
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message=str(response.get("error_message") or "curator push failed"),
+                )
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                message=f"item pushed to feed '{feed_name}'",
+            )
+
+        if call.name == "move_pointer":
+            description = str(resolved_args[0]) if resolved_args else ""
+            result_msg = await self._exec_move_pointer(description)
+            if result_msg is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="move_pointer: failed to resolve position",
+                )
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                message=result_msg,
+            )
+
+        if call.name == "click_at":
+            description = str(resolved_args[0]) if resolved_args else ""
+            result_msg = await self._exec_click_at(description)
+            if result_msg is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="click_at: failed to resolve position",
+                )
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success",
+                message=result_msg,
+            )
+
+        if call.name == "scroll":
+            steps = int(resolved_args[0]) if resolved_args else 0
+            result_msg = await self._exec_scroll(steps)
+            return ToolCallResult(
+                call_id=call.id,
+                name=call.name,
+                status="success" if "error" not in result_msg.lower() else "error",
+                message=result_msg,
+            )
+
+        return ToolCallResult(
+            call_id=call.id,
+            name=call.name,
+            status="error",
+            message=f"unknown tool: {call.name}",
+        )
+
+    def _insert_image_tool_item(
+        self, image_b64: str, width: int, height: int, *, origin: str
+    ) -> ImageItem:
+        ctx = vii.context_manager
+        item = ImageItem()
+        item.position = ctx.next_position()
+        item.image_b64 = image_b64
+        item.width = width
+        item.height = height
+        item.size = width * height
+        item.origin = origin
+        ctx.insert(item)
+        return item
+
+    def _insert_screen_capture(self) -> None:
+        """Capture the watched screen, resize, and insert as an ImageItem."""
+        settings = vii.app_state.settings_VS
+        screen_name = settings.screen
+        screens = QGuiApplication.screens()
+        screen = None
+        for s in screens:
+            if s.name() == screen_name:
+                screen = s
+                break
+        if screen is None and screens:
+            screen = screens[0]
+        if screen is None:
+            log.warning("_insert_screen_capture: no screen available")
+            return
+
+        qpixmap = take_screenshot(screen)
+        if qpixmap is None or qpixmap.isNull():
+            log.warning("_insert_screen_capture: screenshot failed")
+            return
+
+        pil_img = qpixmap_to_pil(qpixmap)
+        # Resize to model resolution
+        target_w, target_h = get_resolution_for_model(settings.selected_model)
+        pil_img, _ = resize_to_target(pil_img, target_w, target_h)
+
+        # Encode to base64
+        buf = io.BytesIO()
+        pil_img.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        self._insert_image_tool_item(
+            image_b64, pil_img.width, pil_img.height, origin="screenshot"
+        )
+        log.info(
+            "Inserted screen capture (%dx%d) after tool execution",
+            pil_img.width,
+            pil_img.height,
+        )
+
+    def _insert_tool_results_and_maybe_continue(
+        self, source_item: TextItem, results: list[ToolCallResult]
+    ) -> None:
+        if not results:
+            return
+
+        ctx = vii.context_manager
+        result_item = TextItem()
+        result_item.position = ctx.next_position()
+        result_item.origin = "tool"
+        result_item.text = format_tool_result_message(source_item, results)
+        result_item.metadata = {
+            "source_assistant_item_id": str(source_item.id),
+            "tool_call_ids": [result.call_id for result in results],
+        }
+        ctx.insert(result_item)
+
+        # Insert a screenshot of the current screen state after tool execution
+        self._insert_screen_capture()
+
+        # Check if stopped
+        if self._stopped:
+            log.info("Stopped — not continuing after tool results")
+            vii.app_state.settings_VS.assistant_working = False
+            return
+
+        # Auto-continuation: trigger next generation after tool execution
+        self._turn_count += 1
+        if self._turn_count >= self.MAX_TURNS:
+            log.warning(
+                "max_turns=%d reached, stopping auto-continuation", self.MAX_TURNS
+            )
+            vii.app_state.settings_VS.assistant_working = False
+            return
+
+        req_item = TextItem()
+        req_item.position = ctx.next_position()
+        req_item.origin = "assistant"
+        req_item.request = {"stream": True}
+        ctx.insert(req_item)
+        log.info(
+            "Triggered continuation generation (turn %d/%d)",
+            self._turn_count,
+            self.MAX_TURNS,
+        )
+
+    def _update_variable(self, lhs: str | None, value: Any) -> None:
+        """Update the interpreter variable for a given lhs expression."""
+        if not lhs:
+            return
+        # Dict key assignment: var['key']
+        m = re.match(r"^([A-Za-z_]\w*)\['(.+?)'\]$", lhs)
+        if m:
+            var_name, key = m.group(1), m.group(2)
+            if var_name in hfi.variables and isinstance(hfi.variables[var_name], dict):
+                hfi.variables[var_name][key] = value
+        else:
+            hfi.variables[lhs] = value
+
+    async def _resolve_bbox_via_subagent(
+        self, description: str, screenshot_b64: str
+    ) -> tuple[int, int, int, int] | None:
+        """Call /infer to resolve a semantic description to a bounding box.
+
+        Returns (x1, y1, x2, y2) in pixel coordinates of the screenshot, or None.
+        """
+        # Build a small context with the screenshot + prompt
+        img_item = ImageItem()
+        img_item.position = 0
+        img_item.image_b64 = screenshot_b64
+        img_item.origin = "screenshot"
+        prompt = (
+            f"Locate {description}, " f"report the bbox coordinates in JSON format."
+        )
+        text_item = TextItem()
+        text_item.position = 100
+        text_item.text = prompt
+        text_item.origin = "user"
+        # Request item to trigger generation
+        req_item = TextItem()
+        req_item.position = 200
+        req_item.origin = "assistant"
+        req_item.request = {"stream": False}
+
+        context_data = [
+            dump_to_dict(img_item),
+            dump_to_dict(text_item),
+            dump_to_dict(req_item),
+        ]
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{INFERENCE_HTTP_BASE}/infer",
+                    json={
+                        "context_data": context_data,
+                        "generation_params": {"max_new_tokens": 64, "do_sample": False},
+                    },
+                    timeout=30.0,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.error("Sub-agent /infer call failed: %s", exc)
+            return None
+
+        if data.get("status") != "success":
+            log.error("Sub-agent returned error: %s", data.get("error_message"))
+            return None
+
+        # Parse bbox from JSON response (e.g. {"bbox": [x1, y1, x2, y2]}
+        # or [[x1, y1, x2, y2]] or bare [x1, y1, x2, y2])
+        response_text = data.get("text", "")
+        return self._parse_bbox_from_response(response_text)
+
+    def _parse_bbox_from_response(self, text: str) -> tuple[int, int, int, int] | None:
+        """Extract xyxy bbox from model response text.
+
+        Handles formats like:
+          {"bbox": [x1, y1, x2, y2]}
+          [[x1, y1, x2, y2]]
+          [x1, y1, x2, y2]
+          ```json\n{"bbox": [...]}\n```
+        """
+        # Strip markdown fences if present
+        stripped = re.sub(r"```json\s*\n?", "", text)
+        stripped = re.sub(r"```", "", stripped).strip()
+
+        # Try direct JSON parse
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            # Try to find a JSON-like array in the text
+            m = re.search(
+                r"\[\s*\[?\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]?\s*\]", text
+            )
+            if m:
+                return (
+                    int(m.group(1)),
+                    int(m.group(2)),
+                    int(m.group(3)),
+                    int(m.group(4)),
+                )
+            log.error("Could not parse bbox from sub-agent response: %s", text)
+            return None
+
+        # Navigate into the parsed structure
+        coords: list | None = None
+        if isinstance(data, dict):
+            # {"bbox": [...]} or {"bbox_2d": [...]}
+            coords = data.get("bbox") or data.get("bbox_2d")
+        elif isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                # [{"bbox_2d": [x1, y1, x2, y2], "label": ...}]
+                coords = data[0].get("bbox") or data[0].get("bbox_2d")
+            elif data and isinstance(data[0], list):
+                # [[x1, y1, x2, y2]]
+                coords = data[0]
+            elif len(data) == 4:
+                # [x1, y1, x2, y2]
+                coords = data
+
+        if coords and len(coords) == 4:
+            try:
+                return (int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3]))
+            except (ValueError, TypeError) as e:
+                log.error("Bad bbox values: %s (%s)", coords, e)
+                return None
+
+        log.error("Could not extract bbox from parsed response: %s", text)
+        return None
+
+    def _get_last_screenshot_b64(self) -> str | None:
+        """Get the base64-encoded last screenshot from context."""
+        screenshot = vii.context_manager.last_screenshot_item()
+        if screenshot is None:
+            screenshot = vii.context_manager.last_image_item()
+        if screenshot is None:
+            return None
+        return screenshot.image_b64 if screenshot.image_b64 else None
+
+    def _crop_screenshot(
+        self, screenshot_b64: str, bbox_xyxy: tuple[int, int, int, int]
+    ) -> tuple[str, int, int]:
+        """Crop a base64 screenshot at the given bbox. Returns (b64, width, height)."""
+        raw = base64.b64decode(screenshot_b64)
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+
+        x1, y1, x2, y2 = bbox_xyxy
+        # Scale from Qwen 0..1000 grid to actual image pixels
+        img_w, img_h = img.size
+        px1 = int(x1 * img_w / 1000)
+        py1 = int(y1 * img_h / 1000)
+        px2 = int(x2 * img_w / 1000)
+        py2 = int(y2 * img_h / 1000)
+
+        # Clamp
+        px1 = max(0, min(px1, img_w))
+        py1 = max(0, min(py1, img_h))
+        px2 = max(0, min(px2, img_w))
+        py2 = max(0, min(py2, img_h))
+
+        cropped = img.crop((px1, py1, px2, py2))
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return b64, cropped.width, cropped.height
+
+    async def _exec_crop_text(self, description: str) -> str | None:
+        """Execute crop_text: resolve bbox, crop, extract text via sub-agent."""
+        screenshot_b64 = self._get_last_screenshot_b64()
+        if screenshot_b64 is None:
+            log.error("crop_text: no screenshot available")
+            return None
+
+        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
+        if bbox_coords is None:
+            return None
+
+        cropped_b64, w, h = self._crop_screenshot(screenshot_b64, bbox_coords)
+
+        # Now ask the model to read the text in the cropped image
+        img_item = ImageItem()
+        img_item.position = 0
+        img_item.image_b64 = cropped_b64
+        img_item.width = w
+        img_item.height = h
+        img_item.origin = "tool"
+        text_item = TextItem()
+        text_item.position = 100
+        text_item.text = "Read and return all the text visible in this image. Return only the text, nothing else."
+        text_item.origin = "user"
+        req_item = TextItem()
+        req_item.position = 200
+        req_item.origin = "assistant"
+        req_item.request = {"stream": False}
+
+        context_data = [
+            dump_to_dict(img_item),
+            dump_to_dict(text_item),
+            dump_to_dict(req_item),
+        ]
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{INFERENCE_HTTP_BASE}/infer",
+                    json={
+                        "context_data": context_data,
+                        "generation_params": {
+                            "max_new_tokens": 256,
+                            "do_sample": False,
+                        },
+                    },
+                    timeout=30.0,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.error("crop_text text extraction failed: %s", exc)
+            return None
+
+        if data.get("status") != "success":
+            log.error("crop_text extraction error: %s", data.get("error_message"))
+            return None
+
+        return data.get("text", "")
+
+    async def _exec_crop_image(self, description: str) -> tuple[str | None, int, int]:
+        """Execute crop_image/look_at: resolve bbox and crop."""
+        screenshot_b64 = self._get_last_screenshot_b64()
+        if screenshot_b64 is None:
+            log.error("crop_image: no screenshot available")
+            return None, 0, 0
+
+        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
+        if bbox_coords is None:
+            return None, 0, 0
+
+        b64, w, h = self._crop_screenshot(screenshot_b64, bbox_coords)
+        return b64, w, h
+
+    # --- MPX pointer tools ---
+
+    def _resolve_bbox_center_to_screen(
+        self, bbox_xyxy: tuple[int, int, int, int]
+    ) -> tuple[int, int]:
+        """Convert Qwen grid bbox center to screen pixel coordinates."""
+        x1, y1, x2, y2 = bbox_xyxy
+        center_qwen_x = (x1 + x2) // 2
+        center_qwen_y = (y1 + y2) // 2
+        screen_w, screen_h = self._resolve_output_resolution()
+        # Direct Qwen grid (0-1000) → screen coordinate mapping
+        screen_x = int(center_qwen_x / 1000 * screen_w)
+        screen_y = int(center_qwen_y / 1000 * screen_h)
+        return screen_x, screen_y
+
+    async def _exec_move_pointer(self, description: str) -> str | None:
+        """Move the assistant MPX pointer to the described element."""
+        screenshot_b64 = self._get_last_screenshot_b64()
+        if screenshot_b64 is None:
+            log.error("move_pointer: no screenshot available")
+            return None
+
+        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
+        if bbox_coords is None:
+            log.error("move_pointer: could not resolve '%s'", description)
+            return None
+
+        screen_x, screen_y = self._resolve_bbox_center_to_screen(bbox_coords)
+
+        from assistant.services import input_control
+
+        if not await input_control.move_pointer(screen_x, screen_y):
+            log.error("move_pointer: ydotool move failed")
+            return None
+
+        self._pointer_x = screen_x
+        self._pointer_y = screen_y
+        return f"moved pointer to ({screen_x}, {screen_y})"
+
+    async def _exec_click_at(self, description: str) -> str | None:
+        """Click the assistant MPX pointer at the described element."""
+        screenshot_b64 = self._get_last_screenshot_b64()
+        if screenshot_b64 is None:
+            log.error("click_at: no screenshot available")
+            return None
+
+        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
+        if bbox_coords is None:
+            log.error("click_at: could not resolve '%s'", description)
+            return None
+
+        screen_x, screen_y = self._resolve_bbox_center_to_screen(bbox_coords)
+
+        from assistant.services import input_control
+
+        if not await input_control.click(screen_x, screen_y):
+            log.error("click_at: ydotool click failed")
+            return None
+
+        self._pointer_x = screen_x
+        self._pointer_y = screen_y
+        return f"clicked at ({screen_x}, {screen_y})"
+
+    _MAX_SCROLL_STEPS = 10
+
+    async def _exec_scroll(self, steps: int) -> str:
+        """Scroll at the current pointer position (or screen center) via ydotool."""
+        from assistant.services import input_control
+
+        if steps == 0:
+            return "scroll: 0 steps, nothing to do"
+
+        # Clamp to prevent runaway scrolling
+        if abs(steps) > self._MAX_SCROLL_STEPS:
+            log.warning("scroll: clamped %d to %d", steps, self._MAX_SCROLL_STEPS)
+            steps = self._MAX_SCROLL_STEPS if steps > 0 else -self._MAX_SCROLL_STEPS
+
+        # Use last known pointer position, or fall back to screen center
+        if self._pointer_x is not None and self._pointer_y is not None:
+            x, y = self._pointer_x, self._pointer_y
+        else:
+            screen_w, screen_h = self._resolve_output_resolution()
+            x, y = screen_w // 2, screen_h // 2
+
+        # Move pointer to position then scroll
+        if not await input_control.move_pointer(x, y):
+            return f"error: scroll failed: could not move pointer to ({x}, {y})"
+        if not await input_control.scroll(steps):
+            return f"error: scroll failed at ({x}, {y})"
+
+        direction = "up" if steps > 0 else "down"
+        return f"scrolled {direction} {abs(steps)} clicks at ({x}, {y})"

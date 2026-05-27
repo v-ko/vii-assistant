@@ -49,7 +49,7 @@ def test_hybrid_segment_uses_image_size_metadata(monkeypatch):
     monkeypatch.setattr(real_facade, "qt_app", qt_stub, raising=False)
 
     svc = HybridSegmentService()
-    svc.handle_context_change()
+    svc.update_overlay_from_text("output.bbox = bbox(0,0,1000,1000)")
     shapes = qt_stub.overlay.last_shapes
     assert shapes, "Expected shapes to be set"
     assert shapes[0]["type"] == "rect"

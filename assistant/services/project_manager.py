@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from fusion.libs.procedure import procedure
+from fusion.storage.websockets_client_sync import WebSocketsClientSync
+
+from assistant.constants import INFERENCE_WS_URL
 from assistant.facade import vii
-from assistant.inference.context import ContextItem, ContextManager
-from assistant.services.context_sync_client import ContextSyncClient
+from assistant.inference.context import ContextManager, TextItem
+from assistant.procedures import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.util import get_screen_by_name
 
@@ -18,20 +21,6 @@ from .session_recorder import SessionRecorder, SessionRecorderConfig
 TASK_FILENAME = "task.md"
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 SESSIONS_DIRNAME = "sessions"
-DEFAULT_WEBSOCKET_URL = "ws://desk:8008/ws/context"
-# DEFAULT_WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/context"
-
-# Resolve inference websocket URL at import time (env override if provided, fallback to default)
-INFERENCE_WS_URL = (
-    os.environ.get("VII_ASSISTANT_WS_URL", DEFAULT_WEBSOCKET_URL).strip()
-    or DEFAULT_WEBSOCKET_URL
-)
-
-# HTTP base URL derived from the websocket URL
-_ws_base = INFERENCE_WS_URL.split("/ws/")[0]
-INFERENCE_HTTP_BASE = _ws_base.replace("ws://", "http://", 1).replace(
-    "wss://", "https://", 1
-)
 
 
 @dataclass(slots=True)
@@ -163,18 +152,22 @@ class ViiProjectManager:
         self._system_prompt_path = self.project_root / SYSTEM_PROMPT_FILENAME
         self._sessions_root = self.project_root / SESSIONS_DIRNAME
 
-        # Context store (on_changes wired in facade)
+        # Context store
         self.context_manager = context_manager
 
         # Session & inference runtime
         self._session_manager: Optional[SessionManager] = None
-        self._context_sync_client: Optional[ContextSyncClient] = None
+        self._sync_client: Optional[WebSocketsClientSync] = None
         self._running = False
         # Segment/vision service (always present)
 
         self.hybrid_segment_service = HybridSegmentService()
 
-    # Inference events wired in facade.set_project_manager
+        # Wire hybrid context processing to store changes
+        def _on_hybrid(delta, origin=None):
+            _ = handle_hybrid_context_delta(self.hybrid_segment_service, delta, origin)
+
+        context_manager._store.add_on_changes_callback(_on_hybrid)
 
     # Task/system prompt -------------------------------------------------
     def set_task(self, task: str) -> None:
@@ -195,7 +188,8 @@ class ViiProjectManager:
         metadata = SessionManager.create_metadata(self._sessions_root)
         return SessionManager(metadata=metadata)
 
-    def start_session(
+    @procedure
+    async def start_session(
         self,
         *,
         recorder_config: Optional[SessionRecorderConfig] = None,
@@ -241,36 +235,45 @@ class ViiProjectManager:
         if self._session_manager is not None:
             self._session_manager.start_recording(config or None)
 
-        # Set session state to "started" before adding context items
-        settings_state.session_state = "started"
-
         # Ensure inference client
-        if self._context_sync_client is None:
+        if self._sync_client is None:
             ws_url = INFERENCE_WS_URL
             settings_state.post_info_message(
                 f"Connecting to inference websocket at {ws_url}..."
             )
-            store = self.context_manager._repo
-            self._context_sync_client = ContextSyncClient(url=ws_url, store=store)
-            self._context_sync_client.set_settings_state(settings_state)
-            self._context_sync_client.start()
+            store = self.context_manager._store
+            self._sync_client = WebSocketsClientSync(ws_url, store, role="receiver")
 
-            # Block until the sync handshake completes. The receiver gets
-            # full_state from the server (which clears the local store),
-            # so ALL items must be added after this point.
-            if not self._context_sync_client.wait_ready(timeout=5.0):
+            # Connect + handshake. Returns once store is hydrated.
+            try:
+                await self._sync_client.connect(timeout=5.0)
+            except Exception as exc:
+                settings_state.session_state = "error"
                 settings_state.post_info_message(
-                    "Warning: sync handshake did not complete in time"
+                    f"Error connecting to inference server: {exc}"
                 )
+                self._sync_client = None
+                return self._session_manager
+
+            settings_state.post_info_message(
+                f"Connected to inference websocket at {ws_url}"
+            )
+
+            # React to disconnects
+            self._sync_client.done.add_done_callback(
+                lambda _: self._on_sync_disconnected()
+            )
+
+            # Connection established — now mark session as started
+            settings_state.session_state = "started"
 
             # Add system prompt as first context item
             system_prompt_text = self.current_system_prompt()
             if system_prompt_text and system_prompt_text.strip():
-                system_item = ContextItem.create_text(
-                    position=0,
-                    text=system_prompt_text.strip(),
-                    origin="system",
-                )
+                system_item = TextItem()
+                system_item.position = 0
+                system_item.text = system_prompt_text.strip()
+                system_item.origin = "system"
                 vii.context_controller.create(system_item)
 
         if not self._running:
@@ -297,14 +300,20 @@ class ViiProjectManager:
         settings_state.session_state = new_state
         print("Project manager paused session")
 
+    def _on_sync_disconnected(self) -> None:
+        settings_state = vii.app_state.settings_VS
+        if settings_state.session_state == "started":
+            settings_state.session_state = "disconnected"
+            settings_state.post_info_message("Inference websocket connection closed")
+
     def new_session(self) -> None:
         settings_state = vii.app_state.settings_VS
         if self._session_manager and self._session_manager.is_recording:
             self._session_manager.stop_recording()
         # Stop old inference client so a fresh one is created on next start
-        if self._context_sync_client:
-            self._context_sync_client.stop()
-            self._context_sync_client = None
+        if self._sync_client:
+            self._sync_client.stop()
+            self._sync_client = None
         self._session_manager = self.create_session()
         meta = self._session_manager.metadata
 
@@ -314,6 +323,9 @@ class ViiProjectManager:
 
         # Clear context repository and propagate deletions via store.on_changes
         vii.context_controller.clear()
+
+        # Reset agentic turn counter
+        self.hybrid_segment_service.reset_turns()
 
         # Clear info/status messages
         settings_state.clear_info_messages()
@@ -326,10 +338,15 @@ class ViiProjectManager:
             f"New session directory ready: {meta.session_id}\n{meta.path}"
         )
         # Reset request/progress
-        settings_state.request_in_progress = False
+        settings_state.assistant_working = False
 
         settings_state.session_state = "new-session"
+        self._running = False
         print("Project manager prepared new session")
+
+        # Auto-restart session if inference server is available
+        if settings_state.server_model_state == "loaded":
+            self.start_session(screen_name=settings_state.screen)
 
     @property
     def sessions_root(self) -> Path:

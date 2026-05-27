@@ -1,4 +1,4 @@
-"""Python backend (controller) for the QML-based terminal window.
+"""App-level QML ViewModel.
 
 Thin routing layer: translates QML @Slot calls into @action calls.
 State lives in view state objects; mutation logic lives in
@@ -7,13 +7,15 @@ terminal_actions.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
+from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
 from assistant.model_configs import AVAILABLE_MODELS
 from assistant.terminal_actions import (
     add_tool_prompt,
+    apply_health_result,
     attach_clipboard,
     attach_screen,
     new_session,
@@ -30,12 +32,17 @@ from assistant.terminal_actions import (
 )
 
 
-class QmlBackend(QObject):
-    """Controller that QML binds to. Routes slot calls to @action functions."""
+class AppViewModel(QObject):
+    """ViewModel that QML binds to. Routes slot calls to @action functions."""
 
     # Signal for async health/model check results
     health_check_done = Signal(bool, str, str)  # connected, model_state, model_key
     screen_list_changed = Signal()
+
+    # Display-friendly server label (schema stripped)
+    @Property(str, constant=True)
+    def serverHost(self):
+        return INFERENCE_HTTP_BASE.split("://", 1)[-1]
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -54,6 +61,12 @@ class QmlBackend(QObject):
     @Slot(str)
     def submitMessage(self, text: str):
         submit_message(text)
+
+    @Slot()
+    def stopAssistant(self):
+        from assistant.actions import stop_assistant
+
+        stop_assistant()
 
     # ── Capture slots ────────────────────────────────────────────
 
@@ -74,6 +87,12 @@ class QmlBackend(QObject):
     @Slot(str)
     def setScreen(self, screen_name: str):
         set_screen(screen_name)
+
+    @Slot(str)
+    def setExecutionMode(self, mode: str):
+        from assistant.facade import vii
+
+        vii.app_state.settings_VS.execution_mode = mode
 
     @Slot(str)
     def setModel(self, model_key: str):
@@ -143,6 +162,4 @@ class QmlBackend(QObject):
         self.health_check_done.emit(connected, model_state, model_key)
 
     def _apply_health_result(self, connected: bool, model_state: str, model_key: str):
-        settings = vii.app_state.settings_VS
-        settings.server_model_state = model_state
-        settings.server_model_key = model_key
+        apply_health_result(connected, model_state, model_key)

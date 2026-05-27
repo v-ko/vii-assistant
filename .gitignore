@@ -1,6 +1,7 @@
 *.pyc
 *.egg-info
 node_modules
+.env
 
 fusion-py-src
 

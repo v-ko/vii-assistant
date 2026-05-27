@@ -7,33 +7,63 @@ import secrets
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
-import torch
 from fusion import get_logger
 from fusion.libs.model import load_from_dict
 from fusion.storage.change import Change
-from transformers import TextIteratorStreamer
 
-from assistant.inference.context import ContextItem, ContextManager
+from assistant.inference.context import ContextItem, ContextManager, TextItem
 from assistant.inference.context_store import ContextStore
-from assistant.inference.qwen_tokens import compile_qwen_context
 from assistant.model_configs import MODEL_SPECS
 
 if TYPE_CHECKING:
-    from assistant.inference.model_manager import ModelManager
+    from assistant.inference.backend_protocol import InferenceBackend
 
 logger = get_logger(__name__)
+
+
+async def generate_oneshot(
+    context_manager: ContextManager,
+    backend: "InferenceBackend",
+    gen_params: dict[str, Any] | None = None,
+    chat_template_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stateless single-shot generation from a populated ContextManager.
+
+    Returns dict with keys: status, text, tokens (on success)
+    or status, error_message (on failure).
+    """
+    spec = MODEL_SPECS.get(backend.current_model_key or "", {})
+    params: dict[str, Any] = {"max_new_tokens": 128, "do_sample": False}
+    params.update(spec.get("generation_params") or {})
+    if gen_params:
+        params.update(gen_params)
+
+    template_params = dict(spec.get("chat_template_params") or {})
+    if chat_template_params:
+        template_params.update(chat_template_params)
+
+    batch = context_manager.items_as_qwen_chat_messages()
+    if not batch.messages:
+        return {"status": "error", "error_message": "No messages in context"}
+
+    result = await backend.generate(
+        batch.messages, batch.images, params, template_params
+    )
+    if result.get("status") == "success":
+        result["bbox_format"] = spec.get("bbox_format", "xyxy")
+    return result
 
 
 class InferenceService:
     def __init__(
         self,
-        model_manager: ModelManager,
+        backend: "InferenceBackend",
         session_id: str | None = None,
     ) -> None:
         self.context = ContextManager()
-        self.model_manager = model_manager
+        self.backend = backend
         self._lock = asyncio.Lock()
-        self._active_streams: dict[str, threading.Thread] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
         self._dispatched_requests: set[str] = set()
         self.session_id = session_id or secrets.token_hex(4)
 
@@ -51,7 +81,7 @@ class InferenceService:
             item = load_from_dict(dict(forward))
         else:
             # For updates, we need to get the existing entity and apply the forward diff
-            existing = self.context._repo.find_one(id=change.entity_id)
+            existing = self.context._store.find_one(id=change.entity_id)
             if existing is None:
                 logger.info("Entity %s not found for update", change.entity_id)
                 return
@@ -82,12 +112,34 @@ class InferenceService:
         async with self._lock:
             await self._dispatch_generation(item)
 
+    def cancel_generation(self, item_id: str) -> bool:
+        """Signal a running generation to stop. Returns True if it was active."""
+        event = self._cancel_events.get(item_id)
+        if event is None:
+            return False
+        logger.info("Cancelling generation for item %s", item_id)
+        event.set()
+        return True
+
+    def check_cancellation(self, change: Change) -> None:
+        """Check if a remote change is a cancellation request."""
+        if not change.forward_component:
+            return
+        forward = change.forward_component
+        request = forward.get("request")
+        if not isinstance(request, dict):
+            return
+        if not request.get("cancelled_by_user"):
+            return
+        item_id = str(change.entity_id)
+        self.cancel_generation(item_id)
+
     # --- Internal helpers ---
 
     def _build_request_params(
         self, request: dict[str, Any] | None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        spec = MODEL_SPECS.get(self.model_manager.current_model_key or "", {})
+        spec = MODEL_SPECS.get(self.backend.current_model_key or "", {})
         gen_params: dict[str, Any] = {
             "max_new_tokens": 128,
             "do_sample": False,
@@ -101,118 +153,69 @@ class InferenceService:
         return gen_params, chat_template_params
 
     async def _dispatch_generation(self, item: ContextItem) -> None:
-        model, processor = await self.model_manager.get_model()
-        device = self.model_manager.device
         gen_params, chat_template_params = self._build_request_params(item.request)
-        compiled = compile_qwen_context(
-            self.context,
-            processor,
-            chat_template_kwargs=chat_template_params,
-        )
-        if not compiled.messages:
+        batch = self.context.items_as_qwen_chat_messages()
+        if not batch.messages:
             logger.warning(
                 "No messages compiled for item=%s, skipping generation",
                 getattr(item, "id", None),
             )
             return
-        input_ids = compiled.processor_inputs.get("input_ids")
-        prompt_tokens = input_ids.shape[1] if input_ids is not None else 0
-        logger.info(
-            "Dispatching generation for item=%s stream=%s tokens=%d images=%d template_keys=%s",
+
+        logger.debug(
+            "Dispatching generation for item=%s stream=%s images=%d",
             getattr(item, "id", None),
             bool((item.request or {}).get("stream")),
-            prompt_tokens,
-            len(compiled.images),
-            sorted(chat_template_params),
+            len(batch.images),
         )
 
-        # Prepare inputs
-        inputs = {k: v for k, v in compiled.processor_inputs.items()}
-        inputs = {
-            k: v.to(device) if isinstance(v, torch.Tensor) else v
-            for k, v in inputs.items()
-        }
-
-        allowed = {
-            "input_ids",
-            "attention_mask",
-            "pixel_values",
-            "pixel_values_videos",
-            "image_grid_thw",
-            "video_grid_thw",
-            "image_position_ids",
-            "mm_token_type_ids",
-            "token_type_ids",
-        }
-        model_kwargs: dict[str, Any] = {
-            k: v for k, v in inputs.items() if k in allowed and v is not None
-        }
-        temperature = gen_params.get("temperature")
-        if temperature is not None:
-            temp_f = float(temperature)
-            if temp_f > 0.0:
-                gen_params["do_sample"] = True
-            else:
-                gen_params.pop("temperature", None)
-
-        updated = cast(ContextItem, item.copy())
+        updated = cast(TextItem, item.copy())
         stream = bool((item.request or {}).get("stream"))
         if stream:
             await self._generate_stream(
-                updated, model, processor, model_kwargs, gen_params
+                updated, batch.messages, batch.images, gen_params, chat_template_params
             )
         else:
             await self._generate_non_stream(
-                updated, model, processor, inputs, model_kwargs, gen_params
+                updated, batch.messages, batch.images, gen_params, chat_template_params
             )
 
     async def _generate_non_stream(
         self,
-        updated: ContextItem,
-        model: Any,
-        processor: Any,
-        inputs: dict[str, Any],
-        model_kwargs: dict[str, Any],
+        updated: TextItem,
+        messages: list[dict[str, Any]],
+        images: list,
         gen_params: dict[str, Any],
+        chat_template_kwargs: dict[str, Any],
     ) -> None:
         try:
-            model.eval()
-            with torch.no_grad():
-                generation = model.generate(**model_kwargs, **gen_params)
-            prompt_len = inputs["input_ids"].shape[1]
-            new_tokens = generation[:, prompt_len:]
-            tokenizer = getattr(processor, "tokenizer", None)
-            if tokenizer is None:
-                raise RuntimeError("Processor missing tokenizer for decoding")
-            decoded_full = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[
-                0
-            ].strip()
-            content = dict(updated.content or {})
-            content["text"] = decoded_full
-            updated.content = content
-            req = dict(updated.request or {})
-            req["result"] = "success"
-            req["completed"] = True
-            updated.request = req
-            # Mark as assistant-originated now that generation is done
-            meta = dict(updated.metadata or {})
-            meta["origin"] = "assistant"
-            # tokens length
-            try:
-                tokens_len = (
-                    int(new_tokens.shape[1]) if hasattr(new_tokens, "shape") else None
-                )
-            except Exception:
-                tokens_len = None
-            if tokens_len is not None:
-                meta["tokens_len"] = tokens_len
-            updated.metadata = meta
-            logger.info(
-                "Non-stream generation complete item=%s text_len=%d tokens=%s",
-                getattr(updated, "id", None),
-                len(decoded_full),
-                tokens_len,
+            result = await self.backend.generate(
+                messages, images, gen_params, chat_template_kwargs
             )
+            if result["status"] == "success":
+                updated.text = result["text"]
+                req = dict(updated.request or {})
+                req["result"] = "success"
+                req["completed"] = True
+                updated.request = req
+                updated.origin = "assistant"
+                tokens_len = result.get("tokens")
+                if tokens_len is not None:
+                    meta = dict(updated.metadata or {})
+                    meta["tokens_len"] = tokens_len
+                    updated.metadata = meta
+                logger.info(
+                    "Non-stream generation complete item=%s text_len=%d tokens=%s",
+                    getattr(updated, "id", None),
+                    len(result["text"]),
+                    tokens_len,
+                )
+            else:
+                req = dict(updated.request or {})
+                req["result"] = "error"
+                req["error_message"] = result.get("error_message", "Unknown error")
+                req["completed"] = True
+                updated.request = req
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Inference failed (non-stream) for item %s: %s",
@@ -230,147 +233,73 @@ class InferenceService:
 
     async def _generate_stream(
         self,
-        updated: ContextItem,
-        model: Any,
-        processor: Any,
-        model_kwargs: dict[str, Any],
+        updated: TextItem,
+        messages: list[dict[str, Any]],
+        images: list,
         gen_params: dict[str, Any],
+        chat_template_kwargs: dict[str, Any],
     ) -> None:
-        tokenizer = getattr(processor, "tokenizer", None)
-        if tokenizer is None:
-            raise RuntimeError("Processor has no tokenizer for streaming")
-        streamer = TextIteratorStreamer(
-            tokenizer, skip_prompt=True, skip_special_tokens=True
-        )
-        model.eval()
-
-        thread_error: list[Exception | None] = [None]
-        drain_error: list[Exception | None] = [None]
-        loop = asyncio.get_running_loop()
-        chunk_queue: asyncio.Queue[str | object] = asyncio.Queue()
-        sentinel = object()
-
-        def _run_generate() -> None:
-            try:
-                with torch.no_grad():
-                    model.generate(**model_kwargs, **gen_params, streamer=streamer)
-            except Exception as e:  # noqa: BLE001
-                thread_error[0] = e
-                logger.error(
-                    "Streaming generation thread error for %s: %s",
-                    updated.id,
-                    e,
-                    exc_info=True,
-                )
-
-        def _drain_streamer() -> None:
-            try:
-                for chunk in streamer:
-                    loop.call_soon_threadsafe(chunk_queue.put_nowait, chunk)
-            except Exception as exc:  # noqa: BLE001
-                drain_error[0] = exc
-                logger.error(
-                    "Streamer drain error for %s: %s",
-                    updated.id,
-                    exc,
-                    exc_info=True,
-                )
-            finally:
-                loop.call_soon_threadsafe(chunk_queue.put_nowait, sentinel)
-
-        thread = threading.Thread(target=_run_generate, daemon=True)
         uid = str(updated.id)
-        self._active_streams[uid] = thread
-        thread.start()
-
-        drain_thread = threading.Thread(target=_drain_streamer, daemon=True)
-        drain_thread.start()
+        cancel_event = threading.Event()
+        self._cancel_events[uid] = cancel_event
 
         pieces: list[str] = []
+        cancelled = False
+        error: Exception | None = None
+
         try:
-            while True:
-                chunk = await chunk_queue.get()
-                if chunk is sentinel:
+            async for chunk in self.backend.generate_stream(
+                messages, images, gen_params, chat_template_kwargs, cancel_event
+            ):
+                if cancel_event.is_set():
+                    cancelled = True
+                    logger.info("Generation cancelled mid-stream for item %s", uid)
                     break
-
-                if chunk is None:
-                    await asyncio.sleep(0)
+                if not chunk:
                     continue
-
-                chunk_s = cast(str, chunk)
-                if not chunk_s:
-                    await asyncio.sleep(0)
-                    continue
-                pieces.append(chunk_s)
-                # Push streaming chunk as a custom delta op through the store
-                store: ContextStore = self.context._repo
-                store.text_append(str(updated.id), chunk_s)
-                # Give event loop a chance to process outbound messages / cancellation
+                pieces.append(chunk)
+                store: ContextStore = self.context._store
+                store.text_append(str(updated.id), chunk)
                 await asyncio.sleep(0)
         except Exception as exc:  # noqa: BLE001
+            error = exc
             logger.error(
                 "Inference failed (stream) for item %s: %s",
                 getattr(updated, "id", None),
                 exc,
                 exc_info=True,
             )
-            req = dict(updated.request or {})
+
+        # Finalize
+        full_text = "".join(pieces).strip()
+        updated.text = full_text
+        req = dict(updated.request or {})
+
+        if error is not None:
             req["result"] = "error"
-            req["error_message"] = str(exc)
-            req["completed"] = True
-            updated.request = req
+            req["error_message"] = str(error)
+        elif cancelled:
+            req["result"] = "cancelled"
+            req["cancelled_by_user"] = True
         else:
-            if thread_error[0] is not None:
-                req = dict(updated.request or {})
-                req["result"] = "error"
-                req["error_message"] = str(thread_error[0])
-                req["completed"] = True
-                updated.request = req
-            else:
-                if drain_error[0] is not None:
-                    req = dict(updated.request or {})
-                    req["result"] = "error"
-                    req["error_message"] = str(drain_error[0])
-                    req["completed"] = True
-                    updated.request = req
-                else:
-                    if thread.is_alive():
-                        thread.join(timeout=0.0)
-                    if drain_thread.is_alive():
-                        drain_thread.join(timeout=0.0)
-                    full_text = "".join(pieces).strip()
-                    content = dict(updated.content or {})
-                    content["text"] = full_text
-                    updated.content = content
-                    req = dict(updated.request or {})
-                req["result"] = "success"
-                req["completed"] = True
-                updated.request = req
-                # Mark as assistant-originated now that generation is done
-                meta = dict(updated.metadata or {})
-                meta["origin"] = "assistant"
-                try:
-                    encoded = tokenizer(full_text, add_special_tokens=False)  # type: ignore[call-arg]
-                    tokens_len = (
-                        len(encoded["input_ids"])
-                        if isinstance(encoded, dict) and "input_ids" in encoded
-                        else None
-                    )
-                except Exception:
-                    tokens_len = None
-                if tokens_len is not None:
-                    meta["tokens_len"] = tokens_len
-                updated.metadata = meta
-                logger.info(
-                    "Streaming generation complete item=%s text_len=%d tokens=%s",
-                    getattr(updated, "id", None),
-                    len(full_text),
-                    tokens_len,
-                )
-        finally:
-            if thread.is_alive():
-                thread.join(timeout=0.1)
-            if drain_thread.is_alive():
-                drain_thread.join(timeout=0.1)
-            self._active_streams.pop(uid, None)
-            self.context.update(updated)
+            req["result"] = "success"
+
+        req["completed"] = True
+        updated.request = req
+        updated.origin = "assistant"
+
+        if not error and not cancelled and full_text:
+            meta = dict(updated.metadata or {})
+            # Approximate token count from text length (backends may not report)
+            meta["text_len"] = len(full_text)
+            updated.metadata = meta
+
+        logger.info(
+            "Stream generation done item=%s result=%s text_len=%d",
+            uid,
+            req["result"],
+            len(full_text),
+        )
+
+        self._cancel_events.pop(uid, None)
+        self.context.update(updated)

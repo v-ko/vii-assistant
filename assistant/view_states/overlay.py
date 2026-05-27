@@ -11,6 +11,8 @@ from assistant.util import Shape
 class OverlayMode(Enum):
     WORK = "work"
     EXPERIMENT = "experiment"
+    AUTO_GUARD = "auto-guard"
+    CONFIRM = "confirm"
 
 
 class OverlayViewState(QObject):
@@ -20,6 +22,7 @@ class OverlayViewState(QObject):
     sample_image_changed = Signal(object)  # QImage | None
     screen_name_changed = Signal(str)
     dimmed_changed = Signal(bool)
+    pending_actions_changed = Signal(list)  # list[str] — action descriptions
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -29,6 +32,7 @@ class OverlayViewState(QObject):
         self._sample_image: QImage | None = None
         self._screen_name: str = ""
         self._dimmed: bool = False
+        self._pending_actions: list[str] = []
 
     @property
     def mode(self) -> OverlayMode:
@@ -90,9 +94,19 @@ class OverlayViewState(QObject):
         self._dimmed = value
         self.dimmed_changed.emit(value)
 
+    @property
+    def pending_actions(self) -> list[str]:
+        return self._pending_actions
+
+    @pending_actions.setter
+    def pending_actions(self, value: list[str]) -> None:
+        self._pending_actions = value
+        self.pending_actions_changed.emit(value)
+
     def clear(self) -> None:
         self.shapes = []
         self.gt_shapes = []
         self.sample_image = None
         self.dimmed = False
+        self.pending_actions = []
         self.mode = OverlayMode.WORK

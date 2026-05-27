@@ -1,7 +1,7 @@
 """Actions for the VII assistant terminal window.
 
 All state mutations go through @action-decorated functions.
-The QML backend calls these — it never mutates state directly.
+The QML ViewModel calls these — it never mutates state directly.
 """
 
 from __future__ import annotations
@@ -20,17 +20,17 @@ from fusion.libs.action import action
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 
-from assistant.actions import add_user_message, ocr_clipboard, start_session
+from assistant.actions import add_user_message, ocr_clipboard
+from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
 from assistant.image_ops import resize_to_target
-from assistant.inference.context import ContextItem
+from assistant.inference.context import ImageItem
 from assistant.model_configs import (
     AVAILABLE_MODELS,
     MODEL_SPECS,
     get_resolution_for_model,
 )
-from assistant.services.hybrid_segment_service import hfi
-from assistant.services.project_manager import INFERENCE_HTTP_BASE
+from assistant.services.segment_parsing import hfi
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 
@@ -54,8 +54,9 @@ def _ensure_model_loaded() -> None:
 
 @action("terminal.ensure_session")
 def ensure_session() -> None:
+    """Fire-and-forget session start (returns Task internally)."""
     if vii.app_state.settings_VS.session_state != "started":
-        start_session(screen_name=vii.app_state.settings_VS.screen)
+        vii.project_manager.start_session(screen_name=vii.app_state.settings_VS.screen)
 
 
 @action("terminal.new_session")
@@ -74,6 +75,8 @@ def open_sessions_folder() -> None:
 @action("terminal.submit_message")
 def submit_message(text: str) -> None:
     _ensure_model_loaded()
+    # Reset stopped state so the assistant can work again
+    vii.project_manager.hybrid_segment_service.reset_turns()
     add_user_message(text)
 
 
@@ -109,7 +112,6 @@ def ocr_clipboard_action() -> None:
 
 
 def _add_image_item(pixmap, source: str) -> None:
-    ensure_session()
     controller = vii.context_controller
     pil = qpixmap_to_pil(pixmap)
     model_key = vii.app_state.settings_VS.selected_model
@@ -129,13 +131,13 @@ def _add_image_item(pixmap, source: str) -> None:
     if not encoded:
         raise RuntimeError("Image encoding failed")
 
-    item = ContextItem.create_image(
-        position=controller.next_position(),
-        image_b64=encoded,
-        width=meta["width"],
-        height=meta["height"],
-        origin=source,
-    )
+    item = ImageItem()
+    item.position = controller.next_position()
+    item.image_b64 = encoded
+    item.width = meta["width"]
+    item.height = meta["height"]
+    item.size = meta["width"] * meta["height"]
+    item.origin = source
     controller.create(item)
 
 
@@ -213,7 +215,21 @@ def toggle_terminal() -> None:
             qt_app.overlay.show()
 
 
-# ── Health check (background, not an action since no state mutation) ──
+# ── Health check ──
+
+
+@action("health.apply_result")
+def apply_health_result(connected: bool, model_state: str, model_key: str) -> None:
+    """Apply health check result to settings state and auto-start session."""
+    settings = vii.app_state.settings_VS
+    prev_state = settings.server_model_state
+    settings.server_model_state = model_state
+    settings.server_model_key = model_key
+
+    # Auto-start session when model becomes available
+    if model_state == "loaded" and prev_state != "loaded":
+        if settings.session_state != "started":
+            vii.project_manager.start_session(screen_name=settings.screen)
 
 
 def schedule_health_check(callback) -> None:
@@ -253,11 +269,11 @@ def _do_model_load(model_key: str) -> None:
         model_info = data.get("model", {})
         model_state = model_info.get("state", "unknown")
         mk = model_info.get("model_key") or ""
-        # Marshal result back to main thread via the backend signal
-        vii.qt_app.qml_backend.health_check_done.emit(True, model_state, mk)
+        # Marshal result back to main thread via the view model signal
+        vii.qt_app.app_view_model.health_check_done.emit(True, model_state, mk)
     except Exception:
         _do_health_check(
-            lambda connected, ms, mk: vii.qt_app.qml_backend.health_check_done.emit(
+            lambda connected, ms, mk: vii.qt_app.app_view_model.health_check_done.emit(
                 connected, ms, mk
             )
         )

@@ -21,6 +21,7 @@ class Config:
                 "max_new_tokens": 256,
                 "temperature": 0.0,
             },
+            "max_new_tokens": 256,
         }
 
         self._init_config()

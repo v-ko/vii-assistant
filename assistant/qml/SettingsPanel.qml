@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // Settings panel: model/session controls, prompts, capture actions.
-// Expects `settingsState`, `backend` in QML context from Python.
+// Expects `settingsState`, `appVM` in QML context from Python.
 
 Rectangle {
     id: settingsRoot
@@ -31,7 +31,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
                 enabled: settingsState ? settingsState.session_state !== "new-session" : true
-                onClicked: backend.newSession()
+                onClicked: appVM.newSession()
                 ToolTip.text: "Reset context and start a new session"
                 ToolTip.visible: hovered
             }
@@ -40,8 +40,8 @@ Rectangle {
                 text: "OCR clipboard"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? !settingsState.request_in_progress : true
-                onClicked: backend.ocrClipboard()
+                enabled: settingsState ? !settingsState.assistant_working : true
+                onClicked: appVM.ocrClipboard()
                 ToolTip.text: "Run OCR on clipboard image"
                 ToolTip.visible: hovered
             }
@@ -73,8 +73,8 @@ Rectangle {
                 text: "Attach screen"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? (!settingsState.request_in_progress && settingsState.context_updates_allowed) : true
-                onClicked: backend.attachScreen()
+                enabled: settingsState ? (!settingsState.assistant_working && settingsState.context_updates_allowed) : true
+                onClicked: appVM.attachScreen()
                 ToolTip.text: "Capture watched screen and add to context"
                 ToolTip.visible: hovered
             }
@@ -83,8 +83,8 @@ Rectangle {
                 text: "Attach clipboard"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? (!settingsState.request_in_progress && settingsState.context_updates_allowed) : true
-                onClicked: backend.attachClipboard()
+                enabled: settingsState ? (!settingsState.assistant_working && settingsState.context_updates_allowed) : true
+                onClicked: appVM.attachClipboard()
                 ToolTip.text: "Add clipboard image to context"
                 ToolTip.visible: hovered
             }
@@ -97,11 +97,11 @@ Rectangle {
                 verticalAlignment: Text.AlignVCenter
 
                 property bool connected: false
-                text: connected ? "Server: Connected" : "Server: Disconnected"
+                text: connected ? "Server " + appVM.serverHost + " Connected" : "Server " + appVM.serverHost + " Disconnected"
                 color: connected ? "#4CAF50" : "#f44336"
 
                 Connections {
-                    target: backend
+                    target: appVM
                     function onHealth_check_done(conn, modelState, modelKey) {
                         healthLabel.connected = conn
                     }
@@ -118,17 +118,24 @@ Rectangle {
             spacing: 8
 
             Button {
+                text: "\u2699 Settings"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: settingsModalVM.show()
+            }
+
+            Button {
                 text: "Open sessions folder"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                onClicked: backend.openSessionsFolder()
+                onClicked: appVM.openSessionsFolder()
             }
 
             Button {
                 text: "Open app config"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                onClicked: backend.openAppConfig()
+                onClicked: appVM.openAppConfig()
             }
 
             // Model selector
@@ -174,7 +181,7 @@ Rectangle {
 
                 onActivated: function(index) {
                     let item = screenListModel.get(index)
-                    if (item) backend.setScreen(item.name)
+                    if (item) appVM.setScreen(item.name)
                 }
 
                 // Re-sync when Python sets screen (e.g. after config init)
@@ -182,6 +189,61 @@ Rectangle {
                     target: settingsState
                     function onScreen_changed(screenName) {
                         populateScreens()
+                    }
+                }
+            }
+
+            // Execution mode selector
+            ComboBox {
+                id: modeCombo
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                model: ["user-approve", "auto"]
+                currentIndex: settingsState ? model.indexOf(settingsState.execution_mode) : 0
+
+                onActivated: function(index) {
+                    appVM.setExecutionMode(model[index])
+                }
+
+                Connections {
+                    target: settingsState
+                    function onExecution_mode_changed(mode) {
+                        modeCombo.currentIndex = modeCombo.model.indexOf(mode)
+                    }
+                }
+            }
+
+            // Max tokens per reply
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                spacing: 6
+
+                Label {
+                    text: "Max tokens:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                SpinBox {
+                    id: maxTokensSpin
+                    Layout.fillWidth: true
+                    from: 16
+                    to: 16384
+                    stepSize: 64
+                    value: settingsState ? settingsState.max_new_tokens : 256
+                    editable: true
+
+                    onValueModified: {
+                        if (settingsState) settingsState.max_new_tokens = value
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onMax_new_tokens_changed(val) {
+                            if (maxTokensSpin.value !== val)
+                                maxTokensSpin.value = val
+                        }
                     }
                 }
             }
@@ -283,7 +345,7 @@ Rectangle {
                     Button {
                         text: "Add tool prompt"
                         Layout.fillWidth: true
-                        onClicked: backend.addToolPrompt()
+                        onClicked: appVM.addToolPrompt()
                     }
                 }
 
@@ -298,7 +360,7 @@ Rectangle {
                         model: ListModel { id: experimentConfigModel }
 
                         Component.onCompleted: {
-                            var configs = backend.getExperimentConfigs()
+                            var configs = appVM.getExperimentConfigs()
                             experimentConfigModel.clear()
                             var selectedIdx = 0
                             for (var i = 0; i < configs.length; i++) {
@@ -311,7 +373,7 @@ Rectangle {
                         onCurrentIndexChanged: {
                             if (currentIndex >= 0 && experimentConfigModel.count > 0) {
                                 var item = experimentConfigModel.get(currentIndex)
-                                if (item) backend.setExperimentConfig(item.path)
+                                if (item) appVM.setExperimentConfig(item.path)
                             }
                         }
                     }
@@ -321,15 +383,15 @@ Rectangle {
 
                         Button {
                             text: "Step"
-                            onClicked: backend.stepExperiment()
+                            onClicked: appVM.stepExperiment()
                         }
                         Button {
                             text: "Stop"
-                            onClicked: backend.stopExperiment()
+                            onClicked: appVM.stopExperiment()
                         }
                         Button {
                             text: "Open Config"
-                            onClicked: backend.openExperimentConfig()
+                            onClicked: appVM.openExperimentConfig()
                         }
                     }
 
@@ -365,7 +427,7 @@ Rectangle {
                 valueRole: "key"
 
                 Component.onCompleted: {
-                    let models = backend.getAvailableModels()
+                    let models = appVM.getAvailableModels()
                     for (let i = 0; i < models.length; i++) {
                         modelListModel.append(models[i])
                     }
@@ -384,7 +446,7 @@ Rectangle {
 
         onAccepted: {
             let item = modelListModel.get(modelCombo.currentIndex)
-            if (item) backend.setModel(item.key)
+            if (item) appVM.setModel(item.key)
         }
     }
 
@@ -394,12 +456,12 @@ Rectangle {
         running: settingsRoot.Window.window ? settingsRoot.Window.window.visible : false
         repeat: true
         triggeredOnStart: true
-        onTriggered: backend.scheduleHealthCheck()
+        onTriggered: appVM.scheduleHealthCheck()
     }
 
     function populateScreens() {
         screenListModel.clear()
-        let screens = backend.getScreenList()
+        let screens = appVM.getScreenList()
         for (let i = 0; i < screens.length; i++) {
             screenListModel.append(screens[i])
         }

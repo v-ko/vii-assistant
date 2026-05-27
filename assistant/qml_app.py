@@ -3,15 +3,16 @@ from pathlib import Path
 
 from fusion.loop import set_main_loop
 from fusion.platform.qt_widgets.qt_main_loop import QtMainLoop
-from PySide6.QtCore import QMetaObject, QRect, Qt, QUrl
+from PySide6.QtCore import QMetaObject, Qt, QUrl
 from PySide6.QtGui import QAction, QScreen
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from assistant.app_state import AppState
+from assistant.app_view_model import AppViewModel
 from assistant.context_list_model import ContextListModel
 from assistant.facade import vii
-from assistant.qml_backend import QmlBackend
+from assistant.screen_actions import apply_screen_config_change
 from assistant.terminal_actions import toggle_terminal
 from assistant.util import get_logger, get_screen_by_name
 from assistant.view_states.terminal import TerminalViewState
@@ -24,17 +25,16 @@ QML_DIR = Path(__file__).parent / "qml"
 
 class AssistantQmlApp(QApplication):
 
-    def __init__(self):
+    def __init__(self, app_state: AppState):
         super().__init__(sys.argv)
         set_main_loop(QtMainLoop(self))
         self.setQuitOnLastWindowClosed(False)
 
-        # Initialize view states
-        self.app_state = AppState(parent=self)
+        self.app_state = app_state
         self.terminal_state = TerminalViewState(self.app_state)
 
-        # QML backend bridge
-        self.qml_backend = QmlBackend(parent=self)
+        # App-level QML ViewModel
+        self.app_view_model = AppViewModel(parent=self)
 
         # Context list model for QML
         self.context_model = ContextListModel(self.app_state.context_VS, parent=self)
@@ -46,7 +46,10 @@ class AssistantQmlApp(QApplication):
         ctx.setContextProperty("contextState", self.app_state.context_VS)
         ctx.setContextProperty("contextModel", self.context_model)
         ctx.setContextProperty("terminalState", self.terminal_state)
-        ctx.setContextProperty("backend", self.qml_backend)
+        ctx.setContextProperty("appVM", self.app_view_model)
+        ctx.setContextProperty("recordingOverlayVM", vii.recording_overlay_view_model)
+        ctx.setContextProperty("settingsModalVM", vii.settings_modal_view_model)
+        ctx.setContextProperty("snippetVM", vii.snippet_view_model)
 
         # Add QML import path for local components
         self.engine.addImportPath(str(QML_DIR))
@@ -59,6 +62,10 @@ class AssistantQmlApp(QApplication):
             sys.exit(1)
 
         self._root_window = self.engine.rootObjects()[0]
+
+        # Load recording pill QML (separate window)
+        pill_qml = QML_DIR / "RecordingOverlay.qml"
+        self.engine.load(QUrl.fromLocalFile(str(pill_qml)))
 
         # Overlay will be created after screen is configured
         self.overlay: ModelVisionOverlay | None = None
@@ -106,56 +113,42 @@ class AssistantQmlApp(QApplication):
         self._overlay_bound = True
 
         settings_state = self.terminal_state.app_state.settings_VS
-        settings_state.screen_changed.connect(self._on_screen_changed)
+        settings_state.screen_changed.connect(self._on_screen_setting_changed)
 
-        self.screenAdded.connect(self._on_screen_added)
-        self.screenRemoved.connect(self._on_screen_removed)
-        self.primaryScreenChanged.connect(self._on_primary_screen_changed)
+        self.screenAdded.connect(self._on_screen_config_changed)
+        self.screenRemoved.connect(self._on_screen_config_changed)
+        self.primaryScreenChanged.connect(self._on_screen_config_changed)
 
         screen = get_screen_by_name(initial_screen_name)
         if screen:
             self._watch_screen_geometry(screen)
 
+        # Apply initial terminal positioning
+        apply_screen_config_change()
+
     def _watch_screen_geometry(self, screen: QScreen) -> None:
         prev = getattr(self, "_watched_screen", None)
         if prev is not None:
             try:
-                prev.geometryChanged.disconnect(self._on_screen_geometry_changed)
+                prev.geometryChanged.disconnect(self._on_screen_config_changed)
             except RuntimeError:
                 pass
         self._watched_screen = screen
-        screen.geometryChanged.connect(self._on_screen_geometry_changed)
+        screen.geometryChanged.connect(self._on_screen_config_changed)
 
-    def _on_screen_geometry_changed(self, rect: QRect) -> None:
-        log.info(f"Screen geometry changed: {rect}")
-        overlay_vs = self.app_state.overlay_VS
-        name = overlay_vs.screen_name
-        overlay_vs._screen_name = ""
-        overlay_vs.screen_name = name
+    def _on_screen_config_changed(self, *_args) -> None:
+        """Single handler for all screen configuration changes."""
+        apply_screen_config_change()
+        self.app_view_model.screen_list_changed.emit()
 
-    def _on_screen_changed(self, screen_name: str) -> None:
+    def _on_screen_setting_changed(self, screen_name: str) -> None:
+        """User changed the watched screen in settings."""
         if not screen_name:
             return
-        self.app_state.overlay_VS.screen_name = screen_name
         screen = get_screen_by_name(screen_name)
         if screen:
             self._watch_screen_geometry(screen)
-
-    def _on_screen_added(self, screen: QScreen) -> None:
-        log.info(f"Screen added: {screen.name()}")
-        self.qml_backend.screen_list_changed.emit()
-
-    def _on_screen_removed(self, screen: QScreen) -> None:
-        log.info(f"Screen removed: {screen.name()}")
-        settings = self.terminal_state.app_state.settings_VS
-        if screen.name() == settings.screen:
-            fallback = vii.get_default_screen()
-            log.info(f"Watched screen removed, falling back to: {fallback.name()}")
-            settings.screen = fallback.name()
-        self.qml_backend.screen_list_changed.emit()
-
-    def _on_primary_screen_changed(self, screen: QScreen) -> None:
-        log.info(f"Primary screen changed: {screen.name()}")
+        apply_screen_config_change()
 
     def show_terminal(self):
         """Show the terminal with drop-down animation."""

@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
 
-from assistant.inference.context import ContentType, ContextItem
+from assistant.inference.context import ContextItem, ImageItem, TextItem
 
 
 def _summarize_request(item: ContextItem) -> str:
@@ -35,7 +35,6 @@ class ContextItemViewState(QObject):
     content_kind_changed = Signal(str)
     text_changed = Signal(str)
     image_b64_changed = Signal(str)
-    tool_call_changed = Signal(str)
     request_summary_changed = Signal(str)
     origin_changed = Signal(str)
 
@@ -43,10 +42,9 @@ class ContextItemViewState(QObject):
         super().__init__(parent)
         self._item_id = item_id
         self._position = 0
-        self._content_kind = ContentType.TEXT.value
+        self._content_kind = "text"
         self._text = ""
         self._image_b64 = ""
-        self._tool_call = ""
         self._request_summary = ""
         self._origin = ""
 
@@ -98,17 +96,6 @@ class ContextItemViewState(QObject):
         self._image_b64 = value
         self.image_b64_changed.emit(value)
 
-    @Property(str, notify=tool_call_changed)
-    def tool_call(self) -> str:
-        return self._tool_call
-
-    @tool_call.setter
-    def tool_call(self, value: str) -> None:
-        if self._tool_call == value:
-            return
-        self._tool_call = value
-        self.tool_call_changed.emit(value)
-
     @Property(str, notify=request_summary_changed)
     def request_summary(self) -> str:
         return self._request_summary
@@ -132,33 +119,27 @@ class ContextItemViewState(QObject):
         self.origin_changed.emit(value)
 
     def apply_context_item(self, item: ContextItem) -> bool:
-        kind = item.content_type().value
         reposition = item.position != self._position
         previous_kind = self._content_kind
-        origin = (item.metadata or {}).get("origin", "") if item.metadata else ""
 
         self.position = item.position
-        self.content_kind = kind
-        self.origin = origin
+        self.origin = item.origin
         self.request_summary = _summarize_request(item)
 
-        if kind == ContentType.TEXT.value:
-            text = str(item.content.get("text", ""))
-            self.text = text
+        if isinstance(item, TextItem):
+            self.content_kind = "text"
+            self.text = item.text
             self.image_b64 = ""
-            self.tool_call = ""
-        elif kind == ContentType.IMAGE.value:
-            image_b64 = item.content.get("image")
-            self.image_b64 = image_b64 if isinstance(image_b64, str) else ""
+        elif isinstance(item, ImageItem):
+            self.content_kind = "image"
+            self.image_b64 = item.image_b64
             self.text = ""
-            self.tool_call = ""
         else:
-            payload = item.content.get("tool_call")
-            self.tool_call = str(payload) if payload is not None else ""
+            self.content_kind = "unknown"
             self.text = ""
             self.image_b64 = ""
 
-        kind_changed = previous_kind != kind
+        kind_changed = previous_kind != self._content_kind
         return reposition or kind_changed
 
 

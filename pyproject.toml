@@ -14,16 +14,11 @@ dependencies = [
   "numpy",
   "requests",
   "click",
-  "fastapi",
-  "uvicorn",
-  "qwen-vl-utils",
-  "transformers",
-  "torch",
-  "torchvision",
-  "pytesseract",
   "python-fusion",
   "pynput",
+  "pytesseract",
   "websockets",
+  "httpx",
 ]
 
 [project.scripts]
@@ -34,6 +29,18 @@ packages = ["assistant"]
 
 
 [project.optional-dependencies]
+inference = [
+  "fastapi",
+  "uvicorn",
+  "qwen-vl-utils",
+  "transformers",
+  "torch",
+  "torchvision",
+  "torchaudio",
+  "torchcodec",
+  "onnxruntime-gpu",
+]
+all = ["vii-assistant[inference]"]
 dev = ["pytest", "black", "isort", "pre-commit"]
 
 [tool.black]

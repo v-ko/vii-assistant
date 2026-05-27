@@ -5,10 +5,9 @@ from subprocess import DEVNULL, Popen
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import QMessageBox
 
 from assistant.facade import vii
-from assistant.inference.context import ContextItem
+from assistant.inference.context import TextItem
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.utils.capture_utils import clipboard_image
 
@@ -17,7 +16,7 @@ def ocr_clipboard() -> None:
     """Perform OCR on current clipboard image and update UI + clipboard.
 
     Side effects:
-    - Sets request_in_progress during async worker
+    - Sets assistant_working during async worker
     - On completion, copies recognized text to both standard & selection clipboards
     - Writes first line notification via system notification if available
     """
@@ -38,10 +37,10 @@ def ocr_clipboard() -> None:
         return
 
     settings = vii.app_state.settings_VS
-    settings.request_in_progress = True
+    settings.assistant_working = True
 
     def _finished(text: str):
-        settings.request_in_progress = False
+        settings.assistant_working = False
         notify_text = None
         try:
             cb = QGuiApplication.clipboard()
@@ -88,11 +87,6 @@ def get_clipboard_ocr_text(lang: str = "eng") -> str:
         return f"Error: OCR failed: {e}"
 
 
-def start_session(*, screen_name: str | None = None) -> None:
-    """Delegate to AutomationService to start a session."""
-    vii.project_manager.start_session(screen_name=screen_name)
-
-
 def pause_or_stop_session(*, new_state: str) -> None:
     """Pause (stop recording) the active session."""
     vii.project_manager.pause_session(new_state=new_state)
@@ -112,48 +106,59 @@ def open_sessions_folder() -> None:
         print(f"Failed to open sessions directory: {sessions_dir}")
 
 
-def _ensure_session() -> None:
-    if vii.app_state.settings_VS.session_state != "started":
-        start_session(screen_name=vii.app_state.settings_VS.screen)
-
-
 def add_user_message(text: str) -> None:
-    print(f"[TRACE] add_user_message called with text={text!r}")
-    _ensure_session()
-
-    # Guard: warn if no model is loaded on the server
-    settings_vs = vii.app_state.settings_VS
-    model_state = settings_vs.server_model_state
-    if model_state != "loaded":
-        QMessageBox.warning(
-            None,
-            "No model loaded",
-            "No model is loaded on the inference server.\n"
-            "Please select and load a model first.",
-        )
-        return
+    # print(f"[TRACE] add_user_message called with text={text!r}")
 
     controller = vii.context_controller
     cleaned = text.strip()
     if cleaned:
-        print(f"[TRACE] add_user_message: creating text item")
-        text_item = ContextItem.create_text(
-            position=controller.next_position(),
-            text=cleaned,
-            origin="user",
-        )
+        # print(f"[TRACE] add_user_message: creating text item")
+        text_item = TextItem()
+        text_item.position = controller.next_position()
+        text_item.text = cleaned
+        text_item.origin = "user"
         controller.create(text_item)
 
-    request_item = ContextItem()
+    request_item = TextItem()
     request_item.position = controller.next_position()
-    request_item.size = 0
-    request_item.content = {"text": ""}
-    generation_params = vii.config.get("default_generation_params", {})
+    request_item.origin = "assistant"
+    generation_params = dict(vii.config.get("default_generation_params", {}) or {})
+    generation_params["max_new_tokens"] = vii.config.get("max_new_tokens", 256)
     request_item.request = {
         "stream": True,
-        "generation_params": dict(generation_params or {}),
+        "generation_params": generation_params,
     }
-    request_item.metadata = {"origin": "user"}
-    print(f"[TRACE] add_user_message: creating request item")
+    # print(f"[TRACE] add_user_message: creating request item")
     controller.create(request_item)
-    print(f"[TRACE] add_user_message: done")
+    vii.app_state.settings_VS.assistant_working = True
+    # print(f"[TRACE] add_user_message: done")
+
+
+def stop_assistant() -> None:
+    """Cancel the active generation and stop the assistant's agent loop."""
+    settings = vii.app_state.settings_VS
+    ctx_mgr = vii.context_manager
+
+    # Find the active (uncompleted) request item and mark it cancelled
+    for item in ctx_mgr.items_reversed():
+        if not isinstance(item, TextItem):
+            continue
+        if not isinstance(item.request, dict):
+            continue
+        if item.request.get("completed"):
+            break  # Past the active request
+        # Found the active request — cancel it
+        updated = item.copy()
+        req = dict(updated.request)
+        req["cancelled_by_user"] = True
+        req["completed"] = True
+        updated.request = req
+        ctx_mgr.update(updated)
+        break
+
+    # Stop the hybrid segment service agent loop
+    hybrid = vii.project_manager.hybrid_segment_service
+    hybrid.action_gate.interrupt()
+    hybrid._stopped = True
+
+    settings.assistant_working = False

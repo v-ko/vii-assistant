@@ -7,8 +7,8 @@ from PIL import Image
 from assistant.util import Shape, extract_coordinates
 
 # Centralized client/model defaults (previously in config.py)
-DEFAULT_OLLAMA_URL = "http://desk:11434"
-DEFAULT_VLLM_URL = "http://desk:8000"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_VLLM_URL = "http://localhost:8000"
 DEFAULT_MODEL = "qwen2.5vl"  # Primary vision model in use
 
 

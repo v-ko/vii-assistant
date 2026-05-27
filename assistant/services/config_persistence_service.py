@@ -37,6 +37,9 @@ class ConfigPersistenceService(QObject):
         settings.selected_model_changed.connect(
             lambda v: self._enqueue("selected_model", v)
         )
+        settings.max_new_tokens_changed.connect(
+            lambda v: self._enqueue("max_new_tokens", v)
+        )
 
     # --- internal -------------------------------------------------
     def _enqueue(self, key: str, value: Any) -> None:

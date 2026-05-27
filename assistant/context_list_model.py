@@ -23,9 +23,8 @@ class ContextItemRole(IntEnum):
     ContentKind = Qt.ItemDataRole.UserRole + 3
     Text = Qt.ItemDataRole.UserRole + 4
     ImageB64 = Qt.ItemDataRole.UserRole + 5
-    ToolCall = Qt.ItemDataRole.UserRole + 6
-    RequestSummary = Qt.ItemDataRole.UserRole + 7
-    Origin = Qt.ItemDataRole.UserRole + 8
+    RequestSummary = Qt.ItemDataRole.UserRole + 6
+    Origin = Qt.ItemDataRole.UserRole + 7
 
 
 class ContextListModel(QAbstractListModel):
@@ -73,11 +72,6 @@ class ContextListModel(QAbstractListModel):
                 )
             )
             conns.append(
-                item.tool_call_changed.connect(
-                    _make_notifier(i, [ContextItemRole.ToolCall])
-                )
-            )
-            conns.append(
                 item.request_summary_changed.connect(
                     _make_notifier(i, [ContextItemRole.RequestSummary])
                 )
@@ -115,8 +109,6 @@ class ContextListModel(QAbstractListModel):
             return item.text
         if role == ContextItemRole.ImageB64:
             return item.image_b64
-        if role == ContextItemRole.ToolCall:
-            return item.tool_call
         if role == ContextItemRole.RequestSummary:
             return item.request_summary
         if role == ContextItemRole.Origin:
@@ -130,7 +122,6 @@ class ContextListModel(QAbstractListModel):
             int(ContextItemRole.ContentKind): QByteArray(b"contentKind"),
             int(ContextItemRole.Text): QByteArray(b"text"),
             int(ContextItemRole.ImageB64): QByteArray(b"imageB64"),
-            int(ContextItemRole.ToolCall): QByteArray(b"toolCall"),
             int(ContextItemRole.RequestSummary): QByteArray(b"requestSummary"),
             int(ContextItemRole.Origin): QByteArray(b"origin"),
         }

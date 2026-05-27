@@ -4,10 +4,10 @@ import QtQuick.Layouts
 
 Window {
     id: root
-    width: Screen.width * 0.9
-    height: Screen.height / 2
-    x: (Screen.width - width) / 2
-    y: 0
+    width: terminalState ? terminalState.win_width : Screen.width * 0.9
+    height: terminalState ? terminalState.win_height : Screen.height / 2
+    x: terminalState ? terminalState.win_x : (Screen.width - width) / 2
+    y: terminalState ? terminalState.win_y : 0
     visible: false
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -48,6 +48,11 @@ Window {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                 }
+            }
+
+            // Settings modal overlay
+            SettingsModal {
+                id: settingsModalPopup
             }
         }
     }

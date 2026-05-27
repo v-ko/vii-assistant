@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Dict, Optional
 
+from fusion import get_logger
 from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
 
@@ -11,7 +13,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 
 from assistant.model_configs import DEFAULT_MODEL_KEY
 
-_VALID_SESSION_STATES = {"new-session", "started", "paused"}
+log = get_logger(__name__)
+
+
+class ExecutionMode(Enum):
+    USER_APPROVE = "user-approve"
+    AUTO = "auto"
+
+
+_VALID_SESSION_STATES = {"new-session", "started", "paused", "disconnected", "error"}
 _VALID_MODEL_STATES = {"unknown", "unloaded", "loading", "loaded"}
 
 
@@ -24,7 +34,7 @@ def _normalize_markdown(value: Optional[str]) -> str:
 class AssistantSettingsViewState(QObject):
     session_state_changed = Signal(str)
     screen_changed = Signal(str)
-    request_in_progress_changed = Signal(bool)
+    assistant_working_changed = Signal(bool)
     user_query_changed = Signal(str)
     system_prompt_changed = Signal(str)
     info_messages_changed = Signal(str)
@@ -37,6 +47,8 @@ class AssistantSettingsViewState(QObject):
     server_model_key_changed = Signal(
         str
     )  # the model key actually loaded on the server
+    execution_mode_changed = Signal(str)  # ExecutionMode.value
+    max_new_tokens_changed = Signal(int)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -48,7 +60,8 @@ class AssistantSettingsViewState(QObject):
         self._session_state = "new-session"
         # client_type removed (single hardcoded backend)
         self._screen = ""
-        self._request_in_progress = False
+        self._assistant_working = False
+        self._execution_mode = ExecutionMode.USER_APPROVE
         self._user_query = ""
         self._system_prompt = ""
         self._info_messages: list[str] = []
@@ -56,6 +69,7 @@ class AssistantSettingsViewState(QObject):
         self._selected_model = DEFAULT_MODEL_KEY
         self._server_model_state = "unknown"
         self._server_model_key = ""
+        self._max_new_tokens = 256
         self._info_message_enqueued.connect(self._append_info_message)
 
     # --- lifecycle -------------------------------------------------
@@ -76,6 +90,8 @@ class AssistantSettingsViewState(QObject):
             config.get("selected_model", self._selected_model) or DEFAULT_MODEL_KEY
         )
         self._set_selected_model(selected_model)
+        max_tokens = int(config.get("max_new_tokens", self._max_new_tokens) or 256)
+        self._set_max_new_tokens(max_tokens)
 
     def reload_project_documents(self) -> None:
         if not self._project_manager:
@@ -121,17 +137,32 @@ class AssistantSettingsViewState(QObject):
         self._screen = value
         self.screen_changed.emit(value)
 
-    # --- request_in_progress ---------------------------------------
-    @Property(bool, notify=request_in_progress_changed)
-    def request_in_progress(self) -> bool:
-        return self._request_in_progress
+    # --- assistant_working ------------------------------------------
+    @Property(bool, notify=assistant_working_changed)
+    def assistant_working(self) -> bool:
+        return self._assistant_working
 
-    @request_in_progress.setter
-    def request_in_progress(self, value: bool) -> None:
-        if self._request_in_progress == value:
+    @assistant_working.setter
+    def assistant_working(self, value: bool) -> None:
+        if self._assistant_working == value:
             return
-        self._request_in_progress = value
-        self.request_in_progress_changed.emit(value)
+        self._assistant_working = value
+        log.info("assistant_working changed to %s", value)
+        self.assistant_working_changed.emit(value)
+
+    # --- execution_mode --------------------------------------------
+    @Property(str, notify=execution_mode_changed)
+    def execution_mode(self) -> str:
+        return self._execution_mode.value
+
+    @execution_mode.setter
+    def execution_mode(self, value: str | ExecutionMode) -> None:
+        if isinstance(value, str):
+            value = ExecutionMode(value)
+        if self._execution_mode == value:
+            return
+        self._execution_mode = value
+        self.execution_mode_changed.emit(value.value)
 
     # --- user_query -------------------------------------------------
     @Property(str, notify=user_query_changed)
@@ -256,3 +287,21 @@ class AssistantSettingsViewState(QObject):
             return
         self._server_model_key = value
         self.server_model_key_changed.emit(value)
+
+    # --- max_new_tokens ------------------------------------------------
+    @Property(int, notify=max_new_tokens_changed)
+    def max_new_tokens(self) -> int:
+        return self._max_new_tokens
+
+    @max_new_tokens.setter
+    def max_new_tokens(self, value: int) -> None:
+        value = max(1, value)
+        if self._max_new_tokens == value:
+            return
+        self._set_max_new_tokens(value)
+
+    def _set_max_new_tokens(self, value: int) -> None:
+        if self._max_new_tokens == value:
+            return
+        self._max_new_tokens = value
+        self.max_new_tokens_changed.emit(value)

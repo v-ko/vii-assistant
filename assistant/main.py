@@ -7,7 +7,6 @@ from importlib.metadata import PackageNotFoundError, version
 os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
-from PySide6.QtCore import QTimer
 
 from assistant.server.client import port_is_taken, send_command
 
@@ -55,6 +54,7 @@ def main(command):
 
     from assistant.facade import vii
     from assistant.inference.context import ContextManager
+    from assistant.init_app import init_app
     from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
     from assistant.server.desktop_server import DesktopServer
     from assistant.services.project_manager import ViiProjectManager
@@ -65,11 +65,7 @@ def main(command):
         ViiProjectManager(vii.config.config_dir, context_manager=ctx_manager)
     )
 
-    # Start a new instance (after services injected so set_qt_app can wire them)
-    from assistant.qml_app import AssistantQmlApp  # QML-based UI
-
-    qt_app = AssistantQmlApp()
-    vii.set_qt_app(qt_app)
+    qt_app = init_app(vii)
 
     # Configure image preprocessor model (loaded lazily on first use)
     vii.set_image_preprocessor_config(MODEL_SPECS[DEFAULT_MODEL_KEY]["id"])
@@ -86,14 +82,19 @@ def main(command):
     desktop_server = DesktopServer(DEFAULT_DESKTOP_SERVER_PORT)
     desktop_server.start()
 
-    # If this is a first start and --command was provided, execute it
+    # If this is a first start and --command was provided, execute it.
     if command:
+        from assistant.recording_procedures import toggle_recording
         from assistant.terminal_actions import toggle_terminal
 
-        commands = {"toggle_terminal": toggle_terminal}
-        if command not in commands:
-            raise ValueError(f"Unknown command: {command!r}")
-        commands[command]()
+        fresh_start_commands = {
+            "toggle_terminal": toggle_terminal,
+            "toggle_recording": toggle_recording,
+        }
+        if command in fresh_start_commands:
+            fresh_start_commands[command]()
+        else:
+            print(f"Command '{command}' ignored on fresh start")
 
     sys.exit(qt_app.exec())
 
