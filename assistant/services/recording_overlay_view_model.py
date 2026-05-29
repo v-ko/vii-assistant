@@ -1,7 +1,6 @@
-"""QML ViewModel for the recording overlay.
-
-Bridges the RecordingOverlayViewState and transient spectrum data to QML.
-Exposed as a context property to QML engine.
+"""
+My greatest thanks to the developers of Handy (https://github.com/cjpais/Handy) for
+inspiring this UI design for recording feedback.
 """
 
 from __future__ import annotations
