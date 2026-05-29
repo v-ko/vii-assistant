@@ -12,9 +12,10 @@ from assistant.app_state import AppState
 from assistant.app_view_model import AppViewModel
 from assistant.context_list_model import ContextListModel
 from assistant.facade import vii
-from assistant.screen_actions import apply_screen_config_change
+from assistant.projections import project_screen_layout
 from assistant.terminal_actions import toggle_terminal
 from assistant.util import get_logger, get_screen_by_name
+from assistant.view_states.screen_info import ScreenInfoData
 from assistant.view_states.terminal import TerminalViewState
 from assistant.widgets.overlay import ModelVisionOverlay
 
@@ -63,12 +64,17 @@ class AssistantQmlApp(QApplication):
 
         self._root_window = self.engine.rootObjects()[0]
 
-        # Load recording pill QML (separate window)
+        # Load recording overlay QML (separate window)
         pill_qml = QML_DIR / "RecordingOverlay.qml"
         self.engine.load(QUrl.fromLocalFile(str(pill_qml)))
+        self._recording_overlay_window = self.engine.rootObjects()[-1]
 
         # Overlay will be created after screen is configured
         self.overlay: ModelVisionOverlay | None = None
+
+        # Screen debug widget (lazy, shown via view state signal)
+        self._screen_debug_widget = None
+        app_state.screen_debug_visible_changed.connect(self._on_screen_debug_changed)
 
         self.setup_tray_icon()
 
@@ -106,8 +112,6 @@ class AssistantQmlApp(QApplication):
             self.overlay = ModelVisionOverlay(self.app_state.overlay_VS)
             self.overlay.hide()
 
-        self.app_state.overlay_VS.screen_name = initial_screen_name
-
         if getattr(self, "_overlay_bound", False):
             return
         self._overlay_bound = True
@@ -123,8 +127,40 @@ class AssistantQmlApp(QApplication):
         if screen:
             self._watch_screen_geometry(screen)
 
-        # Apply initial terminal positioning
-        apply_screen_config_change()
+        # Bind view model to screen changes, then run initial projection
+        self.app_view_model.bind_screens()
+        self._project_screens()
+
+    def _compile_screen_info(self) -> list[ScreenInfoData]:
+        """Serialize current Qt screen state into plain data for the projector."""
+        primary = self.primaryScreen()
+        capture_name = self.app_state.settings_VS.screen
+
+        # Validate capture screen — fallback to default if gone
+        capture_exists = any(s.name() == capture_name for s in self.screens())
+        if not capture_exists:
+            fallback = vii.get_default_screen()
+            capture_name = fallback.name()
+            self.app_state.settings_VS.screen = capture_name
+
+        result = []
+        for s in self.screens():
+            result.append(
+                ScreenInfoData(
+                    name=s.name(),
+                    x=s.geometry().x(),
+                    y=s.geometry().y(),
+                    width=s.geometry().width(),
+                    height=s.geometry().height(),
+                    is_primary=(s is primary),
+                    is_capture=(s.name() == capture_name),
+                )
+            )
+        return result
+
+    def _project_screens(self) -> None:
+        """Compile screen info and run the projector."""
+        project_screen_layout(self._compile_screen_info())
 
     def _watch_screen_geometry(self, screen: QScreen) -> None:
         prev = getattr(self, "_watched_screen", None)
@@ -138,7 +174,7 @@ class AssistantQmlApp(QApplication):
 
     def _on_screen_config_changed(self, *_args) -> None:
         """Single handler for all screen configuration changes."""
-        apply_screen_config_change()
+        self._project_screens()
         self.app_view_model.screen_list_changed.emit()
 
     def _on_screen_setting_changed(self, screen_name: str) -> None:
@@ -148,7 +184,19 @@ class AssistantQmlApp(QApplication):
         screen = get_screen_by_name(screen_name)
         if screen:
             self._watch_screen_geometry(screen)
-        apply_screen_config_change()
+        self._project_screens()
+
+    def _on_screen_debug_changed(self, visible: bool) -> None:
+        """Show or hide the screen debug widget based on view state."""
+        if visible:
+            if self._screen_debug_widget is None:
+                from assistant.widgets.screen_debug import ScreenDebugWidget
+
+                self._screen_debug_widget = ScreenDebugWidget()
+            self._screen_debug_widget.show()
+        else:
+            if self._screen_debug_widget is not None:
+                self._screen_debug_widget.hide()
 
     def show_terminal(self):
         """Show the terminal with drop-down animation."""

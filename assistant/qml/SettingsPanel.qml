@@ -184,6 +184,13 @@ Rectangle {
                     if (item) appVM.setScreen(item.name)
                 }
 
+                Connections {
+                    target: appVM
+                    function onScreen_list_changed() {
+                        populateScreens()
+                    }
+                }
+
                 // Re-sync when Python sets screen (e.g. after config init)
                 Connections {
                     target: settingsState
@@ -246,6 +253,16 @@ Rectangle {
                         }
                     }
                 }
+            }
+
+            // ── Debug ───────────────────────────────────────────
+            Button {
+                text: "Screen Debug"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: appVM.showScreenDebug()
+                ToolTip.text: "Show screen layout debug window"
+                ToolTip.visible: hovered
             }
 
             Item { Layout.fillHeight: true }

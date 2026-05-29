@@ -4,10 +4,10 @@ import QtQuick.Layouts
 
 Window {
     id: root
-    width: terminalState ? terminalState.win_width : Screen.width * 0.9
-    height: terminalState ? terminalState.win_height : Screen.height / 2
-    x: terminalState ? terminalState.win_x : (Screen.width - width) / 2
-    y: terminalState ? terminalState.win_y : 0
+    width: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.width * 0.9 : Screen.width * 0.9
+    height: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.height / 2 : Screen.height / 2
+    x: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.x + (appVM.primaryScreenInfo.width - width) / 2 : (Screen.width - width) / 2
+    y: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.y : 0
     visible: false
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint

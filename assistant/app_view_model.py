@@ -8,7 +8,6 @@ terminal_actions.
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
-from PySide6.QtGui import QGuiApplication
 
 from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
@@ -38,6 +37,7 @@ class AppViewModel(QObject):
     # Signal for async health/model check results
     health_check_done = Signal(bool, str, str)  # connected, model_state, model_key
     screen_list_changed = Signal()
+    primary_screen_changed = Signal()
 
     # Display-friendly server label (schema stripped)
     @Property(str, constant=True)
@@ -47,6 +47,18 @@ class AppViewModel(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.health_check_done.connect(self._apply_health_result)
+
+    def bind_screens(self) -> None:
+        """Connect to app_state.screens_changed to track primary screen."""
+        vii.app_state.screens_changed.connect(self._on_screens_changed)
+
+    def _on_screens_changed(self) -> None:
+        self.primary_screen_changed.emit()
+        self.screen_list_changed.emit()
+
+    @Property(QObject, notify=primary_screen_changed)
+    def primaryScreenInfo(self) -> QObject | None:
+        return vii.app_state.primary_screen_info
 
     # ── Session / message slots ──────────────────────────────────
 
@@ -144,13 +156,19 @@ class AppViewModel(QObject):
 
     @Slot(result=list)
     def getScreenList(self) -> list:
-        screens = QGuiApplication.screens()
         result = []
-        for i, screen in enumerate(screens):
-            geo = screen.geometry()
-            display = f"Screen {i + 1}: {geo.width()}x{geo.height()}"
-            result.append({"name": screen.name(), "displayName": display})
+        for i, s in enumerate(vii.app_state.screens):
+            display = f"Screen {i + 1}: {s.width}x{s.height}"
+            result.append({"name": s.name, "displayName": display})
         return result
+
+    # ── Debug ────────────────────────────────────────────────────
+
+    @Slot()
+    def showScreenDebug(self):
+        from assistant.debug_actions import show_screen_debug
+
+        show_screen_debug()
 
     # ── Health check ─────────────────────────────────────────────
 

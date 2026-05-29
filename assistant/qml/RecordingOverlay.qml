@@ -4,12 +4,12 @@ Window {
     id: overlayWindow
     width: overlayContent.width + 32
     height: overlayContent.height + 16
-    x: (Screen.width - width) / 2
-    y: 24
+    x: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.x + (appVM.primaryScreenInfo.width - width) / 2 : 0
+    y: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.y + appVM.primaryScreenInfo.height * 0.03 : 0
     visible: recordingOverlayVM ? recordingOverlayVM.has_view_state : false
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-           | Qt.WindowTransparentForInput | Qt.X11BypassWindowManagerHint
+           | Qt.WindowTransparentForInput
 
     Rectangle {
         id: overlayContent
