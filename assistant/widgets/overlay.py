@@ -11,7 +11,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from assistant.util import Shape, get_logger, get_screen_by_name
+from assistant.facade import vii
+from assistant.util import get_logger, get_screen_by_name
 from assistant.view_states.overlay import OverlayMode, OverlayViewState
 
 log = get_logger(__name__)
@@ -38,15 +39,24 @@ class ModelVisionOverlay(QWidget):
 
         self._bind_state()
 
-        if state.screen_name:
-            self._apply_screen(state.screen_name)
+        # Apply initial screen from app_state
+
+        capture = vii.app.view_state.capture_screen_info
+        if capture:
+            self._apply_screen(capture.name)
+        # Listen for screen layout changes
+        vii.app.view_state.screens_changed.connect(self._on_screens_changed)
+
+    def _on_screens_changed(self) -> None:
+        capture = vii.app.view_state.capture_screen_info
+        if capture:
+            self._apply_screen(capture.name)
 
     def _bind_state(self):
         self._state.mode_changed.connect(lambda _: self.update())
         self._state.shapes_changed.connect(lambda _: self.update())
         self._state.gt_shapes_changed.connect(lambda _: self.update())
         self._state.sample_image_changed.connect(lambda _: self.update())
-        self._state.screen_name_changed.connect(self._apply_screen)
         self._state.pending_actions_changed.connect(lambda _: self.update())
 
     def _apply_screen(self, screen_name: str):

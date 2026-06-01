@@ -25,6 +25,11 @@ log = get_logger(__name__)
 OP_SEP = "@"
 
 
+def is_custom_op(key: str) -> bool:
+    """Return True if the delta key represents a custom op (not a standard entity change)."""
+    return OP_SEP in key
+
+
 class ContextStore(InMemoryStore):
     """InMemoryStore extended with custom delta operations."""
 

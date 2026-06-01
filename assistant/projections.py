@@ -1,24 +1,37 @@
-"""Screen layout projector.
+"""Projectors: map store state → view state.
 
-Maps system screen state (compiled by the app class) into ScreenInfoVS
-objects on app_state. Also handles major view state operations triggered
-by screen changes (e.g. cancelling stale snippet overlays).
+Includes:
+- Screen layout projector (system screens → ScreenInfoVS)
+- Config projector (AppConfig → AssistantSettingsViewState)
+- Context delta projector (context store changes → context view state)
 """
 
 from __future__ import annotations
 
-from fusion.libs.action import action
+from typing import TYPE_CHECKING
 
-from assistant.facade import vii
+from fusion.libs.action import action
+from fusion.storage.change import Change
+from fusion.storage.delta import Delta
+
+from assistant.inference.context import ContextItem
+from assistant.inference.context_store import OP_SEP
+from assistant.model.app_config import ViiConfig
 from assistant.snippet_actions import hide_snippet_overlays
 from assistant.util import get_logger
 from assistant.view_states.screen_info import ScreenInfoData, ScreenInfoVS
+
+if TYPE_CHECKING:
+    from assistant.app_state import AppViewState
+    from assistant.inference.context import ContextManager
 
 log = get_logger(__name__)
 
 
 @action("screen.project_layout", issuer="service")
-def project_screen_layout(screen_data: list[ScreenInfoData]) -> None:
+def project_screen_layout(
+    screen_data: list[ScreenInfoData], app_state: AppViewState
+) -> None:
     """Update app_state.screens from compiled screen data.
 
     Diffs against existing list: updates in place where possible,
@@ -26,7 +39,6 @@ def project_screen_layout(screen_data: list[ScreenInfoData]) -> None:
 
     Also cancels stale snippet overlays when screen list changes.
     """
-    app_state = vii.app_state
     existing = app_state.screens
     existing_by_name = {s.name: s for s in existing}
     incoming_names = {d.name for d in screen_data}
@@ -55,12 +67,47 @@ def project_screen_layout(screen_data: list[ScreenInfoData]) -> None:
 
     app_state.screens = new_list
 
-    # Keep overlay_VS.screen_name in sync (ModelVisionOverlay reads it)
-    capture = app_state.capture_screen_info
-    if capture and app_state.overlay_VS.screen_name != capture.name:
-        app_state.overlay_VS.screen_name = capture.name
-
     # Cancel active snippet overlays (screenshots are stale)
     if app_state.snippet_overlays:
         log.info("Screen layout changed — cancelling active snippet overlays")
-        hide_snippet_overlays()
+        hide_snippet_overlays(app_state)
+
+
+# ── Config projector ─────────────────────────────────────────────────────────
+
+
+def project_config(cfg: ViiConfig, settings_vs, transcription_vs) -> None:
+    """Project AppConfig changes onto view states.
+
+    Called via closure from the config store's on_changes_callback.
+    """
+    settings_vs._set_selected_model(cfg.selected_model)
+    settings_vs._set_max_new_tokens(cfg.max_new_tokens)
+    settings_vs._set_capture_screen(cfg.capture_screen)
+
+    # Transcription settings
+    transcription_vs.selected_input_device = cfg.transcription.get("input_device", "")
+
+
+# ── Context store → view state projector ─────────────────────────────────────
+
+
+def project_context_delta_to_view(
+    delta: Delta, origin: str | None, ctx_mgr: ContextManager, context_vs
+) -> None:
+    """Project context store changes onto the context view state."""
+    for key, change_data in delta.asdict().items():
+        if OP_SEP in key:
+            entity_id = key.split(OP_SEP, 1)[0]
+            entity = ctx_mgr._store.find_one(id=entity_id)
+            if entity and isinstance(entity, ContextItem):
+                context_vs.apply_entity(entity)
+        else:
+            eid, reverse, forward = change_data
+            change = Change(eid, reverse, forward)
+            if change.is_delete():
+                context_vs.remove_entity(eid)
+            else:
+                entity = ctx_mgr._store.find_one(id=eid)
+                if entity and isinstance(entity, ContextItem):
+                    context_vs.apply_entity(entity)

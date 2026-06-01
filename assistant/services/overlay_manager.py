@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QGuiApplication
 
-from assistant.facade import vii
-from assistant.util import get_logger, get_screen_by_name
+from assistant.util import get_logger
 from assistant.view_states.overlay import OverlayMode, OverlayViewState
 from assistant.widgets.overlay import ModelVisionOverlay
 
@@ -53,19 +52,3 @@ class OverlayManager:
     @property
     def guards_active(self) -> bool:
         return bool(self._guard_overlays)
-
-    def show_pending_actions(self, actions: list) -> None:
-        """Show pending actions on the primary overlay in CONFIRM mode."""
-        overlay_vs = vii.app_state.overlay_VS
-        overlay_vs.pending_actions = [
-            f"{a.tool_name}({a.description})" for a in actions
-        ]
-        overlay_vs.mode = OverlayMode.CONFIRM
-        log.info("Overlay CONFIRM mode: %d pending actions", len(actions))
-
-    def clear_pending_actions(self) -> None:
-        """Clear pending actions and return overlay to WORK mode."""
-        overlay_vs = vii.app_state.overlay_VS
-        overlay_vs.pending_actions = []
-        overlay_vs.mode = OverlayMode.WORK
-        log.info("Overlay returned to WORK mode")

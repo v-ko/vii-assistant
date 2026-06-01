@@ -5,11 +5,14 @@ from typing import TYPE_CHECKING
 from fusion.libs.procedure import procedure
 from fusion.logging import get_logger
 from fusion.storage.delta import Delta
+from PySide6.QtWidgets import QMessageBox
 
 if TYPE_CHECKING:
     from assistant.services.hybrid_segment_service import HybridSegmentService
 
+from assistant.facade import vii
 from assistant.inference.context import TextItem
+from assistant.terminal_actions import show_context_debug
 
 log = get_logger(__name__)
 
@@ -28,12 +31,31 @@ async def handle_hybrid_context_delta(
                 hybrid_segment_service.update_overlay_from_text(item.text)
 
         for item in changed_items:
-            if (
-                isinstance(item, TextItem)
-                and isinstance(item.request, dict)
-                and item.request.get("completed")
-            ):
+            if not isinstance(item, TextItem):
+                continue
+            if not isinstance(item.request, dict):
+                continue
+
+            # Client-side tool execution (python, click_at, scroll)
+            if item.request.get("execution") == "client":
+                await hybrid_segment_service.process_client_execution_request(item)
+                continue
+
+            # Completed assistant messages — parse inline tool calls
+            if item.request.get("completed"):
                 await hybrid_segment_service.process_completed_assistant_message(item)
     except Exception:
         log.error("Hybrid segment context handling failed", exc_info=True)
-        raise
+
+
+@procedure
+async def fetch_raw_context_and_present(focus_mode: str) -> None:
+    """Fetch formatted context from the inference server and show it."""
+
+    try:
+        text = await vii.inference_client.get_context_debug(focus_mode)
+    except Exception as exc:
+        log.error("Failed to fetch context debug for %r", focus_mode, exc_info=True)
+        QMessageBox.warning(None, "Context fetch failed", str(exc))
+        return
+    show_context_debug(focus_mode, text)

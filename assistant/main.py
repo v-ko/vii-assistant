@@ -1,5 +1,10 @@
+import time
+
+_T_START = time.perf_counter()
+
 import os
 import signal
+import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
@@ -8,7 +13,7 @@ os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
 
-from assistant.server.client import port_is_taken, send_command
+from assistant.server.command_client import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
 
@@ -23,7 +28,13 @@ if not fusion_pkg_version or not fusion_pkg_version.startswith("0.1"):
 
 @click.command()
 @click.option("--command", help="Command to send to the running instance")
-def main(command):
+@click.option(
+    "--measure-command-send-time",
+    is_flag=True,
+    hidden=True,
+    help="Show notify-send with command send timing",
+)
+def main(command, measure_command_send_time):
     """Screenshot Assistant with HTTP API support."""
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
@@ -34,6 +45,17 @@ def main(command):
 
         if command:
             success = send_command(DEFAULT_DESKTOP_SERVER_PORT, command)
+            if measure_command_send_time:
+                elapsed_ms = (time.perf_counter() - _T_START) * 1000
+                subprocess.Popen(
+                    [
+                        "notify-send",
+                        "-t",
+                        "3000",
+                        "vii --command timing",
+                        f"{command}: {elapsed_ms:.0f}ms",
+                    ]
+                )
             sys.exit(0 if success else 1)
 
         else:
@@ -55,28 +77,23 @@ def main(command):
     from assistant.facade import vii
     from assistant.inference.context import ContextManager
     from assistant.init_app import init_app
-    from assistant.model_configs import DEFAULT_MODEL_KEY, MODEL_SPECS
     from assistant.server.desktop_server import DesktopServer
     from assistant.services.project_manager import ViiProjectManager
 
     # Instantiate services first then inject into facade to avoid circular imports
     ctx_manager = ContextManager()
-    vii.set_project_manager(
-        ViiProjectManager(vii.config.config_dir, context_manager=ctx_manager)
-    )
+    from assistant.services.config_file_adapter import CONFIG_DIR
+
+    vii.set_project_manager(ViiProjectManager(CONFIG_DIR, context_manager=ctx_manager))
 
     qt_app = init_app(vii)
 
-    # Configure image preprocessor model (loaded lazily on first use)
-    vii.set_image_preprocessor_config(MODEL_SPECS[DEFAULT_MODEL_KEY]["id"])
-
-    # Config already loaded; facade ensures screen is set during set_qt_app
-    print(f"Config: {vii.config}")
+    print(f"Config: {vii.get_config()}")
 
     # Auto-load the configured model on the inference server
     from assistant.terminal_actions import set_model
 
-    set_model(vii.app_state.settings_VS.selected_model)
+    set_model(vii.get_config().selected_model)
 
     # Start desktop server as independent service
     desktop_server = DesktopServer(DEFAULT_DESKTOP_SERVER_PORT)

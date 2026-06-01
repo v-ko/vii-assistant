@@ -60,79 +60,25 @@ def point(x: int, y: int) -> tuple[int, int]:
 
 
 @hfi.function(
-    name="crop_text",
-    description="Crop text from a described area of the screen. Returns extracted text.",
-)
-def crop_text(description: str) -> str:
-    return description
-
-
-@hfi.function(
     name="crop_image",
-    description="Crop an image from a described area of the screen. Returns base64 image.",
+    description="Crop an image from the current screenshot at the given bbox (0-1000 grid). Returns base64 image.",
 )
-def crop_image(description: str) -> str:
-    return description
+def crop_image(bbox: list) -> str:
+    return str(bbox)
 
 
 @hfi.function(
-    name="look_at",
-    description="Zoom into a described area of the screen for a closer look.",
-)
-def look_at(description: str) -> str:
-    return description
-
-
-@hfi.function(
-    name="look_at_whole_screen",
-    description="Return to the default full-screen view.",
-)
-def look_at_whole_screen() -> str:
-    return "ok"
-
-
-@hfi.function(
-    name="curator.push",
+    name="curator_push",
     description="Push an item (dict) to a named curator feed for review.",
 )
 def curator_push(feed: str, item: Any) -> str:
     return f"pushed to {feed}"
 
 
-@hfi.function(
-    name="move_pointer",
-    description="Move the assistant pointer to a described element on screen.",
-)
-def move_pointer_tool(description: str) -> str:
-    return description
-
-
-@hfi.function(
-    name="click_at",
-    description="Click the assistant pointer at a described element on screen.",
-)
-def click_at_tool(description: str) -> str:
-    return description
-
-
-@hfi.function(
-    name="scroll",
-    description="Scroll at the current pointer position. Positive steps = up, negative = down.",
-)
-def scroll_tool(steps: int) -> str:
-    return str(steps)
-
-
 AGENT_TOOLS = frozenset(
     {
-        "crop_text",
         "crop_image",
-        "look_at",
-        "look_at_whole_screen",
-        "curator.push",
-        "move_pointer",
-        "click_at",
-        "scroll",
+        "curator_push",
     }
 )
 

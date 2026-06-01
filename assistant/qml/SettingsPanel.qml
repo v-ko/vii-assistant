@@ -191,13 +191,14 @@ Rectangle {
                     }
                 }
 
-                // Re-sync when Python sets screen (e.g. after config init)
                 Connections {
                     target: settingsState
-                    function onScreen_changed(screenName) {
-                        populateScreens()
+                    function onCapture_screen_changed() {
+                        selectCurrentScreen()
                     }
                 }
+
+
             }
 
             // Execution mode selector
@@ -242,7 +243,7 @@ Rectangle {
                     editable: true
 
                     onValueModified: {
-                        if (settingsState) settingsState.max_new_tokens = value
+                        appVM.setMaxNewTokens(value)
                     }
 
                     Connections {
@@ -255,7 +256,9 @@ Rectangle {
                 }
             }
 
-            // ── Debug ───────────────────────────────────────────
+            // ── Debug / Quit ────────────────────────────────────
+            Item { Layout.preferredHeight: 16 }
+
             Button {
                 text: "Screen Debug"
                 Layout.fillWidth: true
@@ -263,6 +266,13 @@ Rectangle {
                 onClicked: appVM.showScreenDebug()
                 ToolTip.text: "Show screen layout debug window"
                 ToolTip.visible: hovered
+            }
+
+            Button {
+                text: "Quit"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: Qt.quit()
             }
 
             Item { Layout.fillHeight: true }
@@ -321,48 +331,27 @@ Rectangle {
                     }
                 }
 
-                // Tab 1: System prompt
+                // Tab 1: System prompt (focus mode files)
                 ColumnLayout {
                     spacing: 4
 
-                    ScrollView {
+                    Label {
+                        text: "System prompts (open in external editor, takes effect on next session)"
+                        color: palette.text
+                        wrapMode: Text.Wrap
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
-
-                        TextArea {
-                            id: systemPromptEdit
-                            placeholderText: "Define the system prompt (markdown)"
-                            wrapMode: TextArea.Wrap
-                            text: settingsState ? settingsState.system_prompt_markdown : ""
-                            color: palette.text
-
-                            onTextChanged: {
-                                if (settingsState && text !== settingsState.system_prompt_markdown) {
-                                    settingsState.system_prompt_markdown = text
-                                }
-                            }
-
-                            Connections {
-                                target: settingsState
-                                function onSystem_prompt_changed(val) {
-                                    if (systemPromptEdit.text !== val)
-                                        systemPromptEdit.text = val
-                                }
-                            }
-
-                            background: Rectangle {
-                                color: palette.base
-                                border.color: palette.mid
-                                border.width: 1
-                                radius: 2
-                            }
-                        }
                     }
 
                     Button {
-                        text: "Add tool prompt"
+                        text: "Main prompt"
                         Layout.fillWidth: true
-                        onClicked: appVM.addToolPrompt()
+                        onClicked: appVM.openFocusModePrompt("main")
+                    }
+
+                    Button {
+                        text: "Localization prompt"
+                        Layout.fillWidth: true
+                        onClicked: appVM.openFocusModePrompt("localization")
                     }
                 }
 
@@ -432,6 +421,13 @@ Rectangle {
         standardButtons: Dialog.Ok | Dialog.Cancel
         width: 350
 
+        background: Rectangle {
+            color: palette.window
+            border.color: palette.mid
+            border.width: 1
+            radius: 8
+        }
+
         ColumnLayout {
             anchors.fill: parent
             spacing: 8
@@ -482,12 +478,15 @@ Rectangle {
         for (let i = 0; i < screens.length; i++) {
             screenListModel.append(screens[i])
         }
-        // Select current screen
+        selectCurrentScreen()
+    }
+
+    function selectCurrentScreen() {
         if (settingsState) {
             for (let j = 0; j < screenListModel.count; j++) {
-                if (screenListModel.get(j).name === settingsState.screen) {
+                if (screenListModel.get(j).name === settingsState.capture_screen) {
                     screenCombo.currentIndex = j
-                    break
+                    return
                 }
             }
         }

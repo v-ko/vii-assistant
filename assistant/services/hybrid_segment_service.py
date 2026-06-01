@@ -6,7 +6,6 @@ import json
 import re
 from typing import Any
 
-import httpx
 from fusion import get_logger
 from fusion.libs.model import dump_to_dict
 from fusion.storage.change import Change
@@ -15,7 +14,6 @@ from fusion.util.rectangle import Rectangle
 from PIL import Image
 from PySide6.QtGui import QGuiApplication
 
-from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
 from assistant.image_ops import resize_to_target, scale_qwen_bbox_xyxy, scale_qwen_point
 from assistant.inference.context import (
@@ -25,6 +23,10 @@ from assistant.inference.context import (
 )
 from assistant.inference.context_store import OP_SEP
 from assistant.model_configs import get_resolution_for_model
+from assistant.overlay_actions import (
+    clear_pending_actions,
+    show_pending_actions,
+)
 from assistant.services.action_gate import ActionGate, PendingAction
 from assistant.services.curator_client import push_item
 from assistant.services.overlay_manager import OverlayManager
@@ -37,7 +39,7 @@ from assistant.services.segment_parsing import (
     message_tool_run_id,
     parse_segment_output,
 )
-from assistant.util import Shape
+from assistant.util import Shape, get_screen_by_name
 from assistant.utils.capture_utils import take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 from assistant.view_states.settings import ExecutionMode
@@ -72,6 +74,10 @@ class HybridSegmentService:
         # Guard overlays for AUTO mode
         self.overlay_manager = OverlayManager()
 
+    @property
+    def context_manager(self):
+        return vii.project_manager.context_manager
+
     def reset_turns(self) -> None:
         self._turn_count = 0
         self._stopped = False
@@ -79,7 +85,7 @@ class HybridSegmentService:
     def changed_context_items(self, delta: Delta) -> list[ContextItem]:
         items: list[ContextItem] = []
         seen: set[str] = set()
-        ctx_mgr = vii.context_manager
+        ctx_mgr = self.context_manager
 
         for key, change_data in delta.asdict().items():
             if OP_SEP in key:
@@ -97,6 +103,189 @@ class HybridSegmentService:
             if isinstance(entity, ContextItem):
                 items.append(entity)
         return items
+
+    # ------------------------------------------------------------------
+    # Focus-mode client-side execution (tool call dispatch)
+    # ------------------------------------------------------------------
+
+    async def process_client_execution_request(self, item: TextItem) -> None:
+        """Handle a client-side execution request dispatched by InferenceService.
+
+        Supports: python (interpreter), click_at, scroll.
+        """
+        item_id = str(item.id)
+        if item_id in self._processed_tool_call_ids:
+            return
+        self._processed_tool_call_ids.add(item_id)
+
+        focus_mode = (item.request or {}).get("focus_mode", "")
+        arguments = (item.metadata or {}).get("arguments", {})
+        caller_mode = (item.metadata or {}).get("caller_mode", "main")
+
+        log.info(
+            "Client execution request: item=%s mode=%s caller=%s",
+            item_id,
+            focus_mode,
+            caller_mode,
+        )
+
+        # Gate action tools in user-approve mode
+        is_action = focus_mode in ("click_at", "scroll")
+        if is_action:
+            settings = vii.app.view_state.settings_VS
+            if settings.execution_mode == ExecutionMode.USER_APPROVE.value:
+                desc = f"{focus_mode}({arguments})"
+                pending = [
+                    PendingAction(
+                        call_id=item_id, tool_name=focus_mode, description=desc
+                    )
+                ]
+                show_pending_actions(
+                    [f"{a.tool_name}({a.description})" for a in pending]
+                )
+                gate_result = await self.action_gate.await_confirmation(pending)
+                clear_pending_actions()
+                if not gate_result.confirmed:
+                    result_text = "Action cancelled by user"
+                    self._insert_result_and_continue(
+                        result_text, item_id, caller_mode, is_action=False
+                    )
+                    return
+
+        if focus_mode == "python":
+            result_text = self._execute_python_code(arguments.get("code", ""))
+        elif focus_mode == "click_at":
+            result_text = await self._exec_click_at_coords(
+                arguments.get("x", 0), arguments.get("y", 0)
+            )
+        elif focus_mode == "scroll":
+            result_text = await self._exec_scroll(arguments.get("steps", 0))
+        else:
+            result_text = f"Error: unknown client execution mode '{focus_mode}'"
+
+        self._insert_result_and_continue(result_text, item_id, caller_mode, is_action)
+
+    def _insert_result_and_continue(
+        self, result_text: str, source_item_id: str, caller_mode: str, is_action: bool
+    ) -> None:
+        """Insert tool result, optionally capture screen, and continue caller mode."""
+        ctx = self.context_manager
+
+        # Insert result visible to caller mode
+        result_item = TextItem()
+        result_item.position = ctx.next_position()
+        result_item.origin = "tool"
+        result_item.text = result_text
+        result_item.metadata = {
+            "visible_to": [caller_mode],
+            "source_item_id": source_item_id,
+        }
+        ctx.insert(result_item)
+
+        # Insert a screenshot after navigation actions
+        if is_action:
+            self._insert_screen_capture()
+
+        # Check loop limit
+        self._turn_count += 1
+        if self._turn_count >= self.MAX_TURNS:
+            log.warning(
+                "max_turns=%d reached in client execution, stopping", self.MAX_TURNS
+            )
+            vii.app.view_state.settings_VS.assistant_working = False
+            return
+
+        # Continue the caller mode
+        req_item = TextItem()
+        req_item.position = ctx.next_position()
+        req_item.origin = "assistant"
+        req_item.request = {
+            "stream": True,
+            "focus_mode": caller_mode,
+        }
+        req_item.metadata = {"focus_mode": caller_mode}
+        ctx.insert(req_item)
+
+        log.info(
+            "Client execution complete, continuing '%s' (turn %d/%d)",
+            caller_mode,
+            self._turn_count,
+            self.MAX_TURNS,
+        )
+
+    def _execute_python_code(self, code: str) -> str:
+        """Execute Python code in the persistent interpreter namespace."""
+        try:
+            exec_globals = dict(hfi.variables)
+            for name, fn_def in hfi._functions.items():
+                exec_globals[name] = fn_def.func
+
+            # Override stubs with real implementations
+            exec_globals["curator_push"] = self._curator_push_sync
+            exec_globals["crop_image"] = self._crop_image_sync
+
+            exec(code, exec_globals)  # noqa: S102
+
+            # Update hfi variables with any new assignments
+            for key, val in exec_globals.items():
+                if key.startswith("_"):
+                    continue
+                if key in hfi._functions:
+                    continue
+                if key in ("curator_push", "crop_image"):
+                    continue
+                hfi.variables[key] = val
+
+            return "ok"
+        except Exception as exc:  # noqa: BLE001
+            log.error("Python execution error: %s", exc, exc_info=True)
+            return f"Error: {exc}"
+
+    def _curator_push_sync(
+        self, feed: str, content: dict, metadata: dict | None = None
+    ) -> str:
+        """Synchronous curator push for use inside exec'd Python code."""
+        import httpx as _httpx
+
+        from assistant.services.curator_client import CURATOR_SERVER_URL
+
+        payload: dict = {"feed": feed, "content": content}
+        if metadata:
+            payload["metadata"] = metadata
+        try:
+            resp = _httpx.post(f"{CURATOR_SERVER_URL}/push", json=payload, timeout=10)
+            resp.raise_for_status()
+            return "ok"
+        except _httpx.ConnectError:
+            raise RuntimeError("curator server unreachable") from None
+        except _httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"curator error: {exc.response.text.strip()}") from None
+
+    def _crop_image_sync(self, bbox: list) -> str:
+        """Crop the latest screenshot at bbox (0-1000 grid). Returns b64 PNG."""
+        screenshot_b64 = self._get_last_screenshot_b64()
+        if screenshot_b64 is None:
+            raise RuntimeError("no screenshot available to crop")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            raise RuntimeError(f"bbox must be [x1, y1, x2, y2], got {bbox!r}")
+        bbox_tuple = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+        b64, _w, _h = self._crop_screenshot(screenshot_b64, bbox_tuple)
+        return b64
+
+    async def _exec_click_at_coords(self, x: int, y: int) -> str:
+        """Click at coordinates (0-1000 grid). Converts to screen pixels."""
+        from assistant.services import input_control
+
+        screen_w, screen_h = self._resolve_output_resolution()
+        if screen_w == 0 or screen_h == 0:
+            return "Error: cannot determine screen resolution"
+        px = int(x / 1000 * screen_w)
+        py = int(y / 1000 * screen_h)
+        if not await input_control.click(px, py):
+            return f"Error: click at ({px}, {py}) failed"
+        self._pointer_x = px
+        self._pointer_y = py
+        return f"clicked at grid ({x}, {y}) → screen ({px}, {py})"
 
     def update_overlay_from_text(self, text: str) -> None:
         if not text.strip():
@@ -117,7 +306,7 @@ class HybridSegmentService:
         #     f"Extracted {len(rects)} rectangles and {len(points)} points from AI output"
         # )
         if not rects and not points:
-            vii.app_state.overlay_VS.shapes = []
+            vii.app.view_state.overlay_VS.shapes = []
         else:
             output_w, output_h = self._resolve_output_resolution()
             input_w, input_h = self._resolve_input_resolution(output_w, output_h)
@@ -130,13 +319,14 @@ class HybridSegmentService:
                 output_h=output_h,
             )
             log.info(f"Converted to {len(shapes)} overlay shapes")
-            vii.app_state.overlay_VS.shapes = shapes
+            vii.app.view_state.overlay_VS.shapes = shapes
 
     def _resolve_output_resolution(self) -> tuple[int, int]:
         """Get the target screen resolution for overlay rendering."""
-        try:
-            screen = vii.current_watched_screen()
-        except Exception:
+        capture = vii.app.view_state.capture_screen_info
+        if capture:
+            screen = get_screen_by_name(capture.name)
+        else:
             screen = QGuiApplication.primaryScreen()
         if not screen:
             log.error("No screen available for shape conversion")
@@ -150,13 +340,13 @@ class HybridSegmentService:
         self, fallback_w: int, fallback_h: int
     ) -> tuple[int, int]:
         """Get the resolution the model saw — from the last image item or model config."""
-        for it in vii.context_manager.items_reversed():
+        for it in self.context_manager.items_reversed():
             if isinstance(it, ImageItem):
                 log.info(f"Found image size: {it.width}x{it.height}")
                 return it.width, it.height
 
         log.info("No image metadata found, using model's configured resolution")
-        model_key = vii.app_state.settings_VS.selected_model
+        model_key = vii.get_config().selected_model
         w, h = get_resolution_for_model(model_key)
         log.info(f"Model resolution: {w}x{h}")
         return w, h
@@ -255,7 +445,7 @@ class HybridSegmentService:
         calls = extract_tool_calls_from_message(item)
         if not calls:
             # Final response — no more work to do
-            vii.app_state.settings_VS.assistant_working = False
+            vii.app.view_state.settings_VS.assistant_working = False
             return
 
         pending_calls = [
@@ -322,7 +512,7 @@ class HybridSegmentService:
 
         # Gate action tools based on execution mode
         if action_calls and not self._stopped:
-            settings = vii.app_state.settings_VS
+            settings = vii.app.view_state.settings_VS
             mode = settings.execution_mode
 
             if mode == ExecutionMode.USER_APPROVE.value:
@@ -335,9 +525,11 @@ class HybridSegmentService:
                     )
                     for c in action_calls
                 ]
-                self.overlay_manager.show_pending_actions(pending)
+                show_pending_actions(
+                    [f"{a.tool_name}({a.description})" for a in pending]
+                )
                 gate_result = await self.action_gate.await_confirmation(pending)
-                self.overlay_manager.clear_pending_actions()
+                clear_pending_actions()
 
                 if not gate_result.confirmed:
                     # User rejected — mark all as cancelled
@@ -381,35 +573,28 @@ class HybridSegmentService:
     async def _invoke_tool_call(
         self, call: ExtractedToolCall, resolved_args: list[Any]
     ) -> ToolCallResult:
-        if call.name == "crop_text":
-            description = str(resolved_args[0]) if resolved_args else ""
-            extracted = await self._exec_crop_text(description)
-            if extracted is None:
-                return ToolCallResult(
-                    call_id=call.id,
-                    name=call.name,
-                    status="error",
-                    message="crop_text failed",
-                )
-            self._update_variable(call.assign_to, extracted)
-            return ToolCallResult(
-                call_id=call.id,
-                name=call.name,
-                status="success",
-                value=extracted,
-                message=extracted,
-            )
-
         if call.name == "crop_image":
-            description = str(resolved_args[0]) if resolved_args else ""
-            cropped_b64, width, height = await self._exec_crop_image(description)
-            if cropped_b64 is None:
+            bbox = resolved_args[0] if resolved_args else []
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 return ToolCallResult(
                     call_id=call.id,
                     name=call.name,
                     status="error",
-                    message="crop_image failed",
+                    message="crop_image requires [x1, y1, x2, y2] bbox",
                 )
+            screenshot_b64 = self._get_last_screenshot_b64()
+            if screenshot_b64 is None:
+                return ToolCallResult(
+                    call_id=call.id,
+                    name=call.name,
+                    status="error",
+                    message="crop_image: no screenshot available",
+                )
+            bbox_tuple = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+            cropped_b64, width, height = self._crop_screenshot(
+                screenshot_b64, bbox_tuple
+            )
+            self._update_variable(call.assign_to, cropped_b64)
             self._update_variable(call.assign_to, cropped_b64)
             image_item = self._insert_image_tool_item(
                 cropped_b64, width, height, origin="tool"
@@ -423,37 +608,7 @@ class HybridSegmentService:
                 message=f"image item {image_item.id} ({width}x{height})",
             )
 
-        if call.name == "look_at":
-            description = str(resolved_args[0]) if resolved_args else ""
-            cropped_b64, width, height = await self._exec_crop_image(description)
-            if cropped_b64 is None:
-                return ToolCallResult(
-                    call_id=call.id,
-                    name=call.name,
-                    status="error",
-                    message="look_at failed",
-                )
-            image_item = self._insert_image_tool_item(
-                cropped_b64, width, height, origin="zoom"
-            )
-            return ToolCallResult(
-                call_id=call.id,
-                name=call.name,
-                status="success",
-                value=cropped_b64,
-                context_item_id=str(image_item.id),
-                message=f"zoom image item {image_item.id} ({width}x{height})",
-            )
-
-        if call.name == "look_at_whole_screen":
-            return ToolCallResult(
-                call_id=call.id,
-                name=call.name,
-                status="success",
-                message="returned to whole-screen view",
-            )
-
-        if call.name == "curator.push":
+        if call.name == "curator_push":
             feed_name = str(resolved_args[0]) if resolved_args else "default"
             content = resolved_args[1] if len(resolved_args) > 1 else {}
             metadata = resolved_args[2] if len(resolved_args) > 2 else None
@@ -537,7 +692,7 @@ class HybridSegmentService:
     def _insert_image_tool_item(
         self, image_b64: str, width: int, height: int, *, origin: str
     ) -> ImageItem:
-        ctx = vii.context_manager
+        ctx = self.context_manager
         item = ImageItem()
         item.position = ctx.next_position()
         item.image_b64 = image_b64
@@ -550,8 +705,8 @@ class HybridSegmentService:
 
     def _insert_screen_capture(self) -> None:
         """Capture the watched screen, resize, and insert as an ImageItem."""
-        settings = vii.app_state.settings_VS
-        screen_name = settings.screen
+        capture = vii.app.view_state.capture_screen_info
+        screen_name = capture.name if capture else ""
         screens = QGuiApplication.screens()
         screen = None
         for s in screens:
@@ -594,7 +749,7 @@ class HybridSegmentService:
         if not results:
             return
 
-        ctx = vii.context_manager
+        ctx = self.context_manager
         result_item = TextItem()
         result_item.position = ctx.next_position()
         result_item.origin = "tool"
@@ -611,7 +766,7 @@ class HybridSegmentService:
         # Check if stopped
         if self._stopped:
             log.info("Stopped — not continuing after tool results")
-            vii.app_state.settings_VS.assistant_working = False
+            vii.app.view_state.settings_VS.assistant_working = False
             return
 
         # Auto-continuation: trigger next generation after tool execution
@@ -620,7 +775,7 @@ class HybridSegmentService:
             log.warning(
                 "max_turns=%d reached, stopping auto-continuation", self.MAX_TURNS
             )
-            vii.app_state.settings_VS.assistant_working = False
+            vii.app.view_state.settings_VS.assistant_working = False
             return
 
         req_item = TextItem()
@@ -679,17 +834,11 @@ class HybridSegmentService:
         ]
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{INFERENCE_HTTP_BASE}/infer",
-                    json={
-                        "context_data": context_data,
-                        "generation_params": {"max_new_tokens": 64, "do_sample": False},
-                    },
-                    timeout=30.0,
-                )
-            resp.raise_for_status()
-            data = resp.json()
+            data = await vii.inference_client.infer(
+                context_data,
+                {"max_new_tokens": 64, "do_sample": False},
+                timeout=30.0,
+            )
         except Exception as exc:
             log.error("Sub-agent /infer call failed: %s", exc)
             return None
@@ -762,9 +911,9 @@ class HybridSegmentService:
 
     def _get_last_screenshot_b64(self) -> str | None:
         """Get the base64-encoded last screenshot from context."""
-        screenshot = vii.context_manager.last_screenshot_item()
+        screenshot = self.context_manager.last_screenshot_item()
         if screenshot is None:
-            screenshot = vii.context_manager.last_image_item()
+            screenshot = self.context_manager.last_image_item()
         if screenshot is None:
             return None
         return screenshot.image_b64 if screenshot.image_b64 else None
@@ -796,79 +945,7 @@ class HybridSegmentService:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return b64, cropped.width, cropped.height
 
-    async def _exec_crop_text(self, description: str) -> str | None:
-        """Execute crop_text: resolve bbox, crop, extract text via sub-agent."""
-        screenshot_b64 = self._get_last_screenshot_b64()
-        if screenshot_b64 is None:
-            log.error("crop_text: no screenshot available")
-            return None
-
-        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
-        if bbox_coords is None:
-            return None
-
-        cropped_b64, w, h = self._crop_screenshot(screenshot_b64, bbox_coords)
-
-        # Now ask the model to read the text in the cropped image
-        img_item = ImageItem()
-        img_item.position = 0
-        img_item.image_b64 = cropped_b64
-        img_item.width = w
-        img_item.height = h
-        img_item.origin = "tool"
-        text_item = TextItem()
-        text_item.position = 100
-        text_item.text = "Read and return all the text visible in this image. Return only the text, nothing else."
-        text_item.origin = "user"
-        req_item = TextItem()
-        req_item.position = 200
-        req_item.origin = "assistant"
-        req_item.request = {"stream": False}
-
-        context_data = [
-            dump_to_dict(img_item),
-            dump_to_dict(text_item),
-            dump_to_dict(req_item),
-        ]
-
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{INFERENCE_HTTP_BASE}/infer",
-                    json={
-                        "context_data": context_data,
-                        "generation_params": {
-                            "max_new_tokens": 256,
-                            "do_sample": False,
-                        },
-                    },
-                    timeout=30.0,
-                )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            log.error("crop_text text extraction failed: %s", exc)
-            return None
-
-        if data.get("status") != "success":
-            log.error("crop_text extraction error: %s", data.get("error_message"))
-            return None
-
-        return data.get("text", "")
-
-    async def _exec_crop_image(self, description: str) -> tuple[str | None, int, int]:
-        """Execute crop_image/look_at: resolve bbox and crop."""
-        screenshot_b64 = self._get_last_screenshot_b64()
-        if screenshot_b64 is None:
-            log.error("crop_image: no screenshot available")
-            return None, 0, 0
-
-        bbox_coords = await self._resolve_bbox_via_subagent(description, screenshot_b64)
-        if bbox_coords is None:
-            return None, 0, 0
-
-        b64, w, h = self._crop_screenshot(screenshot_b64, bbox_coords)
-        return b64, w, h
+    # --- MPX pointer tools ---
 
     # --- MPX pointer tools ---
 

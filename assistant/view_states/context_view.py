@@ -30,13 +30,67 @@ def _summarize_request(item: ContextItem) -> str:
     return "Request: " + ", ".join(parts)
 
 
+def _format_display_text(item: ContextItem) -> str:
+    """Format item text for UI display. Prettifies tool call arguments."""
+    if not isinstance(item, TextItem):
+        return ""
+    text = item.text
+    meta = item.metadata or {}
+    request = item.request or {}
+
+    # Client execution request items have raw JSON arguments — format them
+    if isinstance(request, dict) and request.get("execution") == "client":
+        arguments = meta.get("arguments", {})
+        focus_mode = request.get("focus_mode", "")
+        if focus_mode == "python":
+            code = arguments.get("code", "")
+            return f"▶ {code}" if code else text
+        elif focus_mode == "click_at":
+            return f"⊕ click ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
+        elif focus_mode == "scroll":
+            steps = arguments.get("steps", 0)
+            direction = "↑" if steps > 0 else "↓"
+            return f"{direction} scroll {abs(steps)}"
+        elif focus_mode == "move_pointer":
+            return f"→ move ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
+        return text
+
+    # Tool call in metadata (completed assistant generation that triggered a tool)
+    tool_call = meta.get("tool_call")
+    if tool_call and isinstance(tool_call, dict):
+        name = tool_call.get("name", "")
+        args = tool_call.get("arguments", {})
+        suffix = ""
+        if name == "localization":
+            suffix = f": {args.get('instruction', '')}"
+        elif name == "python":
+            code = args.get("code", "")
+            suffix = f": {code[:80]}{'…' if len(code) > 80 else ''}"
+        elif name in ("click_at", "scroll"):
+            suffix = f": {args}"
+        # Show text before tool call (strip markers) + short tool call summary
+        # Strip <tool_call>...</tool_call> from display text
+        display = (
+            text.split("<tool_call>")[0].strip() if "<tool_call>" in text else text
+        )
+        parts = []
+        if display:
+            parts.append(display)
+        parts.append(f"⚡ {name}{suffix}")
+        return "\n".join(parts)
+
+    return text
+
+
 class ContextItemViewState(QObject):
     position_changed = Signal(int)
     content_kind_changed = Signal(str)
     text_changed = Signal(str)
+    display_text_changed = Signal(str)
     image_b64_changed = Signal(str)
     request_summary_changed = Signal(str)
     origin_changed = Signal(str)
+    focus_mode_changed = Signal(str)
 
     def __init__(self, item_id: str, parent: QObject | None = None):
         super().__init__(parent)
@@ -44,9 +98,11 @@ class ContextItemViewState(QObject):
         self._position = 0
         self._content_kind = "text"
         self._text = ""
+        self._display_text = ""
         self._image_b64 = ""
         self._request_summary = ""
         self._origin = ""
+        self._focus_mode = ""
 
     @Property(str, constant=True)
     def item_id(self) -> str:
@@ -118,6 +174,28 @@ class ContextItemViewState(QObject):
         self._origin = value
         self.origin_changed.emit(value)
 
+    @Property(str, notify=display_text_changed)
+    def display_text(self) -> str:
+        return self._display_text
+
+    @display_text.setter
+    def display_text(self, value: str) -> None:
+        if self._display_text == value:
+            return
+        self._display_text = value
+        self.display_text_changed.emit(value)
+
+    @Property(str, notify=focus_mode_changed)
+    def focus_mode(self) -> str:
+        return self._focus_mode
+
+    @focus_mode.setter
+    def focus_mode(self, value: str) -> None:
+        if self._focus_mode == value:
+            return
+        self._focus_mode = value
+        self.focus_mode_changed.emit(value)
+
     def apply_context_item(self, item: ContextItem) -> bool:
         reposition = item.position != self._position
         previous_kind = self._content_kind
@@ -125,6 +203,8 @@ class ContextItemViewState(QObject):
         self.position = item.position
         self.origin = item.origin
         self.request_summary = _summarize_request(item)
+        self.focus_mode = (item.metadata or {}).get("focus_mode", "")
+        self.display_text = _format_display_text(item)
 
         if isinstance(item, TextItem):
             self.content_kind = "text"
@@ -144,7 +224,11 @@ class ContextItemViewState(QObject):
 
 
 class ContextViewerState(QObject):
-    items_changed = Signal()
+    items_changed = Signal()  # bulk reset (replace_all)
+    item_added = Signal(str)  # item_id
+    item_removed = Signal(str)  # item_id
+    item_moved = Signal(str)  # item_id (position changed)
+    item_updated = Signal(str)  # item_id (properties changed, no structural change)
     interactions_enabled_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None):
@@ -180,14 +264,17 @@ class ContextViewerState(QObject):
         """Create or update a view state entry from a ContextItem entity."""
         key: str = str(item.id)
         state = self._items.get(key)
-        created = False
         if state is None:
             state = ContextItemViewState(key, parent=self)
             self._items[key] = state
-            created = True
-        refresh_needed = state.apply_context_item(item)
-        if created or refresh_needed:
-            self.items_changed.emit()
+            state.apply_context_item(item)
+            self.item_added.emit(key)
+        else:
+            reposition = state.apply_context_item(item)
+            if reposition:
+                self.item_moved.emit(key)
+            else:
+                self.item_updated.emit(key)
 
     def remove_entity(self, entity_id: str) -> None:
         """Remove a view state entry by entity id."""
@@ -195,7 +282,7 @@ class ContextViewerState(QObject):
         if state is not None:
             state.setParent(None)
             state.deleteLater()
-            self.items_changed.emit()
+            self.item_removed.emit(entity_id)
 
     def apply_changes(self, changes: Iterable) -> None:
         # Kept for compatibility but not used in the new flow
@@ -204,7 +291,6 @@ class ContextViewerState(QObject):
     def replace_all(self, items: Iterable[ContextItem]) -> None:
         current_ids = set(self._items.keys())
         next_ids: set[str] = set()
-        needs_emit = False
         for item in items:
             if not isinstance(item, ContextItem):  # defensive
                 continue
@@ -214,15 +300,11 @@ class ContextViewerState(QObject):
             if state is None:
                 state = ContextItemViewState(key, parent=self)
                 self._items[key] = state
-                needs_emit = True
-            if state.apply_context_item(item):
-                needs_emit = True
+            state.apply_context_item(item)
         removed = current_ids - next_ids
         for removed_id in removed:
             state = self._items.pop(removed_id, None)
             if state is not None:
                 state.setParent(None)
                 state.deleteLater()
-                needs_emit = True
-        if needs_emit:
-            self.items_changed.emit()
+        self.items_changed.emit()

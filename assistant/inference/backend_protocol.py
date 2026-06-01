@@ -37,7 +37,7 @@ class InferenceBackend(Protocol):
         """
         ...
 
-    async def generate_stream(
+    def generate_stream(  # Not marked as async because of pylance errors (donno..)
         self,
         messages: list[dict[str, Any]],
         images: list[Image.Image],

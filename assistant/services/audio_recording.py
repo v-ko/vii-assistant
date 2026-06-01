@@ -42,7 +42,7 @@ NUM_BANDS = 10
 
 
 class AudioRecordingService(QObject):
-    """Manages audio capture from the default input device."""
+    """Manages audio capture from a configurable input device."""
 
     # Emitted when a chunk of audio is ready for transcription.
     # Args: (chunk_audio_int16: np.ndarray, chunk_start_time_s: float)
@@ -57,12 +57,14 @@ class AudioRecordingService(QObject):
         *,
         chunk_duration_s: int,
         overlap_duration_s: int,
+        selected_device_id: str = "",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._overlay_vm = overlay_view_model
         self._chunk_duration_s = chunk_duration_s
         self._overlap_duration_s = overlap_duration_s
+        self._selected_device_id = selected_device_id
 
         self._source: QAudioSource | None = None
         self._io_device: QIODevice | None = None
@@ -92,6 +94,27 @@ class AudioRecordingService(QObject):
     @property
     def is_recording(self) -> bool:
         return self._recording
+
+    @property
+    def selected_device_id(self) -> str:
+        return self._selected_device_id
+
+    @selected_device_id.setter
+    def selected_device_id(self, value: str) -> None:
+        self._selected_device_id = value
+
+    @staticmethod
+    def available_input_devices() -> list[dict[str, str]]:
+        """Return list of available audio input devices as {id, description}."""
+        devices = []
+        for dev in QMediaDevices.audioInputs():
+            devices.append(
+                {
+                    "id": dev.id().data().decode(),
+                    "description": dev.description(),
+                }
+            )
+        return devices
 
     @property
     def full_buffer_int16(self) -> np.ndarray:
@@ -124,8 +147,21 @@ class AudioRecordingService(QObject):
         fmt.setChannelCount(CHANNELS)
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
 
-        # Get default input device
-        device = QMediaDevices.defaultAudioInput()
+        # Get input device (selected or default)
+        device = None
+        if self._selected_device_id:
+            for dev in QMediaDevices.audioInputs():
+                if dev.id().data().decode() == self._selected_device_id:
+                    device = dev
+                    break
+            if device is None:
+                log.warning(
+                    "Configured device %r not found, falling back to default",
+                    self._selected_device_id,
+                )
+        if device is None:
+            device = QMediaDevices.defaultAudioInput()
+
         if device.isNull():
             log.error("No audio input device available")
             return

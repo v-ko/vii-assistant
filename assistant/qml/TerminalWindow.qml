@@ -12,8 +12,6 @@ Window {
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
-    property bool terminalVisible: false
-
     // Clip so nothing is visible outside the window area
     Item {
         id: clipper
@@ -82,20 +80,22 @@ Window {
     // ── Keyboard handling ───────────────────────────────────────
     Shortcut {
         sequence: "Escape"
-        onActivated: root.hideTerminal()
+        onActivated: appVM.hideTerminal()
     }
 
-    function showTerminal() {
-        panel.y = -panel.height
-        root.visible = true
-        root.raise()
-        root.requestActivate()
-        terminalVisible = true
-        slideDown.start()
-    }
-
-    function hideTerminal() {
-        terminalVisible = false
-        slideUp.start()
+    // ── React to view state visibility changes ──────────────────
+    Connections {
+        target: terminalState
+        function onVisible_changed(vis) {
+            if (vis) {
+                panel.y = -panel.height
+                root.visible = true
+                root.raise()
+                root.requestActivate()
+                slideDown.start()
+            } else {
+                slideUp.start()
+            }
+        }
     }
 }

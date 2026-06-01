@@ -15,7 +15,6 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
 
-from assistant.constants import INFERENCE_HTTP_BASE
 from assistant.facade import vii
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
@@ -27,7 +26,6 @@ from assistant.transcription import TranscriptionResult, WordTimestamp
 log = get_logger(__name__)
 
 SAMPLE_RATE = 16000
-TRANSCRIBE_ENDPOINT = f"{INFERENCE_HTTP_BASE}/transcribe"
 
 
 @procedure
@@ -37,7 +35,7 @@ async def transcribe_file(file_path: str) -> None:
 
     import httpx
 
-    vs = vii.app_state.settings_modal_VS.transcription_section_vs
+    vs = vii.app.view_state.settings_modal_VS.transcription_section_vs
 
     vs.sample_file_progress = 0.0
 
@@ -80,26 +78,15 @@ async def transcribe_file(file_path: str) -> None:
                 audio_f32 = chunk_audio.astype(np.float32) / 32768.0
                 audio_b64 = base64.b64encode(audio_f32.tobytes()).decode("ascii")
 
-                payload = {
-                    "model_type": "parakeet-tdt-0.6b-v3-int8",
-                    "sample_rate": SAMPLE_RATE,
-                    "audio_b64": audio_b64,
-                }
-
                 log.info(
                     "Transcribing chunk %d/%d (start=%.1fs)",
                     i + 1,
                     total_chunks,
                     chunk_start,
                 )
-                response = await client.post(TRANSCRIBE_ENDPOINT, json=payload)
-                response.raise_for_status()
-                data = response.json()
-
-                if data.get("status") != "success":
-                    raise RuntimeError(
-                        f"Server error: {data.get('error_message', 'unknown')}"
-                    )
+                data = await vii.inference_client.transcribe(
+                    audio_b64, sample_rate=SAMPLE_RATE, client=client
+                )
 
                 words = [
                     WordTimestamp(word=w["word"], start=w["start"], end=w["end"])

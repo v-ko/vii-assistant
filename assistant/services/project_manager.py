@@ -9,9 +9,9 @@ from typing import Any, Optional
 from fusion.libs.procedure import procedure
 from fusion.storage.websockets_client_sync import WebSocketsClientSync
 
-from assistant.constants import INFERENCE_WS_URL
 from assistant.facade import vii
 from assistant.inference.context import ContextManager, TextItem
+from assistant.inference.focus_modes import FOCUS_MODES
 from assistant.procedures import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.util import get_screen_by_name
@@ -196,7 +196,7 @@ class ViiProjectManager:
         manager: Optional[SessionManager] = None,
         screen_name: str | None = None,
     ) -> SessionManager:
-        settings_state = vii.app_state.settings_VS
+        settings_state = vii.app.view_state.settings_VS
         if settings_state.session_state == "started":
             return self._session_manager or self.create_session()
 
@@ -205,7 +205,7 @@ class ViiProjectManager:
             self._session_manager = manager or self.create_session()
             meta = self._session_manager.metadata
             try:
-                vii.qt_app.terminal_state.output_text = (
+                vii.app.terminal_state.output_text = (
                     f"Session directory ready: {meta.session_id}\n{meta.path}"
                 )
             except Exception:
@@ -219,10 +219,9 @@ class ViiProjectManager:
         if screen_name:
             target_screen = get_screen_by_name(screen_name)
         if target_screen is None:
-            try:
-                target_screen = vii.current_watched_screen()
-            except Exception:
-                target_screen = None
+            capture = vii.app.view_state.capture_screen_info
+            if capture:
+                target_screen = get_screen_by_name(capture.name)
         if target_screen is not None and hasattr(target_screen, "geometry"):
             geom = target_screen.geometry()  # type: ignore[call-arg]
             config["window_geometry"] = (
@@ -237,7 +236,7 @@ class ViiProjectManager:
 
         # Ensure inference client
         if self._sync_client is None:
-            ws_url = INFERENCE_WS_URL
+            ws_url = vii.inference_client.ws_url
             settings_state.post_info_message(
                 f"Connecting to inference websocket at {ws_url}..."
             )
@@ -267,14 +266,19 @@ class ViiProjectManager:
             # Connection established — now mark session as started
             settings_state.session_state = "started"
 
-            # Add system prompt as first context item
-            system_prompt_text = self.current_system_prompt()
-            if system_prompt_text and system_prompt_text.strip():
+            # Insert system prompts for all focus modes that have prompt files
+            for mode_name, mode_config in FOCUS_MODES.items():
+                if not mode_config.has_prompt_file:
+                    continue
+                prompt_text = mode_config.load_system_prompt()
+                if not prompt_text.strip():
+                    continue
                 system_item = TextItem()
-                system_item.position = 0
-                system_item.text = system_prompt_text.strip()
+                system_item.position = self.context_manager.next_position()
+                system_item.text = prompt_text.strip()
                 system_item.origin = "system"
-                vii.context_controller.create(system_item)
+                system_item.metadata = {"focus_mode": mode_name}
+                vii.project_manager.context_manager.insert(system_item)
 
         if not self._running:
             self._running = True
@@ -291,7 +295,7 @@ class ViiProjectManager:
         return self._session_manager
 
     def pause_session(self, *, new_state: str = "paused") -> None:
-        settings_state = vii.app_state.settings_VS
+        settings_state = vii.app.view_state.settings_VS
         if settings_state.session_state != "started":
             return
         if self._session_manager and self._session_manager.is_recording:
@@ -301,13 +305,13 @@ class ViiProjectManager:
         print("Project manager paused session")
 
     def _on_sync_disconnected(self) -> None:
-        settings_state = vii.app_state.settings_VS
+        settings_state = vii.app.view_state.settings_VS
         if settings_state.session_state == "started":
             settings_state.session_state = "disconnected"
             settings_state.post_info_message("Inference websocket connection closed")
 
     def new_session(self) -> None:
-        settings_state = vii.app_state.settings_VS
+        settings_state = vii.app.view_state.settings_VS
         if self._session_manager and self._session_manager.is_recording:
             self._session_manager.stop_recording()
         # Stop old inference client so a fresh one is created on next start
@@ -318,11 +322,11 @@ class ViiProjectManager:
         meta = self._session_manager.metadata
 
         # --- Reset UI + context state ---
-        app_state = vii.app_state
-        terminal_state = vii.qt_app.terminal_state
+        app_state = vii.app.view_state
+        terminal_state = vii.app.terminal_state
 
         # Clear context repository and propagate deletions via store.on_changes
-        vii.context_controller.clear()
+        vii.project_manager.context_manager.clear()
 
         # Reset agentic turn counter
         self.hybrid_segment_service.reset_turns()
@@ -331,7 +335,7 @@ class ViiProjectManager:
         settings_state.clear_info_messages()
 
         # Clear overlay shapes
-        vii.app_state.overlay_VS.clear()
+        vii.app.view_state.overlay_VS.clear()
 
         # Reset terminal output
         terminal_state.output_text = (
@@ -346,7 +350,9 @@ class ViiProjectManager:
 
         # Auto-restart session if inference server is available
         if settings_state.server_model_state == "loaded":
-            self.start_session(screen_name=settings_state.screen)
+            capture = vii.app.view_state.capture_screen_info
+            screen_name = capture.name if capture else vii.get_config().capture_screen
+            self.start_session(screen_name=screen_name)
 
     @property
     def sessions_root(self) -> Path:
@@ -365,7 +371,7 @@ class ViiProjectManager:
 
     # --- Automation helpers -------------------------------------------
     def current_system_prompt(self) -> str:
-        return vii.app_state.settings_VS.system_prompt_markdown or ""
+        return vii.app.view_state.settings_VS.system_prompt_markdown or ""
 
     def is_running(self) -> bool:
         return self._running

@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from PySide6.QtCore import QStandardPaths
+
 # Load .env from project root (sibling of this package)
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 if _ENV_FILE.is_file():
@@ -25,3 +27,13 @@ INFERENCE_WS_URL = (
     INFERENCE_HTTP_BASE.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
     + "/ws/context"
 )
+
+# App data paths
+APP_DATA_DIR = Path(
+    QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+)
+RECORDINGS_DIR = APP_DATA_DIR / "transcription_recordings"
+MAX_SAVED_RECORDINGS = 5
+
+# Experiment configs
+EXPERIMENTS_DIR = Path(__file__).parent / "experiments"

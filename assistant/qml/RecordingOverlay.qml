@@ -2,14 +2,22 @@ import QtQuick
 
 Window {
     id: overlayWindow
+
+    // Set by the loader to position on the correct screen
+    property int screenX: 0
+    property int screenY: 0
+    property int screenWidth: 0
+    property int screenHeight: 0
+
     width: overlayContent.width + 32
     height: overlayContent.height + 16
-    x: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.x + (appVM.primaryScreenInfo.width - width) / 2 : 0
-    y: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.y + appVM.primaryScreenInfo.height * 0.03 : 0
+    x: screenX + (screenWidth - width) / 2
+    y: screenY + screenHeight * 0.03
     visible: recordingOverlayVM ? recordingOverlayVM.has_view_state : false
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-           | Qt.WindowTransparentForInput
+           | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus
+           | Qt.X11BypassWindowManagerHint
 
     Rectangle {
         id: overlayContent

@@ -10,15 +10,15 @@ import asyncio
 import time
 import wave
 from datetime import datetime
-from pathlib import Path
 from subprocess import DEVNULL, Popen
 
 import numpy as np
 from fusion import get_logger
 from fusion.libs.procedure import procedure
-from PySide6.QtCore import QStandardPaths, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 
+from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 from assistant.facade import vii
 
 log = get_logger(__name__)
@@ -147,8 +147,8 @@ async def _transcribe_to_ydotool() -> None:
     except Exception as exc:
         log.error("Transcription failed: %s", exc, exc_info=True)
         _notify_error(str(exc))
-        _save_recording_on_failure(rec)
     finally:
+        _save_recording(rec)
         _chunk_queue = None
         _pending_snippets = []
 
@@ -255,25 +255,17 @@ def _notify_error(message: str) -> None:
         pass
 
 
-def _save_recording_on_failure(rec) -> None:
-    """Save full recording buffer as WAV to data directory."""
+def _save_recording(rec) -> None:
+    """Save full recording buffer as WAV, keeping only the last N recordings."""
     audio = rec.full_buffer_int16
     if len(audio) == 0:
-        log.warning("No audio to save on failure")
+        log.warning("No audio to save")
         return
 
-    data_dir = (
-        Path(
-            QStandardPaths.writableLocation(
-                QStandardPaths.StandardLocation.AppDataLocation
-            )
-        )
-        / "transcription_recordings"
-    )
-    data_dir.mkdir(parents=True, exist_ok=True)
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = data_dir / f"recording_{timestamp}.wav"
+    filepath = RECORDINGS_DIR / f"recording_{timestamp}.wav"
 
     try:
         with wave.open(str(filepath), "wb") as wf:
@@ -281,15 +273,17 @@ def _save_recording_on_failure(rec) -> None:
             wf.setsampwidth(2)  # int16
             wf.setframerate(16000)
             wf.writeframes(audio.tobytes())
-        log.info("Saved failed recording to %s", filepath)
-        try:
-            Popen(
-                ["notify-send", "VII Recording Saved", f"Saved to {filepath}"],
-                start_new_session=True,
-                stdout=DEVNULL,
-                stderr=DEVNULL,
-            )
-        except Exception:
-            pass
+        log.info("Saved recording to %s", filepath)
     except Exception as exc:
         log.error("Failed to save recording: %s", exc)
+        return
+
+    # Enforce cap: delete oldest files beyond MAX_SAVED_RECORDINGS
+    existing = sorted(RECORDINGS_DIR.glob("recording_*.wav"))
+    while len(existing) > MAX_SAVED_RECORDINGS:
+        oldest = existing.pop(0)
+        try:
+            oldest.unlink()
+            log.debug("Removed old recording: %s", oldest.name)
+        except OSError as exc:
+            log.warning("Failed to remove old recording %s: %s", oldest.name, exc)

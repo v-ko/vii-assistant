@@ -19,6 +19,7 @@ dependencies = [
   "pytesseract",
   "websockets",
   "httpx",
+  "json-repair",
 ]
 
 [project.scripts]

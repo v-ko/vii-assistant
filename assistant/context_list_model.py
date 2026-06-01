@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import bisect
 from enum import IntEnum
 
 from PySide6.QtCore import (
     QAbstractListModel,
     QByteArray,
     QModelIndex,
-    QObject,
     QPersistentModelIndex,
     Qt,
 )
@@ -25,66 +24,92 @@ class ContextItemRole(IntEnum):
     ImageB64 = Qt.ItemDataRole.UserRole + 5
     RequestSummary = Qt.ItemDataRole.UserRole + 6
     Origin = Qt.ItemDataRole.UserRole + 7
+    DisplayText = Qt.ItemDataRole.UserRole + 8
+    FocusMode = Qt.ItemDataRole.UserRole + 9
+
+
+def _sort_key(item: ContextItemViewState):
+    return (item.position, item.item_id)
 
 
 class ContextListModel(QAbstractListModel):
-    """Exposes ContextViewerState items as a flat list model for QML."""
+    """Exposes ContextViewerState items as a flat list model for QML.
+
+    Uses incremental insert/remove to preserve ListView scroll position.
+    Property changes (streaming text, etc.) are delivered via a single
+    item_updated signal from the view state — no per-item connections needed.
+    """
 
     def __init__(self, state: ContextViewerState, parent=None):
         super().__init__(parent)
         self._state = state
         self._items: list[ContextItemViewState] = []
-        self._connections: dict[str, list] = {}
-        state.items_changed.connect(self._rebuild)
-        self._rebuild()
 
-    def _rebuild(self):
-        # Disconnect old item signals
-        for item_id, conns in self._connections.items():
-            for conn in conns:
-                try:
-                    QObject.disconnect(conn)
-                except RuntimeError:
-                    pass
-        self._connections.clear()
+        state.item_added.connect(self._on_item_added)
+        state.item_removed.connect(self._on_item_removed)
+        state.item_moved.connect(self._on_item_moved)
+        state.item_updated.connect(self._on_item_updated)
+        state.items_changed.connect(self._full_rebuild)
+        self._full_rebuild()
 
+    # ── Incremental operations ──────────────────────────────────
+
+    def _on_item_added(self, item_id: str) -> None:
+        item = self._state.get_item(item_id)
+        if item is None:
+            return
+        key = _sort_key(item)
+        row = bisect.bisect_left([_sort_key(it) for it in self._items], key)
+        self.beginInsertRows(QModelIndex(), row, row)
+        self._items.insert(row, item)
+        self.endInsertRows()
+
+    def _on_item_removed(self, item_id: str) -> None:
+        row = self._find_row(item_id)
+        if row is None:
+            return
+        self.beginRemoveRows(QModelIndex(), row, row)
+        self._items.pop(row)
+        self.endRemoveRows()
+
+    def _on_item_moved(self, item_id: str) -> None:
+        old_row = self._find_row(item_id)
+        if old_row is None:
+            return
+        item = self._items[old_row]
+        key = _sort_key(item)
+        temp = self._items[:old_row] + self._items[old_row + 1 :]
+        new_row = bisect.bisect_left([_sort_key(it) for it in temp], key)
+        if new_row == old_row:
+            return
+        dest = new_row if new_row < old_row else new_row + 1
+        self.beginMoveRows(QModelIndex(), old_row, old_row, QModelIndex(), dest)
+        self._items.pop(old_row)
+        self._items.insert(new_row, item)
+        self.endMoveRows()
+
+    def _on_item_updated(self, item_id: str) -> None:
+        """An existing item's properties changed (e.g. streaming text)."""
+        row = self._find_row(item_id)
+        if row is None:
+            return
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [])
+
+    # ── Full rebuild (only for replace_all / session switch) ────
+
+    def _full_rebuild(self):
         self.beginResetModel()
         self._items = self._state.sorted_items()
         self.endResetModel()
 
-        # Connect per-item change signals to dataChanged
+    # ── Helpers ─────────────────────────────────────────────────
+
+    def _find_row(self, item_id: str) -> int | None:
         for i, item in enumerate(self._items):
-            conns = []
-
-            def _make_notifier(row, roles):
-                def _notify(*_args):
-                    model_idx = self.index(row, 0)
-                    self.dataChanged.emit(model_idx, model_idx, roles)
-
-                return _notify
-
-            conns.append(
-                item.text_changed.connect(_make_notifier(i, [ContextItemRole.Text]))
-            )
-            conns.append(
-                item.image_b64_changed.connect(
-                    _make_notifier(i, [ContextItemRole.ImageB64])
-                )
-            )
-            conns.append(
-                item.request_summary_changed.connect(
-                    _make_notifier(i, [ContextItemRole.RequestSummary])
-                )
-            )
-            conns.append(
-                item.origin_changed.connect(_make_notifier(i, [ContextItemRole.Origin]))
-            )
-            conns.append(
-                item.content_kind_changed.connect(
-                    _make_notifier(i, [ContextItemRole.ContentKind])
-                )
-            )
-            self._connections[item.item_id] = conns
+            if item.item_id == item_id:
+                return i
+        return None
 
     def rowCount(
         self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()
@@ -113,6 +138,10 @@ class ContextListModel(QAbstractListModel):
             return item.request_summary
         if role == ContextItemRole.Origin:
             return item.origin
+        if role == ContextItemRole.DisplayText:
+            return item.display_text
+        if role == ContextItemRole.FocusMode:
+            return item.focus_mode
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:
@@ -124,4 +153,6 @@ class ContextListModel(QAbstractListModel):
             int(ContextItemRole.ImageB64): QByteArray(b"imageB64"),
             int(ContextItemRole.RequestSummary): QByteArray(b"requestSummary"),
             int(ContextItemRole.Origin): QByteArray(b"origin"),
+            int(ContextItemRole.DisplayText): QByteArray(b"displayText"),
+            int(ContextItemRole.FocusMode): QByteArray(b"focusMode"),
         }

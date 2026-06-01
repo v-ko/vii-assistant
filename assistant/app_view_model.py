@@ -7,11 +7,14 @@ terminal_actions.
 
 from __future__ import annotations
 
+from fusion import get_logger
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from assistant.constants import INFERENCE_HTTP_BASE
+from assistant.actions import stop_assistant
+from assistant.debug_actions import show_screen_debug
 from assistant.facade import vii
 from assistant.model_configs import AVAILABLE_MODELS
+from assistant.procedures import fetch_raw_context_and_present
 from assistant.terminal_actions import (
     add_tool_prompt,
     apply_health_result,
@@ -21,14 +24,21 @@ from assistant.terminal_actions import (
     ocr_clipboard_action,
     open_app_config,
     open_experiment_config,
+    open_focus_mode_prompt,
     open_sessions_folder,
     schedule_health_check,
+    set_execution_mode,
+    set_experiment_config,
+    set_max_new_tokens,
     set_model,
     set_screen,
+    set_terminal_visible,
     step_experiment,
     stop_experiment,
     submit_message,
 )
+
+log = get_logger(__name__)
 
 
 class AppViewModel(QObject):
@@ -36,13 +46,14 @@ class AppViewModel(QObject):
 
     # Signal for async health/model check results
     health_check_done = Signal(bool, str, str)  # connected, model_state, model_key
+    context_debug_ready = Signal(str, str)  # focus_mode, prompt_text
     screen_list_changed = Signal()
     primary_screen_changed = Signal()
 
     # Display-friendly server label (schema stripped)
     @Property(str, constant=True)
     def serverHost(self):
-        return INFERENCE_HTTP_BASE.split("://", 1)[-1]
+        return vii.inference_client.host_display
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -50,7 +61,7 @@ class AppViewModel(QObject):
 
     def bind_screens(self) -> None:
         """Connect to app_state.screens_changed to track primary screen."""
-        vii.app_state.screens_changed.connect(self._on_screens_changed)
+        vii.app.view_state.screens_changed.connect(self._on_screens_changed)
 
     def _on_screens_changed(self) -> None:
         self.primary_screen_changed.emit()
@@ -58,7 +69,13 @@ class AppViewModel(QObject):
 
     @Property(QObject, notify=primary_screen_changed)
     def primaryScreenInfo(self) -> QObject | None:
-        return vii.app_state.primary_screen_info
+        return vii.app.view_state.primary_screen_info
+
+    # ── Terminal slots ────────────────────────────────────────────
+
+    @Slot()
+    def hideTerminal(self):
+        set_terminal_visible(False)
 
     # ── Session / message slots ──────────────────────────────────
 
@@ -76,8 +93,6 @@ class AppViewModel(QObject):
 
     @Slot()
     def stopAssistant(self):
-        from assistant.actions import stop_assistant
-
         stop_assistant()
 
     # ── Capture slots ────────────────────────────────────────────
@@ -102,17 +117,23 @@ class AppViewModel(QObject):
 
     @Slot(str)
     def setExecutionMode(self, mode: str):
-        from assistant.facade import vii
-
-        vii.app_state.settings_VS.execution_mode = mode
+        set_execution_mode(mode)
 
     @Slot(str)
     def setModel(self, model_key: str):
         set_model(model_key)
 
+    @Slot(int)
+    def setMaxNewTokens(self, value: int):
+        set_max_new_tokens(value)
+
     @Slot()
     def addToolPrompt(self):
         add_tool_prompt()
+
+    @Slot(str)
+    def openFocusModePrompt(self, mode_name: str):
+        open_focus_mode_prompt(mode_name)
 
     @Slot()
     def openAppConfig(self):
@@ -134,19 +155,16 @@ class AppViewModel(QObject):
 
     @Slot(result=list)
     def getExperimentConfigs(self) -> list:
-        from assistant.experiments_manager import EXPERIMENTS_DIR
-
-        configs = sorted(EXPERIMENTS_DIR.glob("*.json"))
-        current = vii.experiments_manager.config_path
+        configs = sorted(vii.get_experiment_configs(), key=lambda c: c.name)
+        selected = vii.app.view_state.settings_VS.selected_experiment_config
         return [
-            {"name": p.stem, "path": str(p), "selected": p == current} for p in configs
+            {"name": c.name, "path": c.path, "selected": c.path == selected}
+            for c in configs
         ]
 
     @Slot(str)
     def setExperimentConfig(self, path: str):
-        from pathlib import Path
-
-        vii.experiments_manager.config_path = Path(path)
+        set_experiment_config(path)
 
     # ── Data queries (non-mutating, no @action needed) ───────────
 
@@ -157,7 +175,7 @@ class AppViewModel(QObject):
     @Slot(result=list)
     def getScreenList(self) -> list:
         result = []
-        for i, s in enumerate(vii.app_state.screens):
+        for i, s in enumerate(vii.app.view_state.screens):
             display = f"Screen {i + 1}: {s.width}x{s.height}"
             result.append({"name": s.name, "displayName": display})
         return result
@@ -166,9 +184,14 @@ class AppViewModel(QObject):
 
     @Slot()
     def showScreenDebug(self):
-        from assistant.debug_actions import show_screen_debug
-
         show_screen_debug()
+
+    @Slot(str)
+    def fetchContextDebug(self, focus_mode: str):
+        """Fetch the context prompt for a focus mode from the server."""
+        fetch_raw_context_and_present(focus_mode).catch(
+            lambda exc: log.error("fetchContextDebug failed: %s", exc)
+        )
 
     # ── Health check ─────────────────────────────────────────────
 

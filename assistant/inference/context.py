@@ -80,7 +80,9 @@ class ContextManager:
     def items_reversed(self) -> Generator[ContextItem]:
         yield from reversed(self._get_sorted_items())
 
-    def items_as_qwen_chat_messages(self) -> MessageBatch:
+    def items_as_qwen_chat_messages(
+        self, focus_mode: str | None = None
+    ) -> MessageBatch:
         messages: list[dict[str, Any]] = []
         images: list[Image.Image] = []
         current: Optional[dict[str, Any]] = None
@@ -88,6 +90,17 @@ class ContextManager:
             # Skip pending request items (empty placeholders awaiting generation)
             if item.request and not item.request.get("result"):
                 continue
+
+            # Focus mode filtering
+            if focus_mode is not None:
+                item_mode = (item.metadata or {}).get("focus_mode")
+                visible_to = (item.metadata or {}).get("visible_to")
+                # Include if: item has no focus_mode (global), or matches active mode,
+                # or visible_to includes active mode
+                if item_mode is not None and item_mode != focus_mode:
+                    if not (isinstance(visible_to, list) and focus_mode in visible_to):
+                        continue
+
             role = "assistant" if item.origin == "assistant" else "user"
 
             if current is None or current["role"] != role:

@@ -11,7 +11,7 @@ from assistant.view_states.settings_modal import SettingsModalViewState
 from assistant.view_states.snippet import SnippetOverlayViewState
 
 
-class AppState(QObject):
+class AppViewState(QObject):
     """Container for top-level UI/application view states."""
 
     recording_overlay_VS_changed = Signal()

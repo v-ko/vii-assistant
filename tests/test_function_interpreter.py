@@ -16,7 +16,7 @@ def _make_hfi() -> HybridFunctionInterpreter:
     def crop_image(description: str) -> str:
         return f"image from: {description}"
 
-    @hfi.function(name="curator.push")
+    @hfi.function(name="curator_push")
     def curator_push(feed: str, content: dict, metadata: dict | None = None) -> str:
         return f"pushed to {feed}"
 
@@ -194,10 +194,10 @@ def test_execute_tool_calls_curator_push():
     hfi = _make_hfi()
     code = """content = {}
 content['text'] = crop_text('the title')
-curator.push('new_stuff', content)"""
+curator_push('new_stuff', content)"""
     results = hfi.execute_tool_calls(code)
-    assert len(results) == 2  # crop_text + curator.push
-    assert results[1][1] == "curator.push"
+    assert len(results) == 2  # crop_text + curator_push
+    assert results[1][1] == "curator_push"
     _, _, _, resolved_args = results[1]
     assert resolved_args[0] == "new_stuff"
     assert isinstance(resolved_args[1], dict)
@@ -206,11 +206,11 @@ curator.push('new_stuff', content)"""
 
 def test_execute_tool_calls_curator_push_with_metadata():
     hfi = _make_hfi()
-    code = """curator.push('my_feed', {'text': 'hello'}, {'title': 'A greeting'})"""
+    code = """curator_push('my_feed', {'text': 'hello'}, {'title': 'A greeting'})"""
     results = hfi.execute_tool_calls(code)
     assert len(results) == 1
     _, func_name, _, resolved_args = results[0]
-    assert func_name == "curator.push"
+    assert func_name == "curator_push"
     assert resolved_args[0] == "my_feed"
     assert resolved_args[1] == {"text": "hello"}
     assert resolved_args[2] == {"title": "A greeting"}
@@ -259,7 +259,7 @@ item['title'] = crop_text('the album title')
 Here is the cover image:
 
 item['cover'] = crop_image('the album cover')
-curator.push('new_stuff', item)
+curator_push('new_stuff', item)
 
 That should be everything!
 """
@@ -267,7 +267,7 @@ That should be everything!
     assert len(results) == 3
     assert results[0][1] == "crop_text"
     assert results[1][1] == "crop_image"
-    assert results[2][1] == "curator.push"
+    assert results[2][1] == "curator_push"
     assert hfi.variables["item"]["title"] == "text from: the album title"
 
 
@@ -280,11 +280,11 @@ content['title'] = crop_text['The song title "Words"']
 content['artist'] = crop_text['The artist name "Feint"']
 content['image'] = crop_image['The album cover for "Words"']
 
-curator.push('new_stuff', content)
+curator_push('new_stuff', content)
 """
     results = hfi.execute_tool_calls(code)
     assert len(results) == 1
-    assert results[0][1] == "curator.push"
+    assert results[0][1] == "curator_push"
     assert hfi.variables["content"]["title"] is None
     assert hfi.variables["content"]["artist"] is None
     assert hfi.variables["content"]["image"] is None

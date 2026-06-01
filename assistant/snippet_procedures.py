@@ -12,14 +12,13 @@ import asyncio
 import base64
 import io
 
-import httpx
 from fusion import get_logger
 from fusion.libs.model import dump_to_dict
 from fusion.libs.procedure import procedure
 from PIL import Image
 from PySide6.QtGui import QGuiApplication, QImage
 
-from assistant.constants import INFERENCE_HTTP_BASE
+from assistant.facade import vii
 from assistant.inference.context import ImageItem, TextItem
 from assistant.snippet_actions import show_snippet_overlays
 from assistant.utils.image_utils import qimage_to_pil
@@ -29,7 +28,7 @@ log = get_logger(__name__)
 
 def start_snippet() -> None:
     """Entry point from the route/hotkey. Shows overlays and waits for selection."""
-    show_snippet_overlays()
+    show_snippet_overlays(vii.app.view_state)
 
 
 @procedure
@@ -110,17 +109,11 @@ async def _get_image_description(pil_image: Image.Image) -> str | None:
     ]
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{INFERENCE_HTTP_BASE}/infer",
-                json={
-                    "context_data": context_data,
-                    "generation_params": {"max_new_tokens": 128, "do_sample": False},
-                },
-                timeout=30.0,
-            )
-        resp.raise_for_status()
-        data = resp.json()
+        data = await vii.inference_client.infer(
+            context_data,
+            {"max_new_tokens": 128, "do_sample": False},
+            timeout=30.0,
+        )
     except Exception as exc:
         log.error("Snippet /infer call failed: %s", exc)
         return None

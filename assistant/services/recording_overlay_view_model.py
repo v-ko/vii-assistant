@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Property, QObject, Signal
 
 if TYPE_CHECKING:
-    from assistant.app_state import AppState
+    from assistant.app_state import AppViewState
     from assistant.view_states.recording_overlay import RecordingOverlayViewState
 
 
@@ -22,7 +22,7 @@ class RecordingOverlayViewModel(QObject):
     ui_mode_changed = Signal()
     transcribing_active_changed = Signal()
 
-    def __init__(self, app_state: AppState, parent: QObject | None = None) -> None:
+    def __init__(self, app_state: AppViewState, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._bar_levels: list[float] = [0.0] * 10
         self._has_view_state: bool = False

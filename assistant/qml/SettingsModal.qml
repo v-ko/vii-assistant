@@ -9,13 +9,18 @@ Popup {
     anchors.centerIn: parent
     width: parent.width * 0.7
     height: parent.height * 0.8
-    visible: settingsModalVM ? settingsModalVM.visible : false
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     onClosed: { if (settingsModalVM) settingsModalVM.hide() }
-    onVisibleChanged: {
-        if (!visible && settingsModalVM && settingsModalVM.visible)
-            settingsModalVM.hide()
+
+    Connections {
+        target: settingsModalVM
+        function onVisible_changed() {
+            if (settingsModalVM.visible)
+                settingsModal.open()
+            else
+                settingsModal.close()
+        }
     }
 
     background: Rectangle {
@@ -80,20 +85,73 @@ Popup {
                     color: palette.text
                 }
 
+                // ── Input device selection ──
                 Label {
-                    text: "Upload an audio file to transcribe. Result will be copied to clipboard."
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
+                    text: "Input Device"
+                    font.bold: true
                     color: palette.text
+                }
+
+                ComboBox {
+                    id: inputDeviceCombo
+                    Layout.fillWidth: true
+                    model: settingsModalVM ? settingsModalVM.inputDeviceNames : ["System Default"]
+                    currentIndex: settingsModalVM ? settingsModalVM.selectedInputDeviceIndex : 0
+                    onActivated: function(index) {
+                        if (settingsModalVM) settingsModalVM.setInputDevice(index)
+                    }
+                }
+
+                // ── File transcription drop zone ──
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: dropContent.implicitHeight + 24
+                    radius: 6
+                    color: dropArea.containsDrag ? Qt.darker(palette.alternateBase, 1.1) : palette.alternateBase
+                    border.color: dropArea.containsDrag ? palette.highlight : palette.mid
+                    border.width: dropArea.containsDrag ? 2 : 1
+                    border.pixelAligned: true
+
+                    DropArea {
+                        id: dropArea
+                        anchors.fill: parent
+                        keys: ["text/uri-list"]
+                        onDropped: function(drop) {
+                            if (drop.hasUrls && drop.urls.length > 0) {
+                                var path = drop.urls[0].toString()
+                                if (path.startsWith("file://")) path = path.substring(7)
+                                settingsModalVM.transcribeFile(path)
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        id: dropContent
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+
+                        Label {
+                            text: "Drop an audio file here to transcribe (result copied to clipboard)"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            color: palette.text
+                        }
+
+                        Button {
+                            text: "Upload File"
+                            enabled: settingsModalVM ? !settingsModalVM.sampleFileInProgress : true
+                            onClicked: fileDialog.open()
+                        }
+                    }
                 }
 
                 RowLayout {
                     spacing: 12
 
                     Button {
-                        text: "Upload File"
-                        enabled: settingsModalVM ? !settingsModalVM.sampleFileInProgress : true
-                        onClicked: fileDialog.open()
+                        text: "Open Recordings Folder"
+                        onClicked: settingsModalVM.openRecordingsFolder()
                     }
 
                     ProgressBar {

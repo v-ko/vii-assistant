@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 from base64 import b64encode
 from enum import Enum
 from io import BytesIO
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 from fusion.storage.change import Change
+from fusion.storage.delta import Delta
 from PIL import Image
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage
@@ -17,19 +15,17 @@ from assistant.experiments.data_loaders import (
     DataLoader,
     ScreenGrabDataLoader,
 )
+from assistant.facade import vii
 from assistant.image_ops import resize_to_target
 from assistant.inference.context import ImageItem, TextItem
+from assistant.inference.context_store import is_custom_op
+from assistant.model.experiment_config import ExperimentConfig
 from assistant.model_configs import get_resolution_for_model
 from assistant.util import get_logger
 from assistant.view_states.overlay import OverlayMode
 
-if TYPE_CHECKING:
-    from assistant.facade import Facade
-
 log = get_logger(__name__)
 
-EXPERIMENTS_DIR = Path(__file__).parent / "experiments"
-DEFAULT_EXPERIMENT_CONFIG = EXPERIMENTS_DIR / "element_localization.json"
 INFERENCE_TIMEOUT_MS = 120_000  # 2 minutes
 
 
@@ -40,36 +36,35 @@ class ExperimentState(Enum):
 
 
 class ExperimentsManager:
-    def __init__(self, facade_ref: Facade):
-        self._facade = facade_ref
+    def __init__(self):
         self._state = ExperimentState.IDLE
         self._current_step = 0
         self._waiting_for_response = False
         self._pending_request_id: str | None = None
         self._results: list[dict] = []
-        self._config: dict = {}
+        self._config: ExperimentConfig | None = None
         self._data_loader: DataLoader | None = None
-        self._config_path: Path = DEFAULT_EXPERIMENT_CONFIG
         self._timeout_timer = QTimer()
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(
             lambda: self._abort_step("Inference timed out")
         )
 
-    @property
-    def config_path(self) -> Path:
-        return self._config_path
+        # Register for context store changes (inference results)
+        store = vii.project_manager.context_manager._store
+        store.add_on_changes_callback(self._on_context_store_changed)
 
-    @config_path.setter
-    def config_path(self, value: Path) -> None:
-        self._config_path = value
-
-    def _load_config(self) -> dict:
-        # TODO: load once at experiment start when adding full play mode
-        with open(self._config_path) as f:
-            self._config = json.load(f)
-        log.info(f"Loaded experiment config: {self._config_path.name}")
-        return self._config
+    def start(self, config: ExperimentConfig) -> None:
+        """Start a new experiment run with the given config."""
+        if self._state == ExperimentState.RUNNING:
+            raise RuntimeError("Experiment already running; stop it first")
+        self._config = config
+        self._current_step = 0
+        self._results = []
+        self._data_loader = self._create_data_loader(config)
+        self._state = ExperimentState.RUNNING
+        vii.app.view_state.overlay_VS.mode = OverlayMode.EXPERIMENT
+        log.info(f"Started experiment: {config.name}")
 
     @property
     def state(self) -> ExperimentState:
@@ -85,12 +80,12 @@ class ExperimentsManager:
         self._timeout_timer.stop()
         self._waiting_for_response = False
         self._pending_request_id = None
-        self._facade.app_state.overlay_VS.clear()
+        vii.app.view_state.overlay_VS.clear()
         self._state = ExperimentState.IDLE
 
-    def _create_data_loader(self, config: dict) -> DataLoader:
+    def _create_data_loader(self, config: ExperimentConfig) -> DataLoader:
         """Instantiate the data loader specified in the experiment config."""
-        loader_name = config.get("data_loader")
+        loader_name = config.data_loader
         if not loader_name:
             raise ValueError("Experiment config must specify 'data_loader'")
         loader_cls = DATA_LOADER_REGISTRY.get(loader_name)
@@ -102,25 +97,24 @@ class ExperimentsManager:
 
         if loader_cls is ScreenGrabDataLoader:
             return ScreenGrabDataLoader(
-                prompt=config["prompt"],
+                prompt=config.prompt,
             )
 
         raise ValueError(f"No construction logic for data_loader '{loader_name}'")
 
     def step(self):
+        """Advance the running experiment by one step."""
+        if self._state not in (ExperimentState.RUNNING, ExperimentState.FINISHED):
+            raise RuntimeError("No experiment running; call start() first")
         if self._waiting_for_response:
             log.warning("Still waiting for response from previous step")
             return
 
-        overlay_vs = self._facade.app_state.overlay_VS
-
-        if self._state in (ExperimentState.IDLE, ExperimentState.FINISHED):
+        # Allow stepping again after FINISHED (re-entering from last step)
+        if self._state == ExperimentState.FINISHED:
             self._state = ExperimentState.RUNNING
-            overlay_vs.mode = OverlayMode.EXPERIMENT
-            # Load config and create data loader at experiment start
-            self._load_config()
-            self._data_loader = self._create_data_loader(self._config)
 
+        overlay_vs = vii.app.view_state.overlay_VS
         log.info(f"Step {self._current_step}")
 
         # Clear previous shapes
@@ -162,16 +156,17 @@ class ExperimentsManager:
 
     def _submit_step(self, image: Image.Image, prompt: str):
         self._clear_context()
-        controller = self._facade.context_controller
+        ctx = vii.project_manager.context_manager
 
+        assert self._config is not None
         config = self._config
 
         # Resolve target resolution (model default or experiment override)
         res_override = None
-        if config.get("resolution"):
-            res_override = tuple(config["resolution"])
+        if config.resolution:
+            res_override = tuple(config.resolution)
 
-        model_key = self._facade.app_state.settings_VS.selected_model
+        model_key = vii.get_config().selected_model
         target_w, target_h = get_resolution_for_model(model_key, override=res_override)
         processed_img, meta = resize_to_target(image, target_w, target_h)
         buf = BytesIO()
@@ -179,31 +174,31 @@ class ExperimentsManager:
         encoded = b64encode(buf.getvalue()).decode("ascii")
 
         img_item = ImageItem()
-        img_item.position = controller.next_position()
+        img_item.position = ctx.next_position()
         img_item.image_b64 = encoded
         img_item.width = meta["width"]
         img_item.height = meta["height"]
         img_item.size = meta["width"] * meta["height"]
         img_item.origin = "experiment"
-        controller.create(img_item)
+        ctx.insert(img_item)
 
         # Add prompt
         text_item = TextItem()
-        text_item.position = controller.next_position()
+        text_item.position = ctx.next_position()
         text_item.text = prompt
         text_item.origin = "user"
-        controller.create(text_item)
+        ctx.insert(text_item)
 
         # Trigger inference
         request_item = TextItem()
-        request_item.position = controller.next_position()
+        request_item.position = ctx.next_position()
         request_item.origin = "assistant"
         request_item.request = {
-            "stream": bool(config.get("stream", True)),
-            "generation_params": dict(config.get("generation_params") or {}),
-            "chat_template_params": dict(config.get("chat_template_params") or {}),
+            "stream": config.stream,
+            "generation_params": config.generation_params,
+            "chat_template_params": config.chat_template_params,
         }
-        controller.create(request_item)
+        ctx.insert(request_item)
 
         self._pending_request_id = request_item.id
         self._waiting_for_response = True
@@ -220,45 +215,53 @@ class ExperimentsManager:
         self._waiting_for_response = False
         self._pending_request_id = None
         self._clear_context()
-        self._facade.app_state.overlay_VS.clear()
+        vii.app.view_state.overlay_VS.clear()
         log.info("Experiment stopped")
 
     def _clear_context(self):
-        self._facade.context_controller.clear()
+        vii.project_manager.context_manager.clear()
 
-    def _on_inference_update(self, change: Change):
-        """Called by facade's on_context_store_changes for each change."""
+    def _on_context_store_changed(
+        self, delta: Delta, origin: str | None = None
+    ) -> None:
+        """Check for completed inference on the pending request."""
         if not self.running or not self._waiting_for_response:
             return
 
-        # Only care about updates to the request entity we're waiting on
-        if change.entity_id != self._pending_request_id:
+        for key, change_data in delta.asdict().items():
+            if is_custom_op(key):
+                continue
+            change = Change(*change_data)
+            if change.entity_id != self._pending_request_id:
+                continue
+            if not change.forward_component:
+                continue
+            request = change.forward_component.get("request")
+            if not isinstance(request, dict):
+                continue
+            result = request.get("result")
+            if not result:
+                continue  # still in progress
+
+            if result != "success":
+                self._abort_step(f"Inference failed with result={result}")
+                return
+
+            # Fetch full entity to get the complete response text
+            assert self._pending_request_id is not None
+            entity = vii.project_manager.context_manager.store.item(
+                self._pending_request_id
+            )
+            response_text = (
+                entity.text if entity and isinstance(entity, TextItem) else ""
+            )
+            self._on_inference_complete(response_text)
             return
 
-        if not change.forward_component:
-            return
-        # Check if this is a completed inference response
-        request = change.forward_component.get("request")
-        if not isinstance(request, dict):
-            return
-
-        result = request.get("result")
-        if not result:
-            return  # still in progress
-
-        if result != "success":
-            self._abort_step(f"Inference failed with result={result}")
-            return
-
+    def _on_inference_complete(self, response_text: str) -> None:
+        """Handle a successfully completed inference response."""
         self._timeout_timer.stop()
         self._waiting_for_response = False
-
-        # Fetch the full entity from the store (forward_component only has
-        # the diff, which may lack content when streaming was used)
-        assert self._pending_request_id is not None
-        entity = self._facade.context_manager.store.item(self._pending_request_id)
-        response_text = entity.text if entity and isinstance(entity, TextItem) else ""
-
         self._pending_request_id = None
 
         self._results.append(
@@ -273,4 +276,4 @@ class ExperimentsManager:
 
         self._current_step += 1
         self._state = ExperimentState.FINISHED
-        self._facade.app_state.overlay_VS.dimmed = True
+        vii.app.view_state.overlay_VS.dimmed = True

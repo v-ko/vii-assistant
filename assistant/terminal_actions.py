@@ -6,10 +6,6 @@ The QML ViewModel calls these — it never mutates state directly.
 
 from __future__ import annotations
 
-import json
-import threading
-import urllib.error
-import urllib.request
 from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
@@ -21,16 +17,16 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 
 from assistant.actions import add_user_message, ocr_clipboard
-from assistant.constants import INFERENCE_HTTP_BASE
-from assistant.facade import vii
+from assistant.facade import raise_on_session_inactive, vii
 from assistant.image_ops import resize_to_target
 from assistant.inference.context import ImageItem
+from assistant.model.experiment_config import ExperimentConfig
 from assistant.model_configs import (
-    AVAILABLE_MODELS,
     MODEL_SPECS,
     get_resolution_for_model,
 )
 from assistant.services.segment_parsing import hfi
+from assistant.util import get_screen_by_name
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 
@@ -41,7 +37,7 @@ if TYPE_CHECKING:
 
 
 def _ensure_model_loaded() -> None:
-    state = vii.app_state.settings_VS.server_model_state
+    state = vii.app.view_state.settings_VS.server_model_state
     if state != "loaded":
         raise RuntimeError(
             f"Cannot proceed: model is not loaded (state={state!r}). "
@@ -55,8 +51,10 @@ def _ensure_model_loaded() -> None:
 @action("terminal.ensure_session")
 def ensure_session() -> None:
     """Fire-and-forget session start (returns Task internally)."""
-    if vii.app_state.settings_VS.session_state != "started":
-        vii.project_manager.start_session(screen_name=vii.app_state.settings_VS.screen)
+    if vii.app.view_state.settings_VS.session_state != "started":
+        capture = vii.app.view_state.capture_screen_info
+        screen_name = capture.name if capture else vii.get_config().capture_screen
+        vii.project_manager.start_session(screen_name=screen_name)
 
 
 @action("terminal.new_session")
@@ -85,10 +83,13 @@ def submit_message(text: str) -> None:
 
 @action("terminal.attach_screen")
 def attach_screen() -> None:
-    try:
-        screen = vii.current_watched_screen()
-    except Exception as e:
-        log.warning("Cannot attach screen: %s", e)
+    capture = vii.app.view_state.capture_screen_info
+    if capture is None:
+        log.warning("Cannot attach screen: no capture screen configured")
+        return
+    screen = get_screen_by_name(capture.name)
+    if screen is None:
+        log.warning("Cannot attach screen: screen '%s' not found", capture.name)
         return
     pixmap = take_screenshot(screen)
     if pixmap is None:
@@ -112,9 +113,10 @@ def ocr_clipboard_action() -> None:
 
 
 def _add_image_item(pixmap, source: str) -> None:
-    controller = vii.context_controller
+    raise_on_session_inactive()
+    ctx = vii.project_manager.context_manager
     pil = qpixmap_to_pil(pixmap)
-    model_key = vii.app_state.settings_VS.selected_model
+    model_key = vii.get_config().selected_model
     spec = MODEL_SPECS.get(model_key, {})
     if not spec.get("vision"):
         log.warning(
@@ -132,13 +134,13 @@ def _add_image_item(pixmap, source: str) -> None:
         raise RuntimeError("Image encoding failed")
 
     item = ImageItem()
-    item.position = controller.next_position()
+    item.position = ctx.next_position()
     item.image_b64 = encoded
     item.width = meta["width"]
     item.height = meta["height"]
     item.size = meta["width"] * meta["height"]
     item.origin = source
-    controller.create(item)
+    ctx.insert(item)
 
 
 # ── Settings actions ─────────────────────────────────────────────
@@ -146,17 +148,45 @@ def _add_image_item(pixmap, source: str) -> None:
 
 @action("terminal.set_screen")
 def set_screen(screen_name: str) -> None:
-    settings = vii.app_state.settings_VS
-    if settings.screen != screen_name:
-        settings.screen = screen_name
+    cfg = vii.get_config()
+    if cfg.capture_screen == screen_name:
+        return
+    cfg.capture_screen = screen_name
+    vii.update_config(cfg)
 
 
 @action("terminal.set_model")
 def set_model(model_key: str) -> None:
-    settings = vii.app_state.settings_VS
-    settings.selected_model = model_key
+    # Persist to config store (projector updates VS)
+    cfg = vii.get_config()
+    cfg.selected_model = model_key
+    vii.update_config(cfg)
+
     # Fire the HTTP request in a background thread
-    threading.Thread(target=_do_model_load, args=(model_key,), daemon=True).start()
+    def _on_model_result(connected, model_state, mk):
+        vii.app.app_view_model.health_check_done.emit(connected, model_state, mk)
+
+    vii.inference_client.load_model_bg(model_key, _on_model_result)
+
+
+@action("terminal.set_max_new_tokens")
+def set_max_new_tokens(value: int) -> None:
+    value = max(1, value)
+    cfg = vii.get_config()
+    cfg.max_new_tokens = value
+    vii.update_config(cfg)
+
+
+@action("terminal.set_input_device")
+def set_input_device(device_id: str) -> None:
+    cfg = vii.get_config()
+    cfg.input_device = device_id
+    vii.update_config(cfg)
+
+
+@action("terminal.show_context_debug")
+def show_context_debug(focus_mode: str, text: str) -> None:
+    vii.app.app_view_model.context_debug_ready.emit(focus_mode, text)
 
 
 @action("terminal.add_tool_prompt")
@@ -164,7 +194,7 @@ def add_tool_prompt() -> None:
     tool_prompt = hfi.generate_tool_prompt()
     if not tool_prompt:
         return
-    settings = vii.app_state.settings_VS
+    settings = vii.app.view_state.settings_VS
     current = settings.system_prompt_markdown
     separator = "\n\n" if current.strip() else ""
     settings.system_prompt_markdown = current + separator + tool_prompt
@@ -172,9 +202,26 @@ def add_tool_prompt() -> None:
 
 @action("terminal.open_app_config")
 def open_app_config() -> None:
-    config_path = vii.config.config_file
+    from assistant.services.config_file_adapter import CONFIG_FILE
+
+    config_path = CONFIG_FILE
     if config_path.exists():
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+
+@action("terminal.open_focus_mode_prompt")
+def open_focus_mode_prompt(mode_name: str) -> None:
+    from assistant.inference.focus_modes import FOCUS_MODES
+
+    mode_config = FOCUS_MODES.get(mode_name)
+    if mode_config is None:
+        return
+    prompt_path = mode_config.system_prompt_path()
+    # Create file if it doesn't exist
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    if not prompt_path.exists():
+        prompt_path.write_text("", encoding="utf-8")
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(prompt_path)))
 
 
 # ── Experiment actions ───────────────────────────────────────────
@@ -183,7 +230,17 @@ def open_app_config() -> None:
 @action("terminal.step_experiment")
 def step_experiment() -> None:
     _ensure_model_loaded()
-    vii.experiments_manager.step()
+    mgr = vii.experiments_manager
+    if not mgr.running:
+        selected = vii.app.view_state.settings_VS.selected_experiment_config
+        if not selected:
+            raise RuntimeError("No experiment config selected in settings")
+        config_id = ExperimentConfig.id_for_path(Path(selected).stem)
+        config = vii.get_experiment_config(config_id)
+        if config is None:
+            raise RuntimeError(f"Experiment config not found in store: {config_id}")
+        mgr.start(config)
+    mgr.step()
 
 
 @action("terminal.stop_experiment")
@@ -193,26 +250,49 @@ def stop_experiment() -> None:
 
 @action("terminal.open_experiment_config")
 def open_experiment_config() -> None:
-    config_path = vii.experiments_manager.config_path
-    if config_path.exists():
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
-
-
-# ── Toggle terminal ──────────────────────────────────────────────
-
-
-@action("terminal.toggle")
-def toggle_terminal() -> None:
-    qt_app = vii.qt_app
-    root = qt_app.terminal_window
-    if root and root.property("terminalVisible"):
-        qt_app.hide_terminal()
-        if qt_app.overlay:
-            qt_app.overlay.hide()
+    selected = vii.app.view_state.settings_VS.selected_experiment_config
+    if not selected:
+        return
+    path = Path(selected)
+    if path.exists():
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     else:
-        qt_app.show_terminal()
-        if qt_app.overlay:
-            qt_app.overlay.show()
+        log.error("Experiment config file not found: %s", path)
+
+
+# ── Execution mode ───────────────────────────────────────────────
+
+
+@action("settings.set_execution_mode")
+def set_execution_mode(mode: str) -> None:
+    vii.app.view_state.settings_VS.execution_mode = mode
+
+
+@action("settings.set_experiment_config")
+def set_experiment_config(path: str) -> None:
+    vii.app.view_state.settings_VS.selected_experiment_config = path
+
+
+# ── Settings modal visibility ─────────────────────────────────────
+
+
+@action("settings_modal.set_visible")
+def set_settings_modal_visible(visible: bool) -> None:
+    vii.app.view_state.settings_modal_VS.visible = visible
+
+
+# ── Terminal visibility ───────────────────────────────────────────
+
+
+@action("set_terminal_visible")
+def set_terminal_visible(visible: bool) -> None:
+    vii.app.terminal_state.visible = visible
+
+
+@action("terminal.toggle_terminal")
+def toggle_terminal() -> None:
+    terminal_state = vii.app.terminal_state
+    set_terminal_visible(not terminal_state.visible)
 
 
 # ── Health check ──
@@ -221,7 +301,7 @@ def toggle_terminal() -> None:
 @action("health.apply_result")
 def apply_health_result(connected: bool, model_state: str, model_key: str) -> None:
     """Apply health check result to settings state and auto-start session."""
-    settings = vii.app_state.settings_VS
+    settings = vii.app.view_state.settings_VS
     prev_state = settings.server_model_state
     settings.server_model_state = model_state
     settings.server_model_key = model_key
@@ -229,51 +309,11 @@ def apply_health_result(connected: bool, model_state: str, model_key: str) -> No
     # Auto-start session when model becomes available
     if model_state == "loaded" and prev_state != "loaded":
         if settings.session_state != "started":
-            vii.project_manager.start_session(screen_name=settings.screen)
+            capture = vii.app.view_state.capture_screen_info
+            screen_name = capture.name if capture else ""
+            vii.project_manager.start_session(screen_name=screen_name)
 
 
 def schedule_health_check(callback) -> None:
     """Run health check in background thread, call callback with results."""
-    threading.Thread(target=_do_health_check, args=(callback,), daemon=True).start()
-
-
-def _do_health_check(callback) -> None:
-    url = f"{INFERENCE_HTTP_BASE}/status"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        model_info = data.get("model", {})
-        model_state = model_info.get("state", "unknown")
-        model_key = model_info.get("model_key") or ""
-        callback(True, model_state, model_key)
-    except Exception:
-        callback(False, "unknown", "")
-
-
-def _do_model_load(model_key: str) -> None:
-    url = f"{INFERENCE_HTTP_BASE}/model"
-    if model_key == "none":
-        req = urllib.request.Request(url, method="DELETE")
-    else:
-        payload = json.dumps({"model_key": model_key}).encode()
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-        model_info = data.get("model", {})
-        model_state = model_info.get("state", "unknown")
-        mk = model_info.get("model_key") or ""
-        # Marshal result back to main thread via the view model signal
-        vii.qt_app.app_view_model.health_check_done.emit(True, model_state, mk)
-    except Exception:
-        _do_health_check(
-            lambda connected, ms, mk: vii.qt_app.app_view_model.health_check_done.emit(
-                connected, ms, mk
-            )
-        )
+    vii.inference_client.check_status_bg(callback)

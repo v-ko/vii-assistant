@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
     set_main_loop(AsyncioMainLoop())
     app.state.backend: InferenceBackend = ModelManager()
     app.state.transcription_service = TranscriptionService()
+    app.state.active_service: InferenceService | None = None
     try:
         yield
     finally:
@@ -136,6 +137,123 @@ async def infer(body: InferRequest) -> dict[str, Any]:
     return result
 
 
+@app.get("/context/{focus_mode}")
+async def get_raw_context(focus_mode: str) -> dict[str, Any]:
+    """Return the structured context for a focus mode.
+
+    The response includes full messages with image metadata.
+    The client is responsible for formatting display text.
+    """
+    service: InferenceService | None = app.state.active_service
+    if service is None:
+        return {"status": "error", "error_message": "No active session"}
+
+    backend: InferenceBackend = app.state.backend
+    if backend.state != "loaded":
+        return {"status": "error", "error_message": "Model not loaded"}
+
+    ctx = service.context
+    batch = ctx.items_as_qwen_chat_messages(focus_mode=focus_mode)
+    if not batch.messages:
+        return {
+            "status": "ok",
+            "prompt": "",
+            "messages": [],
+            "message_count": 0,
+            "image_count": 0,
+        }
+
+    # Enrich image placeholders with metadata (dimensions from resolved PIL images)
+    enriched_messages = _enrich_image_metadata(batch.messages, batch.images)
+
+    # Apply chat template
+    prompt_text: str | None = None
+    try:
+        if isinstance(backend, ModelManager) and backend._processor is not None:
+            compiled = compile_qwen_context(
+                None, backend._processor, messages_override=batch
+            )
+            image_token_counts = _get_image_token_counts(
+                compiled.processor_inputs, backend._processor
+            )
+            prompt_text = _replace_image_pads_with_metadata(
+                compiled.prompt, batch.images, image_token_counts
+            )
+    except Exception as exc:
+        log.warning("Could not apply chat template: %s", exc)
+
+    return {
+        "status": "ok",
+        "prompt": prompt_text or "",
+        "messages": enriched_messages,
+        "message_count": len(batch.messages),
+        "image_count": len(batch.images),
+    }
+
+
+def _get_image_token_counts(
+    processor_inputs: dict[str, Any], processor: Any
+) -> list[int]:
+    """Count image_pad tokens per image from the tokenized input_ids."""
+    input_ids = processor_inputs.get("input_ids")
+    if input_ids is None:
+        return []
+
+    tokenizer = processor.tokenizer
+    pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
+    vision_start_id = tokenizer.convert_tokens_to_ids("<|vision_start|>")
+    vision_end_id = tokenizer.convert_tokens_to_ids("<|vision_end|>")
+
+    ids = input_ids[0].tolist()  # first (only) batch item
+    counts: list[int] = []
+    i = 0
+    while i < len(ids):
+        if ids[i] == vision_start_id:
+            count = 0
+            i += 1
+            while i < len(ids) and ids[i] != vision_end_id:
+                if ids[i] == pad_id:
+                    count += 1
+                i += 1
+            counts.append(count)
+        i += 1
+    return counts
+
+
+def _replace_image_pads_with_metadata(
+    prompt: str, images: list[Any], token_counts: list[int]
+) -> str:
+    """Replace <|vision_start|><|image_pad|><|vision_end|> sequences with image metadata."""
+    pattern = r"<\|vision_start\|>((<\|image_pad\|>)+)<\|vision_end\|>"
+    img_idx = [0]
+
+    def _replacer(match: re.Match) -> str:
+        idx = img_idx[0]
+        img_idx[0] += 1
+        img = images[idx] if idx < len(images) else None
+        tok_count = token_counts[idx] if idx < len(token_counts) else "?"
+        if img is not None:
+            w, h = img.size
+            return f"<|vision_start|>[image {w}x{h}, {tok_count} tokens]<|vision_end|>"
+        return match.group(0)
+
+    return re.sub(pattern, _replacer, prompt)
+
+
+def _enrich_image_metadata(messages: list[dict], images: list[Any]) -> list[dict]:
+    """Add width/height to image content entries from resolved PIL images."""
+    result = copy.deepcopy(messages)
+    img_idx = 0
+    for msg in result:
+        for part in msg.get("content", []):
+            if part.get("type") == "image" and img_idx < len(images):
+                w, h = images[img_idx].size
+                part["width"] = w
+                part["height"] = h
+                img_idx += 1
+    return result
+
+
 class TranscribeRequest(BaseModel):
     model_type: str = "parakeet-tdt-0.6b-v3-int8"
     model_dir: str | None = None
@@ -199,6 +317,7 @@ async def context_ws(websocket: WebSocket) -> None:
     log.info("WS accepted session=%s", session_id)
 
     service = InferenceService(backend, session_id=session_id)
+    app.state.active_service = service
     store: ContextStore = service.context._store
 
     # --- Wire inference trigger on remote changes ---
@@ -276,4 +395,6 @@ async def context_ws(websocket: WebSocket) -> None:
         log.error("WS session=%s error: %s", session_id, exc, exc_info=True)
     finally:
         store.remove_on_changes_callback(_on_remote_changes)
+        if app.state.active_service is service:
+            app.state.active_service = None
         log.info("WS session=%s ended", session_id)

@@ -16,7 +16,7 @@ import httpx
 import numpy as np
 from fusion import get_logger
 
-from assistant.constants import INFERENCE_HTTP_BASE
+from assistant.facade import vii
 from assistant.recording_actions import set_transcribing_active
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
@@ -26,7 +26,6 @@ from assistant.transcription import TranscriptionResult, WordTimestamp
 
 log = get_logger(__name__)
 
-TRANSCRIBE_ENDPOINT = f"{INFERENCE_HTTP_BASE}/transcribe"
 TRANSCRIBE_TIMEOUT_S = 120.0  # per-chunk timeout
 
 
@@ -143,24 +142,14 @@ class TranscriptionOrchestrator:
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
         audio_b64 = base64.b64encode(audio_float32.tobytes()).decode("ascii")
 
-        payload = {
-            "model_type": "parakeet-tdt-0.6b-v3-int8",
-            "sample_rate": 16000,
-            "audio_b64": audio_b64,
-        }
-
         log.debug(
             "Sending chunk to server (start=%.1fs, samples=%d)",
             chunk_start_time,
             len(audio_int16),
         )
-        response = await client.post(TRANSCRIBE_ENDPOINT, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        if data.get("status") != "success":
-            error_msg = data.get("error_message", "Unknown server error")
-            raise RuntimeError(f"Transcription server error: {error_msg}")
+        data = await vii.inference_client.transcribe(
+            audio_b64, sample_rate=16000, client=client
+        )
 
         words = [
             WordTimestamp(word=w["word"], start=w["start"], end=w["end"])

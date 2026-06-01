@@ -16,6 +16,8 @@ from PySide6.QtCore import Property, QObject, QRect, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QImage, QScreen
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 
+from assistant.facade import vii
+from assistant.snippet_actions import hide_snippet_overlays, show_snippet_overlays
 from assistant.util import get_logger
 
 log = get_logger(__name__)
@@ -47,16 +49,12 @@ class SnippetViewModel(QObject):
     @Slot()
     def activate(self):
         """Trigger the show_snippet_overlays action."""
-        from assistant.snippet_actions import show_snippet_overlays
-
-        show_snippet_overlays()
+        show_snippet_overlays(vii.app.view_state)
 
     @Slot()
     def cancel(self):
         """Cancel snippet selection via the action."""
-        from assistant.snippet_actions import hide_snippet_overlays
-
-        hide_snippet_overlays()
+        hide_snippet_overlays(vii.app.view_state)
 
     @Slot(str, float, float, float, float)
     def region_selected(self, screen_name: str, x: float, y: float, w: float, h: float):
@@ -74,9 +72,7 @@ class SnippetViewModel(QObject):
         log.info("Region selected on screen '%s': %d,%d %dx%d", screen_name, x, y, w, h)
 
         # Hide overlays first so they don't appear in the capture
-        from assistant.snippet_actions import hide_snippet_overlays
-
-        hide_snippet_overlays()
+        hide_snippet_overlays(vii.app.view_state)
 
         # Delay capture to let the overlay windows disappear
         QTimer.singleShot(
@@ -88,9 +84,7 @@ class SnippetViewModel(QObject):
 
         Creates or destroys QML overlay windows to match the view state list.
         """
-        from assistant.facade import vii
-
-        overlays = vii.app_state.snippet_overlays
+        overlays = vii.app.view_state.snippet_overlays
         new_active = len(overlays) > 0
 
         log.info(
@@ -113,9 +107,7 @@ class SnippetViewModel(QObject):
 
     def _create_overlay_windows(self, overlays):
         """Create one QML overlay window per view state."""
-        from assistant.facade import vii
-
-        engine: QQmlApplicationEngine = vii.qt_app.engine
+        engine: QQmlApplicationEngine = vii.app.engine
         qml_file = QML_DIR / "SnippetOverlay.qml"
         self._component = QQmlComponent(engine, QUrl.fromLocalFile(str(qml_file)))
 

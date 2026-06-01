@@ -17,11 +17,32 @@ Rectangle {
         anchors.margins: 8
         spacing: 6
 
-        Label {
-            text: "Context"
-            font.bold: true
-            font.pixelSize: 14
-            color: palette.text
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            Label {
+                text: "Context"
+                font.bold: true
+                font.pixelSize: 14
+                color: palette.text
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "main"
+                font.pixelSize: 10
+                implicitHeight: 22
+                onClicked: appVM.fetchContextDebug("main")
+            }
+
+            Button {
+                text: "localization"
+                font.pixelSize: 10
+                implicitHeight: 22
+                onClicked: appVM.fetchContextDebug("localization")
+            }
         }
 
         // Empty state
@@ -46,40 +67,41 @@ Rectangle {
             visible: count > 0
             model: contextModel
 
-            // Auto-scroll: follow the bottom while userAtBottom is true.
-            // Only user-initiated scrolling (drag/flick/wheel/scrollbar) can toggle it off.
-            property bool userAtBottom: true
-            property real _bottomThreshold: 30  // px tolerance
+            // Auto-scroll: stays at bottom unless user scrolls up.
+            property bool followTail: true
+            property real _bottomThreshold: 30  // px
 
-            onContentYChanged: {
-                if (!moving && !vScrollBar.pressed) return
-                let atEnd = atYEnd || (contentHeight - contentY - height < _bottomThreshold)
-                if (userAtBottom !== atEnd) {
-                    userAtBottom = atEnd
-                    console.log("[QML scroll] userAtBottom =", userAtBottom)
-                }
+            // Detect user scroll intent when movement finishes
+            onMovementEnded: {
+                followTail = atYEnd || (contentHeight - contentY - height < _bottomThreshold)
             }
 
+            // Also detect scrollbar drag
             ScrollBar.vertical: ScrollBar {
                 id: vScrollBar
                 policy: ScrollBar.AlwaysOn
+                onPressedChanged: {
+                    if (!pressed) {
+                        contextListView.followTail = contextListView.atYEnd ||
+                            (contextListView.contentHeight - contextListView.contentY - contextListView.height < contextListView._bottomThreshold)
+                    }
+                }
             }
 
-            onCountChanged: {
-                userAtBottom = true
-                Qt.callLater(function() { contextListView.positionViewAtEnd() })
+            // When content grows (new items, streaming text, delegate layout),
+            // follow the tail. Safe with incremental model ops — no loop.
+            onContentHeightChanged: {
+                if (followTail && contentHeight > height) {
+                    positionViewAtEnd()
+                }
             }
 
             Connections {
                 target: contextModel
+                // Full model reset (rare: session switch)
                 function onModelReset() {
-                    contextListView.userAtBottom = true
+                    contextListView.followTail = true
                     Qt.callLater(function() { contextListView.positionViewAtEnd() })
-                }
-                function onDataChanged() {
-                    if (contextListView.userAtBottom) {
-                        Qt.callLater(function() { contextListView.positionViewAtEnd() })
-                    }
                 }
             }
 
@@ -93,9 +115,11 @@ Rectangle {
                 required property string itemId
                 required property string contentKind
                 required property string text
+                required property string displayText
                 required property string imageB64
                 required property string requestSummary
                 required property string origin
+                required property string focusMode
 
                 Loader {
                     id: delegateLoader
@@ -110,8 +134,10 @@ Rectangle {
 
                     onLoaded: {
                         if (item) {
+                            if ("displayText" in item) item.displayText = Qt.binding(function() { return delegateRoot.displayText })
                             if ("text" in item) item.text = Qt.binding(function() { return delegateRoot.text })
                             if ("origin" in item) item.origin = Qt.binding(function() { return delegateRoot.origin })
+                            if ("focusMode" in item) item.focusMode = Qt.binding(function() { return delegateRoot.focusMode })
                             if ("requestSummary" in item) item.requestSummary = Qt.binding(function() { return delegateRoot.requestSummary })
                             if ("imageB64" in item) item.imageB64 = Qt.binding(function() { return delegateRoot.imageB64 })
                         }
@@ -163,8 +189,9 @@ Rectangle {
 
         Rectangle {
             id: textItem
-            property string text: ""
+            property string displayText: ""
             property string origin: ""
+            property string focusMode: ""
             property string requestSummary: ""
 
             implicitHeight: textCol.implicitHeight + 12
@@ -181,24 +208,44 @@ Rectangle {
                 anchors.margins: 6
                 spacing: 2
 
-                Label {
-                    text: textItem.origin || "assistant"
-                    font.bold: true
-                    font.pixelSize: 11
-                    color: palette.dark
+                RowLayout {
+                    spacing: 6
                     visible: textItem.origin !== ""
+
+                    Label {
+                        text: textItem.origin || "assistant"
+                        font.bold: true
+                        font.pixelSize: 11
+                        color: palette.dark
+                    }
+
+                    Rectangle {
+                        visible: textItem.focusMode !== "" && textItem.focusMode !== "main"
+                        color: Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.25)
+                        radius: 3
+                        implicitWidth: modeLabel.implicitWidth + 8
+                        implicitHeight: modeLabel.implicitHeight + 2
+
+                        Label {
+                            id: modeLabel
+                            anchors.centerIn: parent
+                            text: textItem.focusMode
+                            font.pixelSize: 10
+                            color: palette.text
+                        }
+                    }
                 }
 
                 TextEdit {
                     text: {
-                        let t = textItem.text.trim()
+                        let t = textItem.displayText.trim()
                         if (t.length === 0 && textItem.requestSummary) return "(…)"
                         return t
                     }
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
                     color: palette.text
-                    font.italic: textItem.text.trim().length === 0 && textItem.requestSummary !== ""
+                    font.italic: textItem.displayText.trim().length === 0 && textItem.requestSummary !== ""
                     readOnly: true
                     selectByMouse: true
                     selectionColor: palette.highlight
@@ -385,6 +432,78 @@ Rectangle {
                     }
                 }
             }
+        }
+    }
+
+    // ── Context debug modal ─────────────────────────────────────
+    Popup {
+        id: contextDebugPopup
+        anchors.centerIn: parent
+        width: contextRoot.width * 0.9
+        height: contextRoot.height * 0.85
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            color: palette.window
+            border.color: palette.mid
+            border.width: 1
+            radius: 8
+        }
+
+        property string title: ""
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 6
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+
+                Label {
+                    text: "Context: " + contextDebugPopup.title
+                    font.bold: true
+                    font.pixelSize: 13
+                    color: palette.text
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "✕"
+                    flat: true
+                    implicitWidth: 28
+                    implicitHeight: 24
+                    onClicked: contextDebugPopup.close()
+                }
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                TextArea {
+                    id: contextDebugText
+                    readOnly: true
+                    wrapMode: Text.Wrap
+                    selectByMouse: true
+                    font.family: "monospace"
+                    font.pixelSize: 11
+                    color: palette.text
+                    selectionColor: palette.highlight
+                    selectedTextColor: palette.highlightedText
+                }
+            }
+        }
+    }
+
+    Connections {
+        target: appVM
+        function onContext_debug_ready(focusMode, promptText) {
+            contextDebugPopup.title = focusMode
+            contextDebugText.text = promptText
+            contextDebugPopup.open()
         }
     }
 }

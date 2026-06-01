@@ -10,9 +10,9 @@ import QtQuick.Window 2.15
 Window {
     id: snippetWindow
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window
+           | Qt.X11BypassWindowManagerHint
     color: "transparent"
     visible: true
-    visibility: Window.FullScreen
 
     // Prevent WM from destroying the window (we manage lifecycle from Python)
     onClosing: function(close) { close.accepted = false }

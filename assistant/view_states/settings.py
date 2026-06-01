@@ -8,7 +8,6 @@ from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
-    from assistant.config import Config
     from assistant.services.project_manager import ViiProjectManager
 
 from assistant.model_configs import DEFAULT_MODEL_KEY
@@ -33,7 +32,6 @@ def _normalize_markdown(value: Optional[str]) -> str:
 
 class AssistantSettingsViewState(QObject):
     session_state_changed = Signal(str)
-    screen_changed = Signal(str)
     assistant_working_changed = Signal(bool)
     user_query_changed = Signal(str)
     system_prompt_changed = Signal(str)
@@ -49,17 +47,15 @@ class AssistantSettingsViewState(QObject):
     )  # the model key actually loaded on the server
     execution_mode_changed = Signal(str)  # ExecutionMode.value
     max_new_tokens_changed = Signal(int)
+    capture_screen_changed = Signal(str)
+    experiment_configs_changed = Signal()
+    selected_experiment_config_changed = Signal(str)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        # External services (not used for direct persistence anymore; config persistence
-        # service listens to our signals and performs debounced writes)
-        self._config: Optional["Config"] = None
         self._project_manager: Optional["ViiProjectManager"] = None
 
         self._session_state = "new-session"
-        # client_type removed (single hardcoded backend)
-        self._screen = ""
         self._assistant_working = False
         self._execution_mode = ExecutionMode.USER_APPROVE
         self._user_query = ""
@@ -70,29 +66,12 @@ class AssistantSettingsViewState(QObject):
         self._server_model_state = "unknown"
         self._server_model_key = ""
         self._max_new_tokens = 256
+        self._capture_screen = ""
+        self._experiment_configs: list[dict] = []
+        self._selected_experiment_config = ""
         self._info_message_enqueued.connect(self._append_info_message)
 
     # --- lifecycle -------------------------------------------------
-    def initialize(
-        self,
-        config: "Config",
-        project_manager: "ViiProjectManager",
-    ) -> None:
-        self._config = config
-        self._project_manager = project_manager
-        self.apply_config(config.data())
-        self.reload_project_documents()
-
-    def apply_config(self, config: Dict[str, object]) -> None:
-        screen = str(config.get("screen", self._screen) or "")
-        self._set_screen(screen)
-        selected_model = str(
-            config.get("selected_model", self._selected_model) or DEFAULT_MODEL_KEY
-        )
-        self._set_selected_model(selected_model)
-        max_tokens = int(config.get("max_new_tokens", self._max_new_tokens) or 256)
-        self._set_max_new_tokens(max_tokens)
-
     def reload_project_documents(self) -> None:
         if not self._project_manager:
             return
@@ -117,25 +96,6 @@ class AssistantSettingsViewState(QObject):
             return
         self._session_state = value
         self.session_state_changed.emit(value)
-
-    # client_type removed
-
-    # --- screen -----------------------------------------------------
-    @Property(str, notify=screen_changed)
-    def screen(self) -> str:
-        return self._screen
-
-    @screen.setter
-    def screen(self, value: str) -> None:
-        if self._screen == value:
-            return
-        self._set_screen(value)
-
-    def _set_screen(self, value: str) -> None:
-        if self._screen == value:
-            return
-        self._screen = value
-        self.screen_changed.emit(value)
 
     # --- assistant_working ------------------------------------------
     @Property(bool, notify=assistant_working_changed)
@@ -250,12 +210,6 @@ class AssistantSettingsViewState(QObject):
     def selected_model(self) -> str:
         return self._selected_model
 
-    @selected_model.setter
-    def selected_model(self, value: str) -> None:
-        if self._selected_model == value:
-            return
-        self._set_selected_model(value)
-
     def _set_selected_model(self, value: str) -> None:
         if self._selected_model == value:
             return
@@ -293,15 +247,40 @@ class AssistantSettingsViewState(QObject):
     def max_new_tokens(self) -> int:
         return self._max_new_tokens
 
-    @max_new_tokens.setter
-    def max_new_tokens(self, value: int) -> None:
-        value = max(1, value)
-        if self._max_new_tokens == value:
-            return
-        self._set_max_new_tokens(value)
-
     def _set_max_new_tokens(self, value: int) -> None:
         if self._max_new_tokens == value:
             return
         self._max_new_tokens = value
         self.max_new_tokens_changed.emit(value)
+
+    # --- capture_screen ------------------------------------------------
+    @Property(str, notify=capture_screen_changed)
+    def capture_screen(self) -> str:
+        return self._capture_screen
+
+    def _set_capture_screen(self, value: str) -> None:
+        if self._capture_screen == value:
+            return
+        self._capture_screen = value
+        self.capture_screen_changed.emit(value)
+
+    # --- experiment_configs -------------------------------------------
+    @Property(list, notify=experiment_configs_changed)
+    def experiment_configs(self) -> list[dict]:
+        return self._experiment_configs
+
+    def _set_experiment_configs(self, value: list[dict]) -> None:
+        self._experiment_configs = value
+        self.experiment_configs_changed.emit()
+
+    # --- selected_experiment_config -----------------------------------
+    @Property(str, notify=selected_experiment_config_changed)
+    def selected_experiment_config(self) -> str:
+        return self._selected_experiment_config
+
+    @selected_experiment_config.setter
+    def selected_experiment_config(self, value: str) -> None:
+        if self._selected_experiment_config == value:
+            return
+        self._selected_experiment_config = value
+        self.selected_experiment_config_changed.emit(value)
