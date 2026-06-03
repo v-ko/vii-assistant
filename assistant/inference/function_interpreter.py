@@ -4,7 +4,7 @@ import ast
 import inspect
 from typing import Any, Callable, TypeVar, get_type_hints
 
-from fusion import get_logger
+from sivkit import get_logger
 
 log = get_logger(__name__)
 

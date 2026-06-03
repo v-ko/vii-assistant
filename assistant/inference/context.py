@@ -11,9 +11,9 @@ import io
 from typing import Any, Generator, NamedTuple, Optional
 
 import attrs
-from fusion.libs.model import Entity, entity_type, load_from_dict
-from fusion.storage.change import Change
 from PIL import Image
+from sivkit.libs.model import Entity, entity_type, load_from_dict
+from sivkit.storage.change import Change
 
 from assistant.inference.context_store import ContextStore
 
@@ -155,7 +155,7 @@ class ContextManager:
             existing = self._store.find_one(id=change.entity_id)
             if existing is None:
                 raise TypeError("Expected existing ContextItem for UPDATE")
-            from fusion.libs.model import dump_to_dict
+            from sivkit.libs.model import dump_to_dict
 
             updated_dict = {**dump_to_dict(existing), **change.forward_component}
             new = load_from_dict(updated_dict)

@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any, Callable
 
 import httpx
-from fusion import get_logger
+from sivkit import get_logger
 
 from assistant.constants import INFERENCE_HTTP_BASE
 

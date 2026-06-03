@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fusion import get_logger
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
+from sivkit import get_logger
 
 from assistant.constants import RECORDINGS_DIR
 from assistant.facade import vii

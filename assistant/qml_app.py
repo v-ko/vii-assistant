@@ -1,12 +1,12 @@
 import sys
 from pathlib import Path
 
-from fusion.loop import set_main_loop
-from fusion.platform.qt_widgets.qt_main_loop import QtMainLoop
 from PySide6.QtCore import QObject, Qt, QUrl
 from PySide6.QtGui import QAction, QScreen
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
+from sivkit.loop import set_main_loop
+from sivkit.platform.qt_widgets.qt_main_loop import QtMainLoop
 
 from assistant.app_state import AppViewState
 from assistant.app_view_model import AppViewModel

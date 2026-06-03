@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
+from sivkit.platform.qt_widgets import Property
 
 from assistant.app_state import AppViewState
 

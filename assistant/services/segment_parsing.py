@@ -15,9 +15,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
-from fusion import get_logger
-from fusion.util.rectangle import Rectangle
 from PIL import Image
+from sivkit import get_logger
+from sivkit.util.rectangle import Rectangle
 
 from assistant.inference.context import TextItem
 from assistant.inference.function_interpreter import HybridFunctionInterpreter

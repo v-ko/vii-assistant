@@ -12,11 +12,11 @@ import asyncio
 import base64
 import io
 
-from fusion import get_logger
-from fusion.libs.model import dump_to_dict
-from fusion.libs.procedure import procedure
 from PIL import Image
 from PySide6.QtGui import QGuiApplication, QImage
+from sivkit import get_logger
+from sivkit.libs.model import dump_to_dict
+from sivkit.libs.procedure import procedure
 
 from assistant.facade import vii
 from assistant.inference.context import ImageItem, TextItem

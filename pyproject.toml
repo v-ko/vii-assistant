@@ -14,7 +14,7 @@ dependencies = [
   "numpy",
   "requests",
   "click",
-  "python-fusion",
+  "sivkit",
   "pynput",
   "pytesseract",
   "websockets",

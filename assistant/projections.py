@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fusion.libs.action import action
-from fusion.storage.change import Change
-from fusion.storage.delta import Delta
+from sivkit.libs.action import action
+from sivkit.storage.change import Change
+from sivkit.storage.delta import Delta
 
 from assistant.inference.context import ContextItem
 from assistant.inference.context_store import OP_SEP

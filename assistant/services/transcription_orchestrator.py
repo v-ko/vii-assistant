@@ -14,7 +14,7 @@ from typing import AsyncGenerator
 
 import httpx
 import numpy as np
-from fusion import get_logger
+from sivkit import get_logger
 
 from assistant.facade import vii
 from assistant.recording_actions import set_transcribing_active
@@ -22,7 +22,7 @@ from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
     stitch_chunk_results,
 )
-from assistant.transcription import TranscriptionResult, WordTimestamp
+from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
 log = get_logger(__name__)
 

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
-# Set logging level before importing anything else (especially fusion)
+# Set logging level before importing anything else (especially sivkit)
 os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
@@ -19,11 +19,11 @@ DEFAULT_DESKTOP_SERVER_PORT = 51177
 
 
 try:
-    fusion_pkg_version = version("python-fusion")
+    sivkit_pkg_version = version("sivkit")
 except PackageNotFoundError:
-    fusion_pkg_version = None
-if not fusion_pkg_version or not fusion_pkg_version.startswith("0.1"):
-    raise RuntimeError("Required fusion version >=0.10")
+    sivkit_pkg_version = None
+if not sivkit_pkg_version or not sivkit_pkg_version.startswith("0.1"):
+    raise RuntimeError("Required sivkit version >=0.10")
 
 
 @click.command()

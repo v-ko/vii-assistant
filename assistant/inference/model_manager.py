@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import torch
-from fusion import get_logger
 from PIL import Image
+from sivkit import get_logger
 from transformers import AutoProcessor, TextIteratorStreamer
 
 from assistant.inference.qwen_tokens import compile_qwen_context

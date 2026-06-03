@@ -6,7 +6,7 @@ The view model reacts to view state signals automatically.
 
 from __future__ import annotations
 
-from fusion.libs.action import action
+from sivkit.libs.action import action
 
 from assistant.facade import vii
 from assistant.view_states.recording_overlay import RecordingOverlayViewState

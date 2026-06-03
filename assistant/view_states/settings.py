@@ -3,9 +3,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Dict, Optional
 
-from fusion import get_logger
-from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
+from sivkit import get_logger
+from sivkit.platform.qt_widgets import Property
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
     from assistant.services.project_manager import ViiProjectManager

@@ -1,6 +1,6 @@
 from typing import Any
 
-import fusion
+import sivkit
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -28,7 +28,7 @@ async def health_check() -> dict[str, Any]:
 def toggle_terminal() -> CommandResponse:
     """Toggle the terminal window."""
 
-    fusion.call_delayed(terminal_actions.toggle_terminal, 0)
+    sivkit.call_delayed(terminal_actions.toggle_terminal, 0)
     return CommandResponse(success=True, message="Terminal toggled")
 
 
@@ -36,7 +36,7 @@ def toggle_terminal() -> CommandResponse:
 def confirm_action() -> CommandResponse:
     """Confirm pending assistant actions (USER_APPROVE mode)."""
     gate = vii.project_manager.hybrid_segment_service.action_gate
-    fusion.call_delayed(gate.confirm, 0)
+    sivkit.call_delayed(gate.confirm, 0)
     return CommandResponse(success=True, message="Action confirmed")
 
 
@@ -45,7 +45,7 @@ def stop_assistant() -> CommandResponse:
     """Interrupt assistant execution."""
     from assistant.actions import stop_assistant as _stop
 
-    fusion.call_delayed(_stop, 0)
+    sivkit.call_delayed(_stop, 0)
     return CommandResponse(success=True, message="Assistant stopped")
 
 
@@ -54,7 +54,7 @@ def toggle_recording() -> CommandResponse:
     """Toggle audio recording for transcription."""
     from assistant.recording_procedures import toggle_recording as _toggle
 
-    fusion.call_delayed(_toggle, 0)
+    sivkit.call_delayed(_toggle, 0)
     return CommandResponse(success=True, message="Recording toggled")
 
 
@@ -63,5 +63,5 @@ def take_snippet() -> CommandResponse:
     """Activate screen snippet overlay for region selection."""
     from assistant.snippet_procedures import start_snippet
 
-    fusion.call_delayed(start_snippet, 0)
+    sivkit.call_delayed(start_snippet, 0)
     return CommandResponse(success=True, message="Snippet overlay activated")

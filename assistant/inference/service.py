@@ -9,9 +9,9 @@ import threading
 from typing import TYPE_CHECKING, Any, cast
 
 import json_repair
-from fusion import get_logger
-from fusion.libs.model import load_from_dict
-from fusion.storage.change import Change
+from sivkit import get_logger
+from sivkit.libs.model import load_from_dict
+from sivkit.storage.change import Change
 
 from assistant.inference.context import ContextItem, ContextManager, TextItem
 from assistant.inference.context_store import ContextStore
@@ -98,7 +98,7 @@ class InferenceService:
             if existing is None:
                 logger.info("Entity %s not found for update", change.entity_id)
                 return
-            from fusion.libs.model import dump_to_dict
+            from sivkit.libs.model import dump_to_dict
 
             merged = {**dump_to_dict(existing), **forward}
             item = load_from_dict(merged)

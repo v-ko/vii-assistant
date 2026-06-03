@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 
 import numpy as np
-from fusion import get_logger
-from fusion.libs.procedure import procedure
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
+from sivkit import get_logger
+from sivkit.libs.procedure import procedure
 
 from assistant.facade import vii
 from assistant.services.transcription_chunking import (
@@ -21,7 +21,7 @@ from assistant.services.transcription_chunking import (
     OVERLAP_DURATION_S,
     stitch_chunk_results,
 )
-from assistant.transcription import TranscriptionResult, WordTimestamp
+from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
 log = get_logger(__name__)
 

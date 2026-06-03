@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fusion.libs.action import action
+from sivkit.libs.action import action
 
 from assistant.facade import vii
 

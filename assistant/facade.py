@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from fusion.storage.delta import Delta
-from fusion.storage.in_memory_store import InMemoryStore
 from PySide6.QtGui import QGuiApplication, QScreen
+from sivkit.storage.delta import Delta
+from sivkit.storage.in_memory_store import InMemoryStore
 
 from assistant.constants import EXPERIMENTS_DIR
 from assistant.model.app_config import ViiConfig
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from assistant.services.project_manager import SessionManager, ViiProjectManager
     from assistant.services.transcription_orchestrator import TranscriptionOrchestrator
 
-from fusion import get_logger
+from sivkit import get_logger
 
 log = get_logger(__name__)
 

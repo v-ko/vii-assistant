@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fusion.libs.procedure import procedure
-from fusion.logging import get_logger
-from fusion.storage.delta import Delta
 from PySide6.QtWidgets import QMessageBox
+from sivkit.libs.procedure import procedure
+from sivkit.logging import get_logger
+from sivkit.storage.delta import Delta
 
 if TYPE_CHECKING:
     from assistant.services.hybrid_segment_service import HybridSegmentService

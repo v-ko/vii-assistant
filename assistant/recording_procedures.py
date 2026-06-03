@@ -13,10 +13,10 @@ from datetime import datetime
 from subprocess import DEVNULL, Popen
 
 import numpy as np
-from fusion import get_logger
-from fusion.libs.procedure import procedure
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
+from sivkit import get_logger
+from sivkit.libs.procedure import procedure
 
 from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 from assistant.facade import vii

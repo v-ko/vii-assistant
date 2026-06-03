@@ -1,6 +1,6 @@
 """FastAPI websocket server exposing context CRUD operations.
 
-Uses fusion's WebSocketSyncService (authority role) to synchronize the
+Uses sivkit's WebSocketSyncService (authority role) to synchronize the
 context store with connected clients.  Streaming text chunks travel as
 custom ``text_append`` delta ops inside the standard sync protocol.
 """
@@ -17,13 +17,13 @@ from typing import Any
 os.environ.setdefault("LOGLEVEL", "INFO")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fusion import get_logger
-from fusion.libs.model import load_from_dict
-from fusion.loop import AsyncioMainLoop, set_main_loop
-from fusion.storage.change import Change
-from fusion.storage.delta import Delta
-from fusion.storage.websocket_sync_service import WebSocketSyncService
 from pydantic import BaseModel
+from sivkit import get_logger
+from sivkit.libs.model import load_from_dict
+from sivkit.loop import AsyncioMainLoop, set_main_loop
+from sivkit.storage.change import Change
+from sivkit.storage.delta import Delta
+from sivkit.storage.websocket_sync_service import WebSocketSyncService
 
 from assistant.inference.backend_protocol import InferenceBackend
 from assistant.inference.context import ContextItem, ContextManager

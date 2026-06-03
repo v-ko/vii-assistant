@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
+from sivkit.platform.qt_widgets import Property
 
 from assistant.inference.context import ContextItem, ImageItem, TextItem
 

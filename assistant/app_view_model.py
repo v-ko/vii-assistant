@@ -7,8 +7,8 @@ terminal_actions.
 
 from __future__ import annotations
 
-from fusion import get_logger
 from PySide6.QtCore import Property, QObject, Signal, Slot
+from sivkit import get_logger
 
 from assistant.actions import stop_assistant
 from assistant.debug_actions import show_screen_debug

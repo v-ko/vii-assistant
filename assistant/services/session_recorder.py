@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, TypedDict
 
-from fusion.logging import get_logger
 from pynput import keyboard, mouse
+from sivkit.logging import get_logger
 
 log = get_logger(__name__)
 

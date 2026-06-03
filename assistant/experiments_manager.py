@@ -4,11 +4,11 @@ from base64 import b64encode
 from enum import Enum
 from io import BytesIO
 
-from fusion.storage.change import Change
-from fusion.storage.delta import Delta
 from PIL import Image
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage
+from sivkit.storage.change import Change
+from sivkit.storage.delta import Delta
 
 from assistant.experiments.data_loaders import (
     DATA_LOADER_REGISTRY,

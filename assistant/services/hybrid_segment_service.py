@@ -7,13 +7,13 @@ import json
 import re
 from typing import Any
 
-from fusion import get_logger
-from fusion.libs.model import dump_to_dict
-from fusion.storage.change import Change
-from fusion.storage.delta import Delta
-from fusion.util.rectangle import Rectangle
 from PIL import Image
 from PySide6.QtGui import QGuiApplication
+from sivkit import get_logger
+from sivkit.libs.model import dump_to_dict
+from sivkit.storage.change import Change
+from sivkit.storage.delta import Delta
+from sivkit.util.rectangle import Rectangle
 
 from assistant.facade import vii
 from assistant.image_ops import resize_to_target, scale_qwen_bbox_xyxy, scale_qwen_point

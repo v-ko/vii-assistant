@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import shutil
 
-from fusion.logging import get_logger
 from PySide6.QtGui import QCursor
+from sivkit.logging import get_logger
 
 log = get_logger(__name__)
 

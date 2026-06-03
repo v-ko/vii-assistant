@@ -11,8 +11,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fusion import get_logger
 from PIL import Image
+from sivkit import get_logger
 
 from assistant.model_configs import MODEL_SPECS
 

@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fusion.libs.procedure import procedure
-from fusion.storage.websockets_client_sync import WebSocketsClientSync
+from sivkit.libs.procedure import procedure
+from sivkit.storage.websockets_client_sync import WebSocketsClientSync
 
 from assistant.facade import vii
 from assistant.inference.context import ContextManager, TextItem

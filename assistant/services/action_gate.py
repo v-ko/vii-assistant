@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from fusion.logging import get_logger
+from sivkit.logging import get_logger
 
 log = get_logger(__name__)
 

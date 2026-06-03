@@ -9,8 +9,8 @@ import json
 import threading
 from pathlib import Path
 
-from fusion import get_logger
-from fusion.storage.delta import Delta
+from sivkit import get_logger
+from sivkit.storage.delta import Delta
 
 log = get_logger(__name__)
 

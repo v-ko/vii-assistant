@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import attrs
-from fusion import Entity, entity_type
+from sivkit import Entity, entity_type
 
 
 @entity_type

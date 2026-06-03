@@ -11,10 +11,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fusion import get_logger
-from fusion.libs.action import action
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
+from sivkit import get_logger
+from sivkit.libs.action import action
 
 from assistant.actions import add_user_message, ocr_clipboard
 from assistant.facade import raise_on_session_inactive, vii

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from typing import Any, Generator
 
-from fusion.logging import get_logger
-from fusion.storage.change import Change
-from fusion.storage.delta import Delta, DeltaData
-from fusion.storage.in_memory_store import InMemoryStore
+from sivkit.logging import get_logger
+from sivkit.storage.change import Change
+from sivkit.storage.delta import Delta, DeltaData
+from sivkit.storage.in_memory_store import InMemoryStore
 
 log = get_logger(__name__)
 

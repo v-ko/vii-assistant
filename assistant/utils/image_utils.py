@@ -1,4 +1,4 @@
-"""Qt image conversion utilities (formerly in fusion.platform.qt_widgets.utils)."""
+"""Qt image conversion utilities (formerly in sivkit.platform.qt_widgets.utils)."""
 
 from __future__ import annotations
 

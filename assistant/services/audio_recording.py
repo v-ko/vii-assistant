@@ -15,9 +15,9 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from fusion import get_logger
 from PySide6.QtCore import QByteArray, QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
+from sivkit import get_logger
 
 from assistant.recording_actions import set_recording_active
 from assistant.services.transcription_chunking import (

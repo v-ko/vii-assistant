@@ -10,18 +10,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
-
-@dataclass
-class WordTimestamp:
-    word: str
-    start: float
-    end: float
-
-
-@dataclass
-class TranscriptionResult:
-    text: str
-    words: list[WordTimestamp]
+from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
 
 class ParakeetTranscriber:
