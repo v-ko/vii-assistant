@@ -8,6 +8,7 @@ Includes:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from sivkit.libs.action import action
@@ -18,14 +19,13 @@ from assistant.inference.context import ContextItem
 from assistant.inference.context_store import OP_SEP
 from assistant.model.app_config import ViiConfig
 from assistant.snippet_actions import hide_snippet_overlays
-from assistant.util import get_logger
 from assistant.view_states.screen_info import ScreenInfoData, ScreenInfoVS
 
 if TYPE_CHECKING:
     from assistant.app_state import AppViewState
     from assistant.inference.context import ContextManager
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 @action("screen.project_layout", issuer="service")

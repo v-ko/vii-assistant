@@ -6,13 +6,13 @@ Attach to an InMemoryStore via add_on_changes_callback.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 
-from sivkit import get_logger
 from sivkit.storage.delta import Delta
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".config" / "vii-assistant"
 CONFIG_FILE = CONFIG_DIR / "config.json"

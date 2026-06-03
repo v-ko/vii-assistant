@@ -6,6 +6,7 @@ The QML ViewModel calls these — it never mutates state directly.
 
 from __future__ import annotations
 
+import logging
 from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
@@ -13,14 +14,12 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
-from sivkit import get_logger
 from sivkit.libs.action import action
 
 from assistant.actions import add_user_message, ocr_clipboard
 from assistant.facade import raise_on_session_inactive, vii
 from assistant.image_ops import resize_to_target
 from assistant.inference.context import ImageItem
-from assistant.model.experiment_config import ExperimentConfig
 from assistant.model_configs import (
     MODEL_SPECS,
     get_resolution_for_model,
@@ -30,10 +29,10 @@ from assistant.util import get_screen_by_name
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from assistant.view_states.settings import AssistantSettingsViewState
+    pass
 
 
 def _ensure_model_loaded() -> None:
@@ -230,17 +229,7 @@ def open_focus_mode_prompt(mode_name: str) -> None:
 @action("terminal.step_experiment")
 def step_experiment() -> None:
     _ensure_model_loaded()
-    mgr = vii.experiments_manager
-    if not mgr.running:
-        selected = vii.app.view_state.settings_VS.selected_experiment_config
-        if not selected:
-            raise RuntimeError("No experiment config selected in settings")
-        config_id = ExperimentConfig.id_for_path(Path(selected).stem)
-        config = vii.get_experiment_config(config_id)
-        if config is None:
-            raise RuntimeError(f"Experiment config not found in store: {config_id}")
-        mgr.start(config)
-    mgr.step()
+    vii.experiments_manager.step()
 
 
 @action("terminal.stop_experiment")
@@ -250,27 +239,9 @@ def stop_experiment() -> None:
 
 @action("terminal.open_experiment_config")
 def open_experiment_config() -> None:
-    selected = vii.app.view_state.settings_VS.selected_experiment_config
-    if not selected:
-        return
-    path = Path(selected)
-    if path.exists():
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-    else:
-        log.error("Experiment config file not found: %s", path)
-
-
-# ── Execution mode ───────────────────────────────────────────────
-
-
-@action("settings.set_execution_mode")
-def set_execution_mode(mode: str) -> None:
-    vii.app.view_state.settings_VS.execution_mode = mode
-
-
-@action("settings.set_experiment_config")
-def set_experiment_config(path: str) -> None:
-    vii.app.view_state.settings_VS.selected_experiment_config = path
+    config_path = vii.experiments_manager.config_path
+    if config_path and config_path.exists():
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
 
 
 # ── Settings modal visibility ─────────────────────────────────────
@@ -281,7 +252,7 @@ def set_settings_modal_visible(visible: bool) -> None:
     vii.app.view_state.settings_modal_VS.visible = visible
 
 
-# ── Terminal visibility ───────────────────────────────────────────
+# ── Toggle terminal ──────────────────────────────────────────────
 
 
 @action("set_terminal_visible")

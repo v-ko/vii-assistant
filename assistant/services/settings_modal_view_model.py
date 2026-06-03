@@ -5,11 +5,11 @@ Exposes SettingsModalViewState properties and actions to QML.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
-from sivkit import get_logger
 
 from assistant.constants import RECORDINGS_DIR
 from assistant.facade import vii
@@ -20,7 +20,7 @@ from assistant.transcription_procedures import transcribe_file
 if TYPE_CHECKING:
     from assistant.app_state import AppViewState
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class SettingsModalViewModel(QObject):

@@ -7,6 +7,7 @@ They consume the async generator from the orchestrator and apply output.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import wave
 from datetime import datetime
@@ -15,13 +16,11 @@ from subprocess import DEVNULL, Popen
 import numpy as np
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
-from sivkit import get_logger
-from sivkit.libs.procedure import procedure
 
 from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 from assistant.facade import vii
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 # Module-level state for the running transcription task
 _active_task: asyncio.Task | None = None

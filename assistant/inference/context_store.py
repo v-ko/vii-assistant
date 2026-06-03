@@ -12,14 +12,14 @@ which mutates the cached entity in-place (no pop→copy→reinsert cycle).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Generator
 
-from sivkit.logging import get_logger
 from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta, DeltaData
 from sivkit.storage.in_memory_store import InMemoryStore
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 # Separator between entity_id and op name in delta keys.
 OP_SEP = "@"

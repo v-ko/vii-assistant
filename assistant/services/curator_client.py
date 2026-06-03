@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
-from sivkit import get_logger
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 CURATOR_SERVER_URL = "http://localhost:3333"
 

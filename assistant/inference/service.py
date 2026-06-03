@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
 import json_repair
-from sivkit import get_logger
 from sivkit.libs.model import load_from_dict
 from sivkit.storage.change import Change
 
@@ -25,7 +25,7 @@ from assistant.model_configs import MODEL_SPECS
 if TYPE_CHECKING:
     from assistant.inference.backend_protocol import InferenceBackend
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Markers for Hermes-style tool calls (single tokens in vocab)
 TOOL_CALL_OPEN = "<tool_call>"

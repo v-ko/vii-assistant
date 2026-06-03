@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 from PySide6.QtCore import QObject, Signal
-from sivkit import get_logger
 from sivkit.platform.qt_widgets import Property
 
 if TYPE_CHECKING:  # pragma: no cover - typing aid
@@ -12,7 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 
 from assistant.model_configs import DEFAULT_MODEL_KEY
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class ExecutionMode(Enum):

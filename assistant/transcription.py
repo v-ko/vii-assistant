@@ -4,7 +4,6 @@ Uses the pre-exported ONNX model files (encoder, decoder_joint, preprocessor)
 from the Parakeet TDT 0.6B v3 model.
 """
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np

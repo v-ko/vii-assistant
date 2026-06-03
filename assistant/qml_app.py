@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 
@@ -17,12 +18,12 @@ from assistant.services.recording_overlay_view_model import RecordingOverlayView
 from assistant.services.settings_modal_view_model import SettingsModalViewModel
 from assistant.services.snippet_view_model import SnippetViewModel
 from assistant.terminal_actions import toggle_terminal
-from assistant.util import get_logger, get_screen_by_name
+from assistant.util import get_screen_by_name
 from assistant.view_states.screen_info import ScreenInfoData
 from assistant.view_states.terminal import TerminalViewState
 from assistant.widgets.overlay import ModelVisionOverlay
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 QML_DIR = Path(__file__).parent / "qml"
 

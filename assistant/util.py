@@ -1,18 +1,15 @@
 import logging
 import re
-from typing import Any, Dict, Final, List, Literal, Optional, Tuple, TypedDict, Union
+from typing import Any, Final, List, Literal, Optional, Tuple, TypedDict, Union, cast
 
-import numpy as np
 from PIL import Image
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QScreen
 
 
 class BaseShape(TypedDict, total=False):
-    """Base shape type with common properties."""
+    """Base shape type with common optional properties."""
 
-    type: str
-    geometry: Any
     color: Optional[str]  # Color in hex format (e.g., '#FF0000')
 
 
@@ -33,12 +30,6 @@ class PointShape(BaseShape):
 Shape = Union[RectShape, PointShape]
 
 logging.basicConfig(level=logging.INFO)
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger with the specified name."""
-    logger = logging.getLogger(name)
-    return logger
 
 
 def get_screen_by_name(name: str) -> QScreen | None:
@@ -139,22 +130,21 @@ def qimage_to_pil(img: QImage) -> Image.Image:
     if img.isNull():
         raise ValueError("Cannot convert null QImage")
 
-    qimg = img.convertToFormat(QImage.Format_RGB888)
+    qimg = img.convertToFormat(QImage.Format.Format_RGB888)
     w: Final[int] = qimg.width()
     h: Final[int] = qimg.height()
     stride: Final[int] = qimg.bytesPerLine()
     size_bytes: Final[int] = stride * h
 
-    p = qimg.bits()  # sip.voidptr
+    # QImage.bits() returns a sip.voidptr at runtime; stubs don't reflect this
+    p: Any = qimg.bits()
     try:
-        p.setsize(size_bytes)  # runtime ok; Pylance may not know this method
-        mv = memoryview(p)[:size_bytes].cast("B")  # 1-byte view
+        p.setsize(size_bytes)
+        mv = memoryview(p)[:size_bytes].cast("B")
     except AttributeError:
-        # PySide/PyQt variant where .setsize() isn’t available
         mv = memoryview(p.asstring(size_bytes))
 
-    # Pillow accepts buffer-protocol; silence Pylance with cast(Any, …)
-    buf = cast(Any, mv)
+    buf = bytes(mv)
 
     pil = Image.frombuffer("RGB", (w, h), buf, "raw", "RGB", stride, 0)
     # If qimg might be freed/modified, detach:

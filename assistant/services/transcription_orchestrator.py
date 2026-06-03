@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import time
+import logging
 from typing import AsyncGenerator
 
 import httpx
 import numpy as np
-from sivkit import get_logger
 
 from assistant.facade import vii
 from assistant.recording_actions import set_transcribing_active
@@ -24,7 +23,7 @@ from assistant.services.transcription_chunking import (
 )
 from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 TRANSCRIBE_TIMEOUT_S = 120.0  # per-chunk timeout
 

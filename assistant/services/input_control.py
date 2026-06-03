@@ -8,12 +8,12 @@ Requires ydotoold daemon running for mouse/type. All operations are async.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 
 from PySide6.QtGui import QCursor
-from sivkit.logging import get_logger
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 _MAX_SCROLL_STEPS = 20
 _MOVE_MAX_ATTEMPTS = 8

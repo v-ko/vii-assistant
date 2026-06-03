@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 import json
+import logging
 import re
 from typing import Any
 
 from PIL import Image
 from PySide6.QtGui import QGuiApplication
-from sivkit import get_logger
 from sivkit.libs.model import dump_to_dict
 from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta
@@ -45,7 +44,7 @@ from assistant.utils.capture_utils import take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 from assistant.view_states.settings import ExecutionMode
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class HybridSegmentService:

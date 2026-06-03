@@ -7,13 +7,14 @@ mode to signal the user that the assistant is working.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtGui import QGuiApplication
 
-from assistant.util import get_logger
 from assistant.view_states.overlay import OverlayMode, OverlayViewState
 from assistant.widgets.overlay import ModelVisionOverlay
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class OverlayManager:

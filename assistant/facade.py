@@ -22,9 +22,9 @@ if TYPE_CHECKING:
     from assistant.services.project_manager import SessionManager, ViiProjectManager
     from assistant.services.transcription_orchestrator import TranscriptionOrchestrator
 
-from sivkit import get_logger
+import logging
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class Facade:

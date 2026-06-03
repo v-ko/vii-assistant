@@ -1,4 +1,4 @@
-from PySide6.QtCore import QObject, QRect, Signal
+from PySide6.QtCore import QObject, QRect
 from PySide6.QtGui import QImage
 
 

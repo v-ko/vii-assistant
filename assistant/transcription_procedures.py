@@ -7,12 +7,12 @@ server via the existing orchestrator, and copies the result to clipboard.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import numpy as np
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
-from sivkit import get_logger
 from sivkit.libs.procedure import procedure
 
 from assistant.facade import vii
@@ -23,7 +23,7 @@ from assistant.services.transcription_chunking import (
 )
 from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 

@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
 
 from PIL import Image
 from PySide6.QtGui import QGuiApplication, QImage
-from sivkit import get_logger
 from sivkit.libs.model import dump_to_dict
 from sivkit.libs.procedure import procedure
 
@@ -23,7 +23,7 @@ from assistant.inference.context import ImageItem, TextItem
 from assistant.snippet_actions import show_snippet_overlays
 from assistant.utils.image_utils import qimage_to_pil
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 def start_snippet() -> None:

@@ -6,13 +6,14 @@ hide_snippet_overlays: removes all snippet overlay view states.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtGui import QGuiApplication
 from sivkit.libs.action import action
 
-from assistant.util import get_logger
 from assistant.view_states.snippet import SnippetOverlayViewState
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 @action("snippet.show_overlays")

@@ -10,27 +10,22 @@ Responsibilities:
 
 from __future__ import annotations
 
-import struct
+import logging
 import time
 from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QByteArray, QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
-from sivkit import get_logger
 
 from assistant.recording_actions import set_recording_active
-from assistant.services.transcription_chunking import (
-    CHUNK_DURATION_S,
-    OVERLAP_DURATION_S,
-)
 
 if TYPE_CHECKING:
     from assistant.services.recording_overlay_view_model import (
         RecordingOverlayViewModel,
     )
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -110,7 +105,7 @@ class AudioRecordingService(QObject):
         for dev in QMediaDevices.audioInputs():
             devices.append(
                 {
-                    "id": dev.id().data().decode(),
+                    "id": dev.id().toStdString(),
                     "description": dev.description(),
                 }
             )
@@ -151,7 +146,7 @@ class AudioRecordingService(QObject):
         device = None
         if self._selected_device_id:
             for dev in QMediaDevices.audioInputs():
-                if dev.id().data().decode() == self._selected_device_id:
+                if dev.id().toStdString() == self._selected_device_id:
                     device = dev
                     break
             if device is None:

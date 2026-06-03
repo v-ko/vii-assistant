@@ -11,7 +11,6 @@ from sivkit.storage.websockets_client_sync import WebSocketsClientSync
 
 from assistant.facade import vii
 from assistant.inference.context import ContextManager, TextItem
-from assistant.inference.focus_modes import FOCUS_MODES
 from assistant.procedures import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.util import get_screen_by_name
@@ -267,6 +266,8 @@ class ViiProjectManager:
             settings_state.session_state = "started"
 
             # Insert system prompts for all focus modes that have prompt files
+            from assistant.inference.focus_modes import FOCUS_MODES
+
             for mode_name, mode_config in FOCUS_MODES.items():
                 if not mode_config.has_prompt_file:
                     continue

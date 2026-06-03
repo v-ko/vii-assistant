@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
 import torch
 from PIL import Image
-from sivkit import get_logger
 from transformers import AutoProcessor, TextIteratorStreamer
 
 from assistant.inference.qwen_tokens import compile_qwen_context
 from assistant.model_configs import MODEL_SPECS
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class ModelManager:
@@ -154,7 +154,7 @@ class ModelManager:
         """Non-streaming generation. Returns {status, text, tokens}."""
         model, processor = await self.get_model()
 
-        from assistant.inference.context import ContextManager, MessageBatch
+        from assistant.inference.context import MessageBatch
 
         # Build a temporary ContextManager and compile
         compiled = compile_qwen_context(

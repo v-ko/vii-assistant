@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
 from typing import Any, Callable
 
 import httpx
-from sivkit import get_logger
 
 from assistant.constants import INFERENCE_HTTP_BASE
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class InferenceServerClient:

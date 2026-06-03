@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from typing import Any, Callable, TypeVar, get_type_hints
 
-from sivkit import get_logger
-
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 

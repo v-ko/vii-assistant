@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
 import subprocess
 import threading
 from collections.abc import AsyncIterator
@@ -12,11 +13,10 @@ from typing import Any
 
 import httpx
 from PIL import Image
-from sivkit import get_logger
 
 from assistant.model_configs import MODEL_SPECS
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 # Timeout for waiting for llama-server to become healthy after start
 _HEALTH_POLL_INTERVAL = 1.0  # seconds

@@ -1,21 +1,21 @@
+import logging
+
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
-    QImage,
     QPainter,
     QPen,
     QPolygon,
-    QScreen,
 )
 from PySide6.QtWidgets import QWidget
 
 from assistant.facade import vii
-from assistant.util import get_logger, get_screen_by_name
+from assistant.util import get_screen_by_name
 from assistant.view_states.overlay import OverlayMode, OverlayViewState
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class ModelVisionOverlay(QWidget):

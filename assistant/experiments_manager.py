@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from base64 import b64encode
 from enum import Enum
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QTimer
@@ -21,10 +23,9 @@ from assistant.inference.context import ImageItem, TextItem
 from assistant.inference.context_store import is_custom_op
 from assistant.model.experiment_config import ExperimentConfig
 from assistant.model_configs import get_resolution_for_model
-from assistant.util import get_logger
 from assistant.view_states.overlay import OverlayMode
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 INFERENCE_TIMEOUT_MS = 120_000  # 2 minutes
 
@@ -44,6 +45,7 @@ class ExperimentsManager:
         self._results: list[dict] = []
         self._config: ExperimentConfig | None = None
         self._data_loader: DataLoader | None = None
+        self.config_path: Path | None = None
         self._timeout_timer = QTimer()
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(

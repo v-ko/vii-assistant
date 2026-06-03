@@ -7,11 +7,10 @@ In USER_APPROVE mode the gate blocks until the user sends a confirm or stop comm
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 
-from sivkit.logging import get_logger
-
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 @dataclass

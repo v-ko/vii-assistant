@@ -16,9 +16,10 @@ from typing import Any
 # Force verbose backend logs unless explicitly overridden
 os.environ.setdefault("LOGLEVEL", "INFO")
 
+import logging
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from sivkit import get_logger
 from sivkit.libs.model import load_from_dict
 from sivkit.loop import AsyncioMainLoop, set_main_loop
 from sivkit.storage.change import Change
@@ -26,7 +27,7 @@ from sivkit.storage.delta import Delta
 from sivkit.storage.websocket_sync_service import WebSocketSyncService
 
 from assistant.inference.backend_protocol import InferenceBackend
-from assistant.inference.context import ContextItem, ContextManager
+from assistant.inference.context import ContextManager
 from assistant.inference.context_store import ContextStore
 from assistant.inference.llama_model_proxy import LlamaModelProxy
 from assistant.inference.model_manager import ModelManager
@@ -34,7 +35,7 @@ from assistant.inference.service import InferenceService, generate_oneshot
 from assistant.model_configs import MODEL_SPECS
 from assistant.transcription_service import TRANSCRIPTION_MODELS, TranscriptionService
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 def _backend_for_model(model_key: str) -> InferenceBackend:

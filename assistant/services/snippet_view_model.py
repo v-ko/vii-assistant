@@ -9,6 +9,7 @@ On completion or cancellation, calls hide_snippet_overlays to clean up.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import shiboken6
@@ -18,9 +19,8 @@ from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 
 from assistant.facade import vii
 from assistant.snippet_actions import hide_snippet_overlays, show_snippet_overlays
-from assistant.util import get_logger
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 QML_DIR = Path(__file__).parent.parent / "qml"
 

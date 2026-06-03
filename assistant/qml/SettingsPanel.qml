@@ -50,7 +50,6 @@ Rectangle {
             ScrollView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Component.onCompleted: contentItem.boundsBehavior = Flickable.StopAtBounds
 
                 TextArea {
                     id: infoMessages
@@ -301,7 +300,6 @@ Rectangle {
 
                 // Tab 0: Notes / user query
                 ScrollView {
-                    Component.onCompleted: contentItem.boundsBehavior = Flickable.StopAtBounds
                     TextArea {
                         id: userQueryEdit
                         placeholderText: "Describe the user request (markdown)"
@@ -422,13 +420,6 @@ Rectangle {
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
         width: 350
-
-        background: Rectangle {
-            color: palette.window
-            border.color: palette.mid
-            border.width: 1
-            radius: 8
-        }
 
         ColumnLayout {
             anchors.fill: parent

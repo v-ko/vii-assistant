@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QMessageBox
 from sivkit.libs.procedure import procedure
-from sivkit.logging import get_logger
 from sivkit.storage.delta import Delta
 
 if TYPE_CHECKING:
@@ -14,7 +14,7 @@ from assistant.facade import vii
 from assistant.inference.context import TextItem
 from assistant.terminal_actions import show_context_debug
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 @procedure

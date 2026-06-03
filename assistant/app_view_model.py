@@ -7,11 +7,10 @@ terminal_actions.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
-from sivkit import get_logger
+import logging
 
-from assistant.actions import stop_assistant
-from assistant.debug_actions import show_screen_debug
+from PySide6.QtCore import Property, QObject, Signal, Slot
+
 from assistant.facade import vii
 from assistant.model_configs import AVAILABLE_MODELS
 from assistant.procedures import fetch_raw_context_and_present
@@ -27,18 +26,15 @@ from assistant.terminal_actions import (
     open_focus_mode_prompt,
     open_sessions_folder,
     schedule_health_check,
-    set_execution_mode,
-    set_experiment_config,
     set_max_new_tokens,
     set_model,
     set_screen,
-    set_terminal_visible,
     step_experiment,
     stop_experiment,
     submit_message,
 )
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 
 class AppViewModel(QObject):
@@ -71,12 +67,6 @@ class AppViewModel(QObject):
     def primaryScreenInfo(self) -> QObject | None:
         return vii.app.view_state.primary_screen_info
 
-    # ── Terminal slots ────────────────────────────────────────────
-
-    @Slot()
-    def hideTerminal(self):
-        set_terminal_visible(False)
-
     # ── Session / message slots ──────────────────────────────────
 
     @Slot()
@@ -93,6 +83,8 @@ class AppViewModel(QObject):
 
     @Slot()
     def stopAssistant(self):
+        from assistant.actions import stop_assistant
+
         stop_assistant()
 
     # ── Capture slots ────────────────────────────────────────────
@@ -117,7 +109,9 @@ class AppViewModel(QObject):
 
     @Slot(str)
     def setExecutionMode(self, mode: str):
-        set_execution_mode(mode)
+        from assistant.facade import vii
+
+        vii.app.view_state.settings_VS.execution_mode = mode
 
     @Slot(str)
     def setModel(self, model_key: str):
@@ -155,16 +149,22 @@ class AppViewModel(QObject):
 
     @Slot(result=list)
     def getExperimentConfigs(self) -> list:
-        configs = sorted(vii.get_experiment_configs(), key=lambda c: c.name)
-        selected = vii.app.view_state.settings_VS.selected_experiment_config
+        from assistant.experiments_manager import EXPERIMENTS_DIR
+
+        configs = sorted(EXPERIMENTS_DIR.glob("*.json"))
+        try:
+            current = vii.experiments_manager.config_path
+        except RuntimeError:
+            current = None
         return [
-            {"name": c.name, "path": c.path, "selected": c.path == selected}
-            for c in configs
+            {"name": p.stem, "path": str(p), "selected": p == current} for p in configs
         ]
 
     @Slot(str)
     def setExperimentConfig(self, path: str):
-        set_experiment_config(path)
+        from pathlib import Path
+
+        vii.experiments_manager.config_path = Path(path)
 
     # ── Data queries (non-mutating, no @action needed) ───────────
 
@@ -184,6 +184,8 @@ class AppViewModel(QObject):
 
     @Slot()
     def showScreenDebug(self):
+        from assistant.debug_actions import show_screen_debug
+
         show_screen_debug()
 
     @Slot(str)
