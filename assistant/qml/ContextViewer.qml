@@ -63,6 +63,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
             spacing: 4
             visible: count > 0
             model: contextModel
@@ -482,6 +483,7 @@ Rectangle {
             ScrollView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Component.onCompleted: contentItem.boundsBehavior = Flickable.StopAtBounds
 
                 TextArea {
                     id: contextDebugText

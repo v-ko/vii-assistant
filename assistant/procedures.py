@@ -38,6 +38,11 @@ async def handle_hybrid_context_delta(
 
             # Client-side tool execution (python, click_at, scroll)
             if item.request.get("execution") == "client":
+                log.info(
+                    "Delta dispatch: execution=client item=%s focus_mode=%s",
+                    item.id,
+                    item.request.get("focus_mode"),
+                )
                 await hybrid_segment_service.process_client_execution_request(item)
                 continue
 

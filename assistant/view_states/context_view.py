@@ -48,9 +48,11 @@ def _format_display_text(item: ContextItem) -> str:
         elif focus_mode == "click_at":
             return f"⊕ click ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
         elif focus_mode == "scroll":
-            steps = arguments.get("steps", 0)
-            direction = "↑" if steps > 0 else "↓"
-            return f"{direction} scroll {abs(steps)}"
+            direction = arguments.get("direction", "down")
+            amount = arguments.get("amount", 0)
+            coord = arguments.get("coordinate", ["?", "?"])
+            arrow = "↑" if direction == "up" else "↓"
+            return f"{arrow} scroll {amount} at ({coord[0]}, {coord[1]})"
         elif focus_mode == "move_pointer":
             return f"→ move ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
         return text

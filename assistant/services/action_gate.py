@@ -35,8 +35,7 @@ class ActionGate:
     """Blocks tool execution in USER_APPROVE mode until user confirms."""
 
     def __init__(self) -> None:
-        self._event = asyncio.Event()
-        self._interrupted: bool = False
+        self._future: asyncio.Future[bool] | None = None
         self._pending: list[PendingAction] = []
 
     @property
@@ -46,20 +45,26 @@ class ActionGate:
     @property
     def is_waiting(self) -> bool:
         """True if the gate is currently blocking on user input."""
-        return bool(self._pending) and not self._event.is_set()
+        return self._future is not None and not self._future.done()
 
     async def await_confirmation(self, actions: list[PendingAction]) -> GateResult:
         """Block until user confirms or interrupts.
 
         The caller should update the overlay to show pending actions before calling.
+        If a previous waiter is still pending it is interrupted first.
         """
+        # Cancel any stale waiter from a previous session/request
+        if self._future is not None and not self._future.done():
+            log.info("ActionGate: cancelling stale waiter")
+            self._future.set_result(False)
+
         self._pending = actions
-        self._interrupted = False
-        self._event.clear()
+        loop = asyncio.get_running_loop()
+        self._future = loop.create_future()
         log.info("ActionGate: waiting for user confirmation (%d actions)", len(actions))
-        await self._event.wait()
+        confirmed = await self._future
         self._pending = []
-        return GateResult(confirmed=not self._interrupted)
+        return GateResult(confirmed=confirmed)
 
     def confirm(self) -> None:
         """Unblock the gate — user approved the pending actions."""
@@ -67,13 +72,12 @@ class ActionGate:
             log.warning("ActionGate.confirm() called but gate is not waiting")
             return
         log.info("ActionGate: user confirmed")
-        self._interrupted = False
-        self._event.set()
+        self._future.set_result(True)
 
     def interrupt(self) -> None:
         """Unblock the gate — user rejected / stopped."""
         log.info("ActionGate: user interrupted")
-        self._interrupted = True
-        self._event.set()
+        if self._future is not None and not self._future.done():
+            self._future.set_result(False)
         # Also clear pending so overlay can react immediately
         self._pending = []

@@ -19,9 +19,9 @@ Click at coordinates (0-1000 grid, same as crop_image).
 <tool_call>{"name": "click_at", "arguments": {"x": 500, "y": 300}}</tool_call>
 
 ### scroll
-Scroll at the current pointer position. Positive = up, negative = down.
+Scroll at a specific position (0-1000 grid, same as click_at).
 
-<tool_call>{"name": "scroll", "arguments": {"steps": -3}}</tool_call>
+<tool_call>{"name": "scroll", "arguments": {"coordinate": [500, 400], "direction": "down", "amount": 3}}</tool_call>
 
 ---
 
@@ -53,7 +53,7 @@ Click on a UI element:
 <tool_call>{"name": "click_at", "arguments": {"x": 150, "y": 400}}</tool_call>
 
 Then scroll:
-<tool_call>{"name": "scroll", "arguments": {"steps": -5}}</tool_call>
+<tool_call>{"name": "scroll", "arguments": {"coordinate": [150, 400], "direction": "down", "amount": 5}}</tool_call>
 
 ---
 

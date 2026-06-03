@@ -55,6 +55,7 @@ Popup {
                 anchors.fill: parent
                 anchors.margins: 8
                 anchors.topMargin: 16
+                boundsBehavior: Flickable.StopAtBounds
                 model: ["Transcription"]
                 currentIndex: 0
 

@@ -34,7 +34,8 @@ class ParakeetTranscriber:
     SUBSAMPLING_FACTOR = 8
     SAMPLE_RATE = 16000
     HOP_LENGTH = 160  # 10ms at 16kHz
-    PREPEND_SILENCE_S = 0.5  # Silence to prepend for conv subsampling context. Without that often the first words were not transcribed.
+    PREPEND_SILENCE_S = 1.0  # Silence to prepend for conv subsampling context. Without that often the first words were not transcribed.
+    MIN_AUDIO_DURATION_S = 3.0  # Pad short recordings with silence up to this duration. Arguably improves accuracy on short clips.
 
     def __init__(self, model_dir: str | Path, device: str = "cuda"):
         model_dir = Path(model_dir)
@@ -83,8 +84,17 @@ class ParakeetTranscriber:
             audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
 
         # Prepend silence to give conv subsampling layers left-side context
-        pad_samples = int(self.PREPEND_SILENCE_S * self.SAMPLE_RATE)
-        audio = np.concatenate([np.zeros(pad_samples, dtype=np.float32), audio])
+        pre_pad_samples = int(self.PREPEND_SILENCE_S * self.SAMPLE_RATE)
+        # Append silence to pad short recordings up to MIN_AUDIO_DURATION_S
+        min_samples = int(self.MIN_AUDIO_DURATION_S * self.SAMPLE_RATE)
+        post_pad_samples = max(0, min_samples - len(audio))
+        audio = np.concatenate(
+            [
+                np.zeros(pre_pad_samples, dtype=np.float32),
+                audio,
+                np.zeros(post_pad_samples, dtype=np.float32),
+            ]
+        )
 
         # Run preprocessor
         waveforms = audio.reshape(1, -1).astype(np.float32)

@@ -50,6 +50,7 @@ Rectangle {
             ScrollView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Component.onCompleted: contentItem.boundsBehavior = Flickable.StopAtBounds
 
                 TextArea {
                     id: infoMessages
@@ -300,6 +301,7 @@ Rectangle {
 
                 // Tab 0: Notes / user query
                 ScrollView {
+                    Component.onCompleted: contentItem.boundsBehavior = Flickable.StopAtBounds
                     TextArea {
                         id: userQueryEdit
                         placeholderText: "Describe the user request (markdown)"

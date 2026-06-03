@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -159,7 +160,11 @@ class HybridSegmentService:
                 arguments.get("x", 0), arguments.get("y", 0)
             )
         elif focus_mode == "scroll":
-            result_text = await self._exec_scroll(arguments.get("steps", 0))
+            result_text = await self._exec_scroll(
+                arguments.get("coordinate", [500, 500]),
+                arguments.get("direction", "down"),
+                arguments.get("amount", 3),
+            )
         else:
             result_text = f"Error: unknown client execution mode '{focus_mode}'"
 
@@ -276,11 +281,11 @@ class HybridSegmentService:
         """Click at coordinates (0-1000 grid). Converts to screen pixels."""
         from assistant.services import input_control
 
-        screen_w, screen_h = self._resolve_output_resolution()
+        ox, oy, screen_w, screen_h = self._resolve_screen_geometry()
         if screen_w == 0 or screen_h == 0:
             return "Error: cannot determine screen resolution"
-        px = int(x / 1000 * screen_w)
-        py = int(y / 1000 * screen_h)
+        px = ox + int(x / 1000 * screen_w)
+        py = oy + int(y / 1000 * screen_h)
         if not await input_control.click(px, py):
             return f"Error: click at ({px}, {py}) failed"
         self._pointer_x = px
@@ -323,6 +328,11 @@ class HybridSegmentService:
 
     def _resolve_output_resolution(self) -> tuple[int, int]:
         """Get the target screen resolution for overlay rendering."""
+        _, _, w, h = self._resolve_screen_geometry()
+        return w, h
+
+    def _resolve_screen_geometry(self) -> tuple[int, int, int, int]:
+        """Get (x_offset, y_offset, width, height) of the capture screen."""
         capture = vii.app.view_state.capture_screen_info
         if capture:
             screen = get_screen_by_name(capture.name)
@@ -330,11 +340,12 @@ class HybridSegmentService:
             screen = QGuiApplication.primaryScreen()
         if not screen:
             log.error("No screen available for shape conversion")
-            return 0, 0
+            return 0, 0, 0, 0
         geo = screen.geometry()
+        x, y = int(geo.x()), int(geo.y())
         w, h = int(geo.width()), int(geo.height())
-        log.info(f"Screen geometry: {w}x{h}")
-        return w, h
+        log.info(f"Screen geometry: {x},{y} {w}x{h}")
+        return x, y, w, h
 
     def _resolve_input_resolution(
         self, fallback_w: int, fallback_h: int
@@ -673,8 +684,10 @@ class HybridSegmentService:
             )
 
         if call.name == "scroll":
-            steps = int(resolved_args[0]) if resolved_args else 0
-            result_msg = await self._exec_scroll(steps)
+            coordinate = list(resolved_args[0]) if resolved_args else [500, 500]
+            direction = str(resolved_args[1]) if len(resolved_args) > 1 else "down"
+            amount = int(resolved_args[2]) if len(resolved_args) > 2 else 3
+            result_msg = await self._exec_scroll(coordinate, direction, amount)
             return ToolCallResult(
                 call_id=call.id,
                 name=call.name,
@@ -726,7 +739,7 @@ class HybridSegmentService:
 
         pil_img = qpixmap_to_pil(qpixmap)
         # Resize to model resolution
-        target_w, target_h = get_resolution_for_model(settings.selected_model)
+        target_w, target_h = get_resolution_for_model(vii.get_config().selected_model)
         pil_img, _ = resize_to_target(pil_img, target_w, target_h)
 
         # Encode to base64
@@ -956,10 +969,10 @@ class HybridSegmentService:
         x1, y1, x2, y2 = bbox_xyxy
         center_qwen_x = (x1 + x2) // 2
         center_qwen_y = (y1 + y2) // 2
-        screen_w, screen_h = self._resolve_output_resolution()
+        ox, oy, screen_w, screen_h = self._resolve_screen_geometry()
         # Direct Qwen grid (0-1000) → screen coordinate mapping
-        screen_x = int(center_qwen_x / 1000 * screen_w)
-        screen_y = int(center_qwen_y / 1000 * screen_h)
+        screen_x = ox + int(center_qwen_x / 1000 * screen_w)
+        screen_y = oy + int(center_qwen_y / 1000 * screen_h)
         return screen_x, screen_y
 
     async def _exec_move_pointer(self, description: str) -> str | None:
@@ -1012,30 +1025,35 @@ class HybridSegmentService:
 
     _MAX_SCROLL_STEPS = 10
 
-    async def _exec_scroll(self, steps: int) -> str:
-        """Scroll at the current pointer position (or screen center) via ydotool."""
+    async def _exec_scroll(
+        self, coordinate: list[int], direction: str, amount: int
+    ) -> str:
+        """Scroll at explicit coordinate (0-1000 grid) via ydotool."""
         from assistant.services import input_control
 
-        if steps == 0:
-            return "scroll: 0 steps, nothing to do"
+        if amount == 0:
+            return "scroll: 0 amount, nothing to do"
 
         # Clamp to prevent runaway scrolling
-        if abs(steps) > self._MAX_SCROLL_STEPS:
-            log.warning("scroll: clamped %d to %d", steps, self._MAX_SCROLL_STEPS)
-            steps = self._MAX_SCROLL_STEPS if steps > 0 else -self._MAX_SCROLL_STEPS
+        if amount > self._MAX_SCROLL_STEPS:
+            log.warning("scroll: clamped %d to %d", amount, self._MAX_SCROLL_STEPS)
+            amount = self._MAX_SCROLL_STEPS
 
-        # Use last known pointer position, or fall back to screen center
-        if self._pointer_x is not None and self._pointer_y is not None:
-            x, y = self._pointer_x, self._pointer_y
-        else:
-            screen_w, screen_h = self._resolve_output_resolution()
-            x, y = screen_w // 2, screen_h // 2
+        # Convert direction + amount to signed steps (positive=up, negative=down)
+        steps = amount if direction == "up" else -amount
+
+        # Convert 0-1000 grid to screen pixels (with offset)
+        x, y = coordinate[0], coordinate[1]
+        ox, oy, screen_w, screen_h = self._resolve_screen_geometry()
+        px = ox + int(x / 1000 * screen_w)
+        py = oy + int(y / 1000 * screen_h)
 
         # Move pointer to position then scroll
-        if not await input_control.move_pointer(x, y):
-            return f"error: scroll failed: could not move pointer to ({x}, {y})"
+        if not await input_control.move_pointer(px, py):
+            return f"error: scroll failed: could not move pointer to ({px}, {py})"
         if not await input_control.scroll(steps):
-            return f"error: scroll failed at ({x}, {y})"
+            return f"error: scroll failed at ({px}, {py})"
 
-        direction = "up" if steps > 0 else "down"
-        return f"scrolled {direction} {abs(steps)} clicks at ({x}, {y})"
+        self._pointer_x = px
+        self._pointer_y = py
+        return f"scrolled {direction} {amount} clicks at ({x}, {y})"
