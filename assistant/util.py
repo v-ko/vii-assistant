@@ -1,4 +1,3 @@
-import logging
 import re
 from typing import Any, Final, List, Literal, Optional, Tuple, TypedDict, Union, cast
 
@@ -28,8 +27,6 @@ class PointShape(BaseShape):
 
 
 Shape = Union[RectShape, PointShape]
-
-logging.basicConfig(level=logging.INFO)
 
 
 def get_screen_by_name(name: str) -> QScreen | None:

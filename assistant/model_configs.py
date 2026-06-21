@@ -104,6 +104,8 @@ MODEL_SPECS = {
             "2048",
             "--image-max-tokens",
             "1120",
+            "--parallel",
+            "2",
         ],
         "chat_template_params": {
             "enable_thinking": False,

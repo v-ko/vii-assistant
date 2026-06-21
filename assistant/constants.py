@@ -37,3 +37,9 @@ MAX_SAVED_RECORDINGS = 5
 
 # Experiment configs
 EXPERIMENTS_DIR = Path(__file__).parent / "experiments"
+
+# Experiment run outputs (results, sample images, stats)
+EXPERIMENT_RESULTS_DIR = Path.home() / "vii" / "experiments"
+
+# Agents directory (project root level)
+AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"

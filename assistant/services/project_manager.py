@@ -10,7 +10,7 @@ from sivkit.libs.procedure import procedure
 from sivkit.storage.websockets_client_sync import WebSocketsClientSync
 
 from assistant.facade import vii
-from assistant.inference.context import ContextManager, TextItem
+from assistant.inference.context import ContextManager, TextMessage
 from assistant.procedures import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.util import get_screen_by_name
@@ -168,6 +168,14 @@ class ViiProjectManager:
 
         context_manager._store.add_on_changes_callback(_on_hybrid)
 
+        # Write-authority guard: raises ValueError if this process (the client)
+        # writes a server-owned field.
+        from assistant.inference.authority import authority_guard
+
+        context_manager._store.add_on_changes_callback(
+            lambda d, o: authority_guard("vii-assistant", d, o)
+        )
+
     # Task/system prompt -------------------------------------------------
     def set_task(self, task: str) -> None:
         self._write_markdown(self._task_path, task)
@@ -231,7 +239,7 @@ class ViiProjectManager:
             )
 
         if self._session_manager is not None:
-            self._session_manager.start_recording(config or None)
+            pass  # Recording disabled — VCS persistence replaces it
 
         # Ensure inference client
         if self._sync_client is None:
@@ -271,10 +279,13 @@ class ViiProjectManager:
             for mode_name, mode_config in FOCUS_MODES.items():
                 if not mode_config.has_prompt_file:
                     continue
-                prompt_text = mode_config.load_system_prompt()
+                try:
+                    prompt_text = mode_config.load_system_prompt(vii.active_agent)
+                except (FileNotFoundError, TypeError):
+                    continue
                 if not prompt_text.strip():
                     continue
-                system_item = TextItem()
+                system_item = TextMessage()
                 system_item.position = self.context_manager.next_position()
                 system_item.text = prompt_text.strip()
                 system_item.origin = "system"
@@ -350,7 +361,7 @@ class ViiProjectManager:
         print("Project manager prepared new session")
 
         # Auto-restart session if inference server is available
-        if settings_state.server_model_state == "loaded":
+        if vii.app.view_state.inference_status_VS.model_state == "loaded":
             capture = vii.app.view_state.capture_screen_info
             screen_name = capture.name if capture else vii.get_config().capture_screen
             self.start_session(screen_name=screen_name)

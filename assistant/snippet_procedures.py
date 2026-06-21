@@ -19,7 +19,7 @@ from sivkit.libs.model import dump_to_dict
 from sivkit.libs.procedure import procedure
 
 from assistant.facade import vii
-from assistant.inference.context import ImageItem, TextItem
+from assistant.inference.context import ImageMessage, TextMessage
 from assistant.snippet_actions import show_snippet_overlays
 from assistant.utils.image_utils import qimage_to_pil
 
@@ -85,19 +85,19 @@ async def _get_image_description(pil_image: Image.Image) -> str | None:
     pil_image.save(buf, format="PNG")
     image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    img_item = ImageItem()
+    img_item = ImageMessage()
     img_item.position = 100
     img_item.origin = "user"
     img_item.image_b64 = image_b64
     img_item.width = pil_image.width
     img_item.height = pil_image.height
 
-    text_item = TextItem()
+    text_item = TextMessage()
     text_item.position = 150
     text_item.origin = "user"
     text_item.text = "Briefly describe what is shown in this image region. If the image contains only text, output just the text content verbatim."
 
-    req_item = TextItem()
+    req_item = TextMessage()
     req_item.position = 200
     req_item.origin = "assistant"
     req_item.request = {"stream": False}

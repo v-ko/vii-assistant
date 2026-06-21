@@ -20,3 +20,5 @@ tmp/*
 assistant/scripts/build_paper_corpus.py
 run_inference_server.sh
 
+datasets/**
+thesis/**

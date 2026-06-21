@@ -22,6 +22,17 @@ log = logging.getLogger(__name__)
 _HEALTH_POLL_INTERVAL = 1.0  # seconds
 _HEALTH_POLL_TIMEOUT = 600.0  # seconds (model download + load can be slow)
 
+# Per-request timeouts. A short connect/read budget so a wedged llama-server
+# (which accepts the TCP connection but never sends response headers) fails
+# fast instead of lingering as a 5-minute zombie that holds the single slot.
+# Read is the gap between SSE chunks, not total generation time.
+_REQUEST_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
+# After this many consecutive generations fail before producing any output
+# (header-stage timeout / connection error), assume llama-server is wedged and
+# restart the subprocess so the next request can recover.
+_WEDGE_RESTART_THRESHOLD = 2
+
 
 def _messages_with_base64_images(
     messages: list[dict[str, Any]], images: list[Image.Image]
@@ -86,6 +97,9 @@ class LlamaModelProxy:
         self._model_key: str | None = None
         self._state: str = "unloaded"
         self._load_lock = asyncio.Lock()
+        # Consecutive output-less generation failures (wedge detector).
+        self._consecutive_wedge_failures = 0
+        self._restarting = False
 
     @property
     def state(self) -> str:
@@ -220,7 +234,7 @@ class LlamaModelProxy:
             body["chat_template_kwargs"] = chat_template_kwargs
 
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
                 resp = await client.post(
                     f"{self.base_url}/v1/chat/completions",
                     json=body,
@@ -252,7 +266,10 @@ class LlamaModelProxy:
     ) -> AsyncIterator[str]:
         """Streaming generation via SSE from /v1/chat/completions."""
         if self._state != "loaded":
-            return
+            # May be mid-restart after a wedge — wait briefly for the fresh
+            # subprocess to come back rather than failing the request instantly.
+            if not await self._await_loaded(timeout=35.0):
+                raise RuntimeError(f"llama-server not ready (state={self._state})")
 
         api_messages = _messages_with_base64_images(messages, images)
         api_params = _map_gen_params(gen_params)
@@ -265,8 +282,9 @@ class LlamaModelProxy:
         if chat_template_kwargs:
             body["chat_template_kwargs"] = chat_template_kwargs
 
+        produced = False
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/v1/chat/completions",
@@ -288,11 +306,70 @@ class LlamaModelProxy:
                             delta = chunk_data["choices"][0].get("delta", {})
                             content = delta.get("content")
                             if content:
+                                produced = True
                                 yield content
                         except (KeyError, json.JSONDecodeError):
                             continue
+            # Responsive server — clear the wedge counter.
+            self._consecutive_wedge_failures = 0
         except Exception as exc:
             log.error("LlamaModelProxy: generate_stream failed: %s", exc, exc_info=True)
+            # A failure that produced no output at all is a wedge symptom
+            # (header-stage timeout / connection refused). Count it and restart
+            # the subprocess once the server looks reliably stuck.
+            if not produced:
+                self._consecutive_wedge_failures += 1
+                log.warning(
+                    "LlamaModelProxy: output-less failure %d/%d",
+                    self._consecutive_wedge_failures,
+                    _WEDGE_RESTART_THRESHOLD,
+                )
+                if self._consecutive_wedge_failures >= _WEDGE_RESTART_THRESHOLD:
+                    self._schedule_restart()
+            # Re-raise so the caller finalizes the turn as an error instead of a
+            # silent empty success. A read timeout / connection drop from
+            # llama-server must not look like a completed (empty) generation.
+            raise
+
+    def _schedule_restart(self) -> None:
+        """Fire a background restart of a wedged llama-server (once).
+
+        Runs as an independent task so it survives cancellation of the request
+        that detected the wedge (e.g. when the client tears down its WS).
+        """
+        if self._restarting:
+            return
+        self._restarting = True
+        asyncio.create_task(self._restart_server())
+
+    async def _await_loaded(self, timeout: float) -> bool:
+        """Poll until the server reports loaded (e.g. after a wedge restart)."""
+        elapsed = 0.0
+        interval = 0.5
+        while elapsed < timeout:
+            if self._state == "loaded":
+                return True
+            await asyncio.sleep(interval)
+            elapsed += interval
+        return self._state == "loaded"
+
+    async def _restart_server(self) -> None:
+        key = self._model_key
+        log.warning(
+            "LlamaModelProxy: llama-server appears wedged — restarting (model=%s)",
+            key,
+        )
+        try:
+            await self._kill_process()
+            self._state = "unloaded"
+            self._model_key = None
+            self._consecutive_wedge_failures = 0
+            if key:
+                await self.load_model(key)
+        except Exception:
+            log.error("LlamaModelProxy: wedge restart failed", exc_info=True)
+        finally:
+            self._restarting = False
 
     # --- Internal helpers ---
 

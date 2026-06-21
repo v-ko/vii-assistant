@@ -130,6 +130,15 @@ class ModelManager:
             "state": self._state,
         }
 
+    def count_tokens(self, text: str) -> int:
+        """Token count of text using the loaded tokenizer (0 if unavailable)."""
+        if not text or self._processor is None:
+            return 0
+        tokenizer = getattr(self._processor, "tokenizer", None)
+        if tokenizer is None:
+            return 0
+        return len(tokenizer.encode(text))
+
     # --- InferenceBackend generate methods ---
 
     ALLOWED_MODEL_INPUT_KEYS = {

@@ -5,10 +5,10 @@ from collections.abc import Iterable
 from PySide6.QtCore import QObject, Signal
 from sivkit.platform.qt_widgets import Property
 
-from assistant.inference.context import ContextItem, ImageItem, TextItem
+from assistant.inference.context import ContextMessage, ImageMessage, TextMessage
 
 
-def _summarize_request(item: ContextItem) -> str:
+def _summarize_request(item: ContextMessage) -> str:
     payload = item.request or {}
     if not isinstance(payload, dict):
         return ""
@@ -30,9 +30,9 @@ def _summarize_request(item: ContextItem) -> str:
     return "Request: " + ", ".join(parts)
 
 
-def _format_display_text(item: ContextItem) -> str:
+def _format_display_text(item: ContextMessage) -> str:
     """Format item text for UI display. Prettifies tool call arguments."""
-    if not isinstance(item, TextItem):
+    if not isinstance(item, TextMessage):
         return ""
     text = item.text
     meta = item.metadata or {}
@@ -53,8 +53,6 @@ def _format_display_text(item: ContextItem) -> str:
             coord = arguments.get("coordinate", ["?", "?"])
             arrow = "↑" if direction == "up" else "↓"
             return f"{arrow} scroll {amount} at ({coord[0]}, {coord[1]})"
-        elif focus_mode == "move_pointer":
-            return f"→ move ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
         return text
 
     # Tool call in metadata (completed assistant generation that triggered a tool)
@@ -63,7 +61,10 @@ def _format_display_text(item: ContextItem) -> str:
         name = tool_call.get("name", "")
         args = tool_call.get("arguments", {})
         suffix = ""
-        if name == "localization":
+        if name == "focus":
+            mode = args.get("mode", "")
+            suffix = f" [{mode}]: {args.get('instruction', '')}"
+        elif name == "localization":
             suffix = f": {args.get('instruction', '')}"
         elif name == "python":
             code = args.get("code", "")
@@ -84,7 +85,7 @@ def _format_display_text(item: ContextItem) -> str:
     return text
 
 
-class ContextItemViewState(QObject):
+class ContextMessageViewState(QObject):
     position_changed = Signal(int)
     content_kind_changed = Signal(str)
     text_changed = Signal(str)
@@ -198,7 +199,7 @@ class ContextItemViewState(QObject):
         self._focus_mode = value
         self.focus_mode_changed.emit(value)
 
-    def apply_context_item(self, item: ContextItem) -> bool:
+    def apply_context_item(self, item: ContextMessage) -> bool:
         reposition = item.position != self._position
         previous_kind = self._content_kind
 
@@ -208,11 +209,11 @@ class ContextItemViewState(QObject):
         self.focus_mode = (item.metadata or {}).get("focus_mode", "")
         self.display_text = _format_display_text(item)
 
-        if isinstance(item, TextItem):
+        if isinstance(item, TextMessage):
             self.content_kind = "text"
             self.text = item.text
             self.image_b64 = ""
-        elif isinstance(item, ImageItem):
+        elif isinstance(item, ImageMessage):
             self.content_kind = "image"
             self.image_b64 = item.image_b64
             self.text = ""
@@ -235,14 +236,14 @@ class ContextViewerState(QObject):
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._items: dict[str, ContextItemViewState] = {}
+        self._items: dict[str, ContextMessageViewState] = {}
         self._interactions_enabled = False
 
     @Property(list, notify=items_changed)
-    def items(self) -> list[ContextItemViewState]:
+    def items(self) -> list[ContextMessageViewState]:
         return self.sorted_items()
 
-    def sorted_items(self) -> list[ContextItemViewState]:
+    def sorted_items(self) -> list[ContextMessageViewState]:
         return sorted(
             self._items.values(),
             key=lambda state: (state.position, state.item_id),
@@ -259,15 +260,15 @@ class ContextViewerState(QObject):
         self._interactions_enabled = value
         self.interactions_enabled_changed.emit(value)
 
-    def get_item(self, item_id: str) -> ContextItemViewState | None:
+    def get_item(self, item_id: str) -> ContextMessageViewState | None:
         return self._items.get(item_id)
 
-    def apply_entity(self, item: ContextItem) -> None:
+    def apply_entity(self, item: ContextMessage) -> None:
         """Create or update a view state entry from a ContextItem entity."""
         key: str = str(item.id)
         state = self._items.get(key)
         if state is None:
-            state = ContextItemViewState(key, parent=self)
+            state = ContextMessageViewState(key, parent=self)
             self._items[key] = state
             state.apply_context_item(item)
             self.item_added.emit(key)
@@ -290,17 +291,17 @@ class ContextViewerState(QObject):
         # Kept for compatibility but not used in the new flow
         pass
 
-    def replace_all(self, items: Iterable[ContextItem]) -> None:
+    def replace_all(self, items: Iterable[ContextMessage]) -> None:
         current_ids = set(self._items.keys())
         next_ids: set[str] = set()
         for item in items:
-            if not isinstance(item, ContextItem):  # defensive
+            if not isinstance(item, ContextMessage):  # defensive
                 continue
             key: str = str(item.id)
             next_ids.add(key)
             state = self._items.get(key)
             if state is None:
-                state = ContextItemViewState(key, parent=self)
+                state = ContextMessageViewState(key, parent=self)
                 self._items[key] = state
             state.apply_context_item(item)
         removed = current_ids - next_ids

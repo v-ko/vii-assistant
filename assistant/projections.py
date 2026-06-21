@@ -15,7 +15,7 @@ from sivkit.libs.action import action
 from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta
 
-from assistant.inference.context import ContextItem
+from assistant.inference.context import ContextMessage
 from assistant.inference.context_store import OP_SEP
 from assistant.model.app_config import ViiConfig
 from assistant.snippet_actions import hide_snippet_overlays
@@ -24,6 +24,7 @@ from assistant.view_states.screen_info import ScreenInfoData, ScreenInfoVS
 if TYPE_CHECKING:
     from assistant.app_state import AppViewState
     from assistant.inference.context import ContextManager
+    from assistant.services.inference_client import InferenceServerClient
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,20 @@ def project_config(cfg: ViiConfig, settings_vs, transcription_vs) -> None:
     transcription_vs.selected_input_device = cfg.transcription.get("input_device", "")
 
 
+# ── Inference status projector ─────────────────────────────────────
+
+
+@action("inference.project_status", issuer="service")
+def project_inference_status(
+    client: InferenceServerClient, app_state: AppViewState
+) -> None:
+    """Project the inference client's live status onto the view state."""
+    status_vs = app_state.inference_status_VS
+    status_vs.connected = client.connected
+    status_vs.model_state = client.model_state
+    status_vs.model_key = client.model_key
+
+
 # ── Context store → view state projector ─────────────────────────────────────
 
 
@@ -100,7 +115,7 @@ def project_context_delta_to_view(
         if OP_SEP in key:
             entity_id = key.split(OP_SEP, 1)[0]
             entity = ctx_mgr._store.find_one(id=entity_id)
-            if entity and isinstance(entity, ContextItem):
+            if entity and isinstance(entity, ContextMessage):
                 context_vs.apply_entity(entity)
         else:
             eid, reverse, forward = change_data
@@ -109,5 +124,5 @@ def project_context_delta_to_view(
                 context_vs.remove_entity(eid)
             else:
                 entity = ctx_mgr._store.find_one(id=eid)
-                if entity and isinstance(entity, ContextItem):
+                if entity and isinstance(entity, ContextMessage):
                     context_vs.apply_entity(entity)

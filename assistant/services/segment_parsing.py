@@ -9,17 +9,15 @@ without circular-dep issues.
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 from PIL import Image
 from sivkit.util.rectangle import Rectangle
 
-from assistant.inference.context import TextItem
+from assistant.inference.context import TextMessage
 from assistant.inference.function_interpreter import HybridFunctionInterpreter
 
 log = logging.getLogger(__name__)
@@ -91,28 +89,6 @@ class SegmentOutput(TypedDict, total=False):
     bbox: list[Rectangle]
     image: list[Rectangle] | list[Image.Image]
     points: list[tuple[int, int]]
-
-
-@dataclass(frozen=True)
-class ExtractedToolCall:
-    id: str
-    message_id: str
-    ordinal: int
-    name: str
-    arg_exprs: list[str]
-    assign_to: str | None = None
-    source_line: str = ""
-    line_number: int = 0
-
-
-@dataclass
-class ToolCallResult:
-    call_id: str
-    name: str
-    status: Literal["success", "error"]
-    value: Any = None
-    message: str = ""
-    context_item_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +232,6 @@ def _parse_json_item(item: dict, out: SegmentOutput, bbox_format: str) -> None:
     if xyxy is not None:
         x1, y1, x2, y2 = xyxy
         rect = Rectangle(x1, y1, x2 - x1, y2 - y1)
-        log.info(f"JSON bbox -> xyxy={xyxy} -> Rectangle{rect.as_tuple()}")
         out["bbox"].append(rect)  # type: ignore[union-attr]
 
     point_val = item.get("point_2d") or item.get("point")
@@ -270,142 +245,222 @@ def _parse_json_item(item: dict, out: SegmentOutput, bbox_format: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool call extraction / ID utilities
+# Shape extraction from agent code (AST-based)
 # ---------------------------------------------------------------------------
 
-
-def extract_tool_calls_from_message(item: TextItem) -> list[ExtractedToolCall]:
-    calls: list[ExtractedToolCall] = []
-    message_id = str(item.id)
-
-    for line_number, raw_line in enumerate(str(item.text or "").splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            tree = ast.parse(line, mode="exec")
-        except SyntaxError:
-            continue
-
-        for stmt in tree.body:
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target = stmt.targets[0]
-                value = stmt.value
-                if isinstance(value, ast.Call):
-                    call = _tool_call_from_ast(
-                        message_id=message_id,
-                        ordinal=len(calls),
-                        call_node=value,
-                        assign_to=hfi._target_str(target),
-                        source_line=line,
-                        line_number=line_number,
-                    )
-                    if call is not None:
-                        calls.append(call)
-                        continue
-
-                resolved = hfi._resolve_node(value)
-                hfi._assign_to_target(target, resolved)
-
-            elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-                call = _tool_call_from_ast(
-                    message_id=message_id,
-                    ordinal=len(calls),
-                    call_node=stmt.value,
-                    assign_to=None,
-                    source_line=line,
-                    line_number=line_number,
-                )
-                if call is not None:
-                    calls.append(call)
-
-    return calls
+from assistant.util import Shape
 
 
-def _tool_call_from_ast(
-    *,
-    message_id: str,
-    ordinal: int,
-    call_node: ast.Call,
-    assign_to: str | None,
-    source_line: str,
-    line_number: int,
-) -> ExtractedToolCall | None:
-    name = hfi._func_name_from_node(call_node.func)
-    if name not in AGENT_TOOLS:
+def _is_grid_coord(value: int) -> bool:
+    """Check if a value looks like a Qwen 0-1000 grid coordinate."""
+    return 0 <= value <= 1000
+
+
+def _try_eval_int(node: ast.expr) -> int | None:
+    """Try to statically evaluate an AST node to an integer."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _try_eval_int(node.operand)
+        if inner is not None:
+            return -inner
+    return None
+
+
+def _try_extract_int_list(node: ast.expr) -> list[int] | None:
+    """Try to extract a list of integer constants from an AST List node."""
+    if not isinstance(node, ast.List):
         return None
-
-    arg_exprs = [ast.unparse(arg) for arg in call_node.args]
-    call_id = tool_call_id(
-        message_id=message_id,
-        ordinal=ordinal,
-        name=name,
-        arg_exprs=arg_exprs,
-        assign_to=assign_to,
-    )
-    return ExtractedToolCall(
-        id=call_id,
-        message_id=message_id,
-        ordinal=ordinal,
-        name=name,
-        arg_exprs=arg_exprs,
-        assign_to=assign_to,
-        source_line=source_line,
-        line_number=line_number,
-    )
+    values = []
+    for elt in node.elts:
+        v = _try_eval_int(elt)
+        if v is None:
+            return None
+        values.append(v)
+    return values
 
 
-def message_tool_run_id(item: TextItem) -> str:
-    payload = json.dumps(
-        {
-            "message_id": str(item.id),
-            "text": item.text,
-        },
-        sort_keys=True,
-        ensure_ascii=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _is_bbox_list(values: list[int]) -> bool:
+    """Check if a 4-element list looks like a bbox in 0-1000 grid."""
+    if len(values) != 4:
+        return False
+    return all(_is_grid_coord(v) for v in values)
 
 
-def tool_call_id(
-    *,
-    message_id: str,
-    ordinal: int,
-    name: str,
-    arg_exprs: list[str],
-    assign_to: str | None,
-) -> str:
-    payload = json.dumps(
-        {
-            "message_id": message_id,
-            "ordinal": ordinal,
-            "name": name,
-            "assign_to": assign_to or "",
-            "args": [_normalize_expr(expr) for expr in arg_exprs],
-        },
-        sort_keys=True,
-        ensure_ascii=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _is_point_list(values: list[int]) -> bool:
+    """Check if a 2-element list looks like a point in 0-1000 grid."""
+    if len(values) != 2:
+        return False
+    return all(_is_grid_coord(v) for v in values)
 
 
-def _normalize_expr(expr: str) -> str:
+def extract_shapes_from_code(code: str) -> list[Shape]:
+    """Extract bbox and point shapes from agent python code using AST.
+
+    Finds:
+    - crop_image([x1,y1,x2,y2]) calls → rect (xyxy)
+    - locate(x1,y1,x2,y2) calls → rect (xyxy)
+    - bbox(x,y,w,h) calls → rect (xywh)
+    - click_at(x, y) / point(x,y) calls → point
+    - 4-element list literals (0-1000 range) in assignments or args → rect (xyxy)
+    - 2-element list literals in scroll coordinate arg → point
+
+    All coordinates are in Qwen 0-1000 grid (not scaled to screen).
+    """
+    shapes: list[Shape] = []
+    seen_lists: set[tuple] = set()  # avoid duplicates
+
     try:
-        return ast.unparse(ast.parse(expr, mode="eval").body)
+        tree = ast.parse(code, mode="exec")
     except SyntaxError:
-        return " ".join(expr.split())
+        return shapes
+
+    def _add_rect_xyxy(x1: int, y1: int, x2: int, y2: int) -> None:
+        key = ("rect", x1, y1, x2, y2)
+        if key in seen_lists:
+            return
+        seen_lists.add(key)
+        w = x2 - x1
+        h = y2 - y1
+        if w > 0 and h > 0:
+            shapes.append({"type": "rect", "geometry": (x1, y1, w, h)})
+
+    def _add_rect_xywh(x: int, y: int, w: int, h: int) -> None:
+        key = ("rect", x, y, x + w, y + h)
+        if key in seen_lists:
+            return
+        seen_lists.add(key)
+        if w > 0 and h > 0:
+            shapes.append({"type": "rect", "geometry": (x, y, w, h)})
+
+    def _add_point(x: int, y: int) -> None:
+        key = ("point", x, y)
+        if key in seen_lists:
+            return
+        seen_lists.add(key)
+        shapes.append({"type": "point", "geometry": (x, y)})
+
+    def _visit_call(node: ast.Call) -> bool:
+        """Process a function call. Returns True if handled (skip children)."""
+        func_name = ""
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            func_name = node.func.attr
+
+        if func_name == "crop_image" and node.args:
+            # crop_image([x1, y1, x2, y2])
+            vals = _try_extract_int_list(node.args[0])
+            if vals and _is_bbox_list(vals):
+                _add_rect_xyxy(*vals)
+                return True
+
+        elif func_name == "locate" and len(node.args) >= 4:
+            # locate(x1, y1, x2, y2)
+            coords = [_try_eval_int(a) for a in node.args[:4]]
+            if all(c is not None for c in coords) and _is_bbox_list(coords):
+                _add_rect_xyxy(*coords)
+                return True
+
+        elif func_name == "bbox" and len(node.args) >= 4:
+            # bbox(x, y, w, h)
+            coords = [_try_eval_int(a) for a in node.args[:4]]
+            if all(c is not None for c in coords):
+                _add_rect_xywh(*coords)
+                return True
+
+        elif func_name in ("click_at", "point") and len(node.args) >= 2:
+            x = _try_eval_int(node.args[0])
+            y = _try_eval_int(node.args[1])
+            if (
+                x is not None
+                and y is not None
+                and _is_grid_coord(x)
+                and _is_grid_coord(y)
+            ):
+                _add_point(x, y)
+                return True
+
+        elif func_name == "scroll":
+            # scroll(coordinate=[x,y], ...) — check keyword args
+            for kw in node.keywords:
+                if kw.arg == "coordinate":
+                    vals = _try_extract_int_list(kw.value)
+                    if vals and _is_point_list(vals):
+                        _add_point(*vals)
+            # Also check positional first arg
+            if node.args:
+                vals = _try_extract_int_list(node.args[0])
+                if vals and _is_point_list(vals):
+                    _add_point(*vals)
+            return True
+
+        return False
+
+    def _visit_list(node: ast.List) -> None:
+        """Check if a bare list literal is a bbox or point."""
+        vals = _try_extract_int_list(node)
+        if vals is None:
+            return
+        if _is_bbox_list(vals):
+            _add_rect_xyxy(*vals)
+        # Don't auto-extract 2-element lists — too many false positives
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if not _visit_call(node):
+                # If call wasn't handled, check its args for list literals
+                for arg in node.args:
+                    if isinstance(arg, ast.List):
+                        _visit_list(arg)
+        elif isinstance(node, ast.Assign):
+            # Check RHS for list literals (e.g. region = [50, 240, 950, 480])
+            if isinstance(node.value, ast.List):
+                _visit_list(node.value)
+
+    return shapes
 
 
-def format_tool_result_message(
-    source_item: TextItem, results: list[ToolCallResult]
-) -> str:
-    lines = [f"[tool results for assistant message {source_item.id}]"]
-    for result in results:
-        short_id = result.call_id[:12]
-        lines.append("")
-        lines.append(f"{result.name}#{short_id}: {result.status}")
-        if result.context_item_id:
-            lines.append(f"item_id: {result.context_item_id}")
-        if result.message:
-            lines.append(f"message: {result.message}")
-    return "\n".join(lines)
+def extract_shapes_from_item(item: TextMessage) -> list[Shape]:
+    """Extract preview shapes from a TextItem (code or tool call metadata).
+
+    Handles:
+    - Completed messages with inline code (parses item.text)
+    - Client execution requests (python code from metadata)
+    - click_at / scroll from request metadata
+    """
+    shapes: list[Shape] = []
+    request = item.request if isinstance(item.request, dict) else {}
+    metadata = item.metadata or {}
+
+    # Client-side execution item with metadata arguments
+    if request.get("execution") == "client":
+        focus_mode = request.get("focus_mode", "")
+        arguments = metadata.get("arguments", {})
+
+        if focus_mode == "python":
+            code = arguments.get("code", "")
+            if code:
+                shapes.extend(extract_shapes_from_code(code))
+
+        elif focus_mode == "click_at":
+            x = arguments.get("x", 0)
+            y = arguments.get("y", 0)
+            if _is_grid_coord(x) and _is_grid_coord(y):
+                shapes.append({"type": "point", "geometry": (int(x), int(y))})
+
+        elif focus_mode == "scroll":
+            coord = arguments.get("coordinate", [500, 500])
+            if isinstance(coord, list) and len(coord) == 2:
+                x, y = int(coord[0]), int(coord[1])
+                if _is_grid_coord(x) and _is_grid_coord(y):
+                    shapes.append({"type": "point", "geometry": (x, y)})
+
+        return shapes
+
+    # Completed assistant message — parse text for inline code
+    text = str(item.text or "")
+    if text.strip():
+        shapes.extend(extract_shapes_from_code(text))
+
+    return shapes

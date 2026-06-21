@@ -28,17 +28,24 @@ Rectangle {
                 color: palette.text
             }
 
+            Label {
+                text: appVM.activeAgent ? "[" + appVM.activeAgent + "]" : ""
+                font.pixelSize: 11
+                color: palette.placeholderText
+                visible: text !== ""
+            }
+
             Item { Layout.fillWidth: true }
 
             Button {
-                text: "main"
+                text: "main raw"
                 font.pixelSize: 10
                 implicitHeight: 22
                 onClicked: appVM.fetchContextDebug("main")
             }
 
             Button {
-                text: "localization"
+                text: "localization raw"
                 font.pixelSize: 10
                 implicitHeight: 22
                 onClicked: appVM.fetchContextDebug("localization")
@@ -72,9 +79,19 @@ Rectangle {
             property bool followTail: true
             property real _bottomThreshold: 30  // px
 
-            // Detect user scroll intent when movement finishes
+            // Detect user scroll intent
             onMovementEnded: {
                 followTail = atYEnd || (contentHeight - contentY - height < _bottomThreshold)
+            }
+
+            // Track contentY changes to detect scrolling away from bottom
+            onContentYChanged: {
+                if (contentHeight > height) {
+                    var distFromEnd = contentHeight - contentY - height
+                    if (distFromEnd > _bottomThreshold) {
+                        followTail = false
+                    }
+                }
             }
 
             // Also detect scrollbar drag
@@ -90,9 +107,9 @@ Rectangle {
             }
 
             // When content grows (new items, streaming text, delegate layout),
-            // follow the tail. Safe with incremental model ops — no loop.
+            // follow the tail only if user isn't interacting.
             onContentHeightChanged: {
-                if (followTail && contentHeight > height) {
+                if (followTail && !moving && !dragging && contentHeight > height) {
                     positionViewAtEnd()
                 }
             }
@@ -221,8 +238,17 @@ Rectangle {
                     }
 
                     Rectangle {
-                        visible: textItem.focusMode !== "" && textItem.focusMode !== "main"
-                        color: Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.25)
+                        visible: textItem.focusMode !== ""
+                        color: {
+                            // Deterministic color from focus mode name
+                            var hash = 0
+                            var name = textItem.focusMode
+                            for (var i = 0; i < name.length; i++) {
+                                hash = name.charCodeAt(i) + ((hash << 5) - hash)
+                            }
+                            var h = ((hash % 360) + 360) % 360
+                            return Qt.hsla(h / 360.0, 0.5, 0.5, 0.25)
+                        }
                         radius: 3
                         implicitWidth: modeLabel.implicitWidth + 8
                         implicitHeight: modeLabel.implicitHeight + 2
@@ -363,6 +389,7 @@ Rectangle {
         Rectangle {
             id: spItem
             property string text: ""
+            property string focusMode: ""
 
             property bool expanded: false
 
@@ -398,6 +425,31 @@ Rectangle {
                             font.bold: true
                             font.pixelSize: 11
                             color: palette.dark
+                        }
+
+                        Rectangle {
+                            visible: spItem.focusMode !== ""
+                            color: {
+                                // Deterministic color from focus mode name
+                                var hash = 0
+                                var name = spItem.focusMode
+                                for (var i = 0; i < name.length; i++) {
+                                    hash = name.charCodeAt(i) + ((hash << 5) - hash)
+                                }
+                                var h = ((hash % 360) + 360) % 360
+                                return Qt.hsla(h / 360.0, 0.5, 0.5, 0.25)
+                            }
+                            radius: 3
+                            implicitWidth: spModeLabel.implicitWidth + 8
+                            implicitHeight: spModeLabel.implicitHeight + 2
+
+                            Label {
+                                id: spModeLabel
+                                anchors.centerIn: parent
+                                text: spItem.focusMode
+                                font.pixelSize: 10
+                                color: palette.text
+                            }
                         }
 
                         Item { Layout.fillWidth: true }

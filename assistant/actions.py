@@ -7,9 +7,10 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
 
 from assistant.facade import raise_on_session_inactive, vii
-from assistant.inference.context import TextItem
+from assistant.inference.context import TextMessage
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.utils.capture_utils import clipboard_image
+from assistant.view_states.settings import ExecutionMode
 
 
 def ocr_clipboard() -> None:
@@ -112,18 +113,25 @@ def add_user_message(text: str) -> None:
 
     ctx = vii.project_manager.context_manager
     cleaned = text.strip()
+    user_item_id = ""
     if cleaned:
         # print(f"[TRACE] add_user_message: creating text item")
-        text_item = TextItem()
+        text_item = TextMessage()
         text_item.position = ctx.next_position()
         text_item.text = cleaned
         text_item.origin = "user"
         text_item.metadata = {"focus_mode": "main"}
         ctx.insert(text_item)
+        user_item_id = str(text_item.id)
 
-    request_item = TextItem()
+    # Reset the hybrid agent chain state for this new user turn (clears the
+    # stopped flag from a prior stop, turn count, and tool-call dedup state).
+    vii.project_manager.hybrid_segment_service.reset_turns()
+
+    request_item = TextMessage()
     request_item.position = ctx.next_position()
     request_item.origin = "assistant"
+    request_item.previous_message_id = user_item_id
     cfg = vii.get_config()
     generation_params = {"max_new_tokens": cfg.max_new_tokens}
     request_item.request = {
@@ -132,6 +140,11 @@ def add_user_message(text: str) -> None:
         "generation_params": generation_params,
     }
     request_item.metadata = {"focus_mode": "main"}
+    # In supervised mode the root turn is born "pending" — every turn is then
+    # gated/labeled; the supervised state propagates down the lineage by
+    # re-arming each continuation.
+    if vii.app.view_state.settings_VS.execution_mode == ExecutionMode.SUPERVISED.value:
+        request_item.teacher_feedback = "pending"
     # print(f"[TRACE] add_user_message: creating request item")
     ctx.insert(request_item)
     vii.app.view_state.settings_VS.assistant_working = True
@@ -139,30 +152,29 @@ def add_user_message(text: str) -> None:
 
 
 def stop_assistant() -> None:
-    """Cancel the active generation and stop the assistant's agent loop."""
+    """Cancel the active generation and stop the assistant's agent loop.
+
+    Marks the latest client-visible request item ``cancelled=True`` (a top-level
+    lineage flag). The ancestry guard on both processes suppresses any further
+    continuation born from this chain, and the server aborts any in-flight
+    generation when it observes the flag.
+    """
     settings = vii.app.view_state.settings_VS
     ctx_mgr = vii.project_manager.context_manager
 
-    # Find the active (uncompleted) request item and mark it cancelled
+    # Mark the latest request item (completed or not) as cancelled.
     for item in ctx_mgr.items_reversed():
-        if not isinstance(item, TextItem):
+        if not isinstance(item, TextMessage):
             continue
         if not isinstance(item.request, dict):
             continue
-        if item.request.get("completed"):
-            break  # Past the active request
-        # Found the active request — cancel it
         updated = item.copy()
-        req = dict(updated.request)
-        req["cancelled_by_user"] = True
-        req["completed"] = True
-        updated.request = req
+        updated.cancelled = True
         ctx_mgr.update(updated)
         break
 
-    # Stop the hybrid segment service agent loop
-    hybrid = vii.project_manager.hybrid_segment_service
-    hybrid.action_gate.interrupt()
-    hybrid._stopped = True
+    # Stop the hybrid segment service agent loop (interrupts gates, sets the
+    # stopped flag, and settles the active chain future if one is running).
+    vii.project_manager.hybrid_segment_service.cancel_chain("user stopped")
 
     settings.assistant_working = False

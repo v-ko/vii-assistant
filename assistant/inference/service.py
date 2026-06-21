@@ -13,7 +13,13 @@ import json_repair
 from sivkit.libs.model import load_from_dict
 from sivkit.storage.change import Change
 
-from assistant.inference.context import ContextItem, ContextManager, TextItem
+from assistant.inference.context import (
+    ContextManager,
+    ContextMessage,
+    GateDecision,
+    TextMessage,
+    gate_state,
+)
 from assistant.inference.context_store import ContextStore
 from assistant.inference.focus_modes import (
     CLIENT_TOOLS,
@@ -77,6 +83,9 @@ class InferenceService:
         self._lock = asyncio.Lock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._dispatched_requests: set[str] = set()
+        # Held supervised turns already resumed (dedup against duplicate verdict
+        # deliveries spawning the continuation twice).
+        self._resumed_turns: set[str] = set()
         self.session_id = session_id or secrets.token_hex(4)
         self._tool_call_depth: int = 0
 
@@ -102,7 +111,7 @@ class InferenceService:
 
             merged = {**dump_to_dict(existing), **forward}
             item = load_from_dict(merged)
-        if not isinstance(item, ContextItem):
+        if not isinstance(item, ContextMessage):
             raise TypeError(f"Expected ContextItem, got {type(item).__name__}")
         if not hasattr(item, "request") or not item.request:
             logger.info(
@@ -134,18 +143,38 @@ class InferenceService:
         event.set()
         return True
 
+    def cancel_all_generations(self) -> None:
+        """Break every in-flight generation stream (used on chain cancellation)."""
+        for item_id, event in list(self._cancel_events.items()):
+            logger.info("Cancelling generation for item %s (cancel-all)", item_id)
+            event.set()
+
+    def _chain_cancelled(self, item: ContextMessage | None) -> bool:
+        """True if ``item`` or any of its previous_message_id ancestors is cancelled."""
+        seen: set[str] = set()
+        cur = item
+        while cur is not None:
+            cid = str(getattr(cur, "id", ""))
+            if not cid or cid in seen:
+                return False
+            seen.add(cid)
+            if getattr(cur, "cancelled", False):
+                return True
+            pid = getattr(cur, "previous_message_id", "") or ""
+            if not pid:
+                return False
+            cur = self.context._store.find_one(id=pid)
+        return False
+
     def check_cancellation(self, change: Change) -> None:
-        """Check if a remote change is a cancellation request."""
+        """React to a client cancellation (top-level ``cancelled`` flag): abort
+        all in-flight generations. Birth suppression is handled by the ancestry
+        guard at each continuation site."""
         if not change.forward_component:
             return
-        forward = change.forward_component
-        request = forward.get("request")
-        if not isinstance(request, dict):
+        if not change.forward_component.get("cancelled"):
             return
-        if not request.get("cancelled_by_user"):
-            return
-        item_id = str(change.entity_id)
-        self.cancel_generation(item_id)
+        self.cancel_all_generations()
 
     # --- Internal helpers ---
 
@@ -165,7 +194,7 @@ class InferenceService:
             chat_template_params.update(request.get("chat_template_params") or {})
         return gen_params, chat_template_params
 
-    async def _dispatch_generation(self, item: ContextItem) -> None:
+    async def _dispatch_generation(self, item: ContextMessage) -> None:
         gen_params, chat_template_params = self._build_request_params(item.request)
         focus_mode = (item.metadata or {}).get("focus_mode") or (
             (item.request or {}).get("focus_mode")
@@ -191,7 +220,7 @@ class InferenceService:
             focus_mode,
         )
 
-        updated = cast(TextItem, item.copy())
+        updated = cast(TextMessage, item.copy())
         stream = bool((item.request or {}).get("stream"))
         if stream:
             await self._generate_stream(
@@ -204,7 +233,7 @@ class InferenceService:
 
     async def _generate_non_stream(
         self,
-        updated: TextItem,
+        updated: TextMessage,
         messages: list[dict[str, Any]],
         images: list,
         gen_params: dict[str, Any],
@@ -227,6 +256,7 @@ class InferenceService:
                 req["completed"] = True
                 updated.request = req
                 updated.origin = "assistant"
+                updated.size = tokens_len or 0
                 meta = dict(updated.metadata or {})
                 if tokens_len is not None:
                     meta["tokens_len"] = tokens_len
@@ -241,6 +271,9 @@ class InferenceService:
                     tokens_len,
                     bool(tool_call_json),
                 )
+                live = self.context._store.find_one(id=str(updated.id))
+                if live is not None:
+                    updated.cancelled = live.cancelled
                 self.context.update(updated)
                 await self._handle_generation_result(
                     updated, text_before, tool_call_json
@@ -251,6 +284,9 @@ class InferenceService:
                 req["error_message"] = result.get("error_message", "Unknown error")
                 req["completed"] = True
                 updated.request = req
+                live = self.context._store.find_one(id=str(updated.id))
+                if live is not None:
+                    updated.cancelled = live.cancelled
                 self.context.update(updated)
         except Exception as exc:  # noqa: BLE001
             logger.error(
@@ -264,11 +300,14 @@ class InferenceService:
             req["error_message"] = str(exc)
             req["completed"] = True
             updated.request = req
+            live = self.context._store.find_one(id=str(updated.id))
+            if live is not None:
+                updated.cancelled = live.cancelled
             self.context.update(updated)
 
     async def _generate_stream(
         self,
-        updated: TextItem,
+        updated: TextMessage,
         messages: list[dict[str, Any]],
         images: list,
         gen_params: dict[str, Any],
@@ -281,8 +320,6 @@ class InferenceService:
         pieces: list[str] = []
         cancelled = False
         error: Exception | None = None
-        tool_call_detected = False
-        tool_call_pieces: list[str] = []
 
         try:
             async for chunk in self.backend.generate_stream(
@@ -295,32 +332,14 @@ class InferenceService:
                 if not chunk:
                     continue
 
-                # Tool call detection in stream
-                if not tool_call_detected:
-                    if TOOL_CALL_OPEN in chunk:
-                        # Split: text before marker goes to output, rest starts accumulation
-                        before, _, after = chunk.partition(TOOL_CALL_OPEN)
-                        if before:
-                            pieces.append(before)
-                            store: ContextStore = self.context._store
-                            store.text_append(str(updated.id), before)
-                        tool_call_detected = True
-                        if after:
-                            tool_call_pieces.append(after)
-                    else:
-                        pieces.append(chunk)
-                        store = self.context._store
-                        store.text_append(str(updated.id), chunk)
-                else:
-                    # Accumulating tool call JSON
-                    if TOOL_CALL_CLOSE in chunk:
-                        before_close, _, _ = chunk.partition(TOOL_CALL_CLOSE)
-                        if before_close:
-                            tool_call_pieces.append(before_close)
-                        # Done — stop reading the stream
-                        break
-                    else:
-                        tool_call_pieces.append(chunk)
+                # Stream every chunk live, including any raw <tool_call> markup.
+                # The tool call is extracted from the finalized text below, which
+                # is tokenization-independent (unlike per-chunk marker matching,
+                # which breaks when <tool_call> is not a single vocab token, e.g.
+                # for Gemma).
+                pieces.append(chunk)
+                store: ContextStore = self.context._store
+                store.text_append(str(updated.id), chunk)
 
                 await asyncio.sleep(0)
         except Exception as exc:  # noqa: BLE001
@@ -332,17 +351,16 @@ class InferenceService:
                 exc_info=True,
             )
 
-        # Finalize
-        full_text = "".join(pieces).strip()
-        if tool_call_detected:
-            # Reconstruct full text preserving whitespace for token-exact replay
-            raw_tool_json = "".join(tool_call_pieces)
-            full_text_with_call = (
-                full_text + TOOL_CALL_OPEN + raw_tool_json + TOOL_CALL_CLOSE
-            )
-            updated.text = full_text_with_call
+        # Finalize: detect the tool call on the complete text. When present,
+        # collapse the message to the text before <tool_call> and drop the call
+        # markup plus anything after it (one tool call per turn).
+        raw_full_text = "".join(pieces)
+        tool_call_json: dict[str, Any] | None = None
+        if not error and not cancelled:
+            full_text, tool_call_json = _extract_tool_call(raw_full_text)
         else:
-            updated.text = full_text
+            full_text = raw_full_text.strip()
+        updated.text = full_text
         req = dict(updated.request or {})
 
         if error is not None:
@@ -350,25 +368,14 @@ class InferenceService:
             req["error_message"] = str(error)
         elif cancelled:
             req["result"] = "cancelled"
-            req["cancelled_by_user"] = True
         else:
             req["result"] = "success"
 
         req["completed"] = True
         updated.request = req
         updated.origin = "assistant"
-
-        # Parse tool call if detected
-        tool_call_json: dict[str, Any] | None = None
-        if tool_call_detected and not error and not cancelled:
-            raw_json = "".join(tool_call_pieces).strip()
-            parsed = json_repair.loads(raw_json)
-            if isinstance(parsed, dict) and "name" in parsed:
-                tool_call_json = parsed
-            else:
-                logger.error(
-                    "Failed to parse tool call JSON for item %s: %s", uid, raw_json
-                )
+        counter = getattr(self.backend, "count_tokens", None)
+        updated.size = counter(updated.text) if counter is not None else 0
 
         meta = dict(updated.metadata or {})
         if full_text:
@@ -386,6 +393,10 @@ class InferenceService:
         )
 
         self._cancel_events.pop(uid, None)
+        # Don't revert a cancellation the client may have set while we streamed.
+        live = self.context._store.find_one(id=uid)
+        if live is not None:
+            updated.cancelled = live.cancelled
         self.context.update(updated)
 
         if not error and not cancelled:
@@ -395,9 +406,50 @@ class InferenceService:
     # Tool call dispatch
     # ------------------------------------------------------------------
 
+    def _supervision_gate(self, updated: TextMessage) -> GateDecision:
+        """Read the live supervision verdict for a completed turn.
+
+        Reloads from the store so a verdict that landed while we finalized is
+        seen. HOLD = await verdict (withhold continuation); SUPPRESS = error
+        (server never resumes); CONTINUE = proceed.
+        """
+        live = self.context._store.find_one(id=str(updated.id))
+        return gate_state(live if live is not None else updated)
+
+    async def _resume_held_turn(self, item: TextMessage) -> None:
+        """Re-run a turn's withheld continuation after a pass/correct verdict.
+
+        Stateless: the continuation is re-derived from the turn's stored
+        ``metadata["tool_call"]`` (no parked closures), so it survives reconnects.
+        """
+        tid = str(item.id)
+        if tid in self._resumed_turns:
+            return
+        self._resumed_turns.add(tid)
+        tool_call_json = (item.metadata or {}).get("tool_call")
+        async with self._lock:
+            await self._handle_generation_result(item, "", tool_call_json)
+
+    def resume_target(self, change: Change) -> TextMessage | None:
+        """If a remote change is a pass/correct verdict on a held turn, return
+        the live turn item to resume; else None."""
+        if change.is_delete() or not change.forward_component:
+            return None
+        if change.forward_component.get("teacher_feedback") not in ("pass", "correct"):
+            return None
+        item = self.context._store.find_one(id=str(change.entity_id))
+        return item if isinstance(item, TextMessage) else None
+
+    @staticmethod
+    def _arm_supervision(source: ContextMessage, new_item: TextMessage) -> None:
+        """Re-arm a freshly-born continuation request for review if the chain is
+        supervised (carried by the source turn's non-empty teacher_feedback)."""
+        if getattr(source, "teacher_feedback", ""):
+            new_item.teacher_feedback = "pending"
+
     async def _handle_generation_result(
         self,
-        updated: TextItem,
+        updated: TextMessage,
         text: str,
         tool_call_json: dict[str, Any] | None,
     ) -> None:
@@ -407,6 +459,20 @@ class InferenceService:
         If no tool call and this was a sub-mode (not main), inject result
         visible to caller and create a continuation request.
         """
+        # Supervision gate: in supervised mode the turn is born "pending". Hold
+        # the continuation until the client writes a verdict; the resume path
+        # re-enters this method once it flips to pass/correct.
+        decision = self._supervision_gate(updated)
+        if decision is GateDecision.HOLD:
+            logger.info("Turn %s held for supervision", getattr(updated, "id", None))
+            return
+        if decision is GateDecision.SUPPRESS:
+            logger.info(
+                "Turn %s suppressed by supervisor", getattr(updated, "id", None)
+            )
+            self._tool_call_depth = 0
+            return
+
         caller_mode = (updated.metadata or {}).get("caller_mode")
 
         if tool_call_json is None:
@@ -419,8 +485,11 @@ class InferenceService:
                 meta = dict(updated.metadata or {})
                 meta["visible_to"] = [caller_mode]
                 updated.metadata = meta
+                live = self.context._store.find_one(id=str(updated.id))
+                if live is not None:
+                    updated.cancelled = live.cancelled
                 self.context.update(updated)
-                await self._inject_continuation_request(caller_mode)
+                await self._inject_continuation_request(caller_mode, updated)
             else:
                 # Main mode final response — done.
                 self._tool_call_depth = 0
@@ -437,8 +506,15 @@ class InferenceService:
             self._tool_call_depth = 0
             return
 
-        target_mode = tool_call_json.get("name", "")
+        tool_name = tool_call_json.get("name", "")
         arguments = tool_call_json.get("arguments", {})
+
+        # The `focus` tool delegates to a server-side focus mode named by its
+        # `mode` argument. Other tool names map directly to client tools.
+        if tool_name == "focus":
+            target_mode = arguments.get("mode", "")
+        else:
+            target_mode = tool_name
 
         # Determine the calling mode (from the generation request metadata)
         current_mode = (updated.metadata or {}).get("focus_mode", "main")
@@ -453,7 +529,9 @@ class InferenceService:
         mode_config = FOCUS_MODES.get(target_mode)
         if mode_config is None:
             logger.error("Unknown tool/focus mode in tool call: %s", target_mode)
-            self._inject_tool_error(updated, f"Unknown tool/focus mode: {target_mode}")
+            await self._inject_tool_error(
+                updated, f"Unknown tool/focus mode: {target_mode}"
+            )
             return
 
         # Server-side inference focus mode — dispatch directly
@@ -462,7 +540,7 @@ class InferenceService:
 
     async def _dispatch_focus_mode(
         self,
-        source: TextItem,
+        source: TextMessage,
         target_mode: str,
         instruction: str,
         caller_mode: str,
@@ -471,11 +549,18 @@ class InferenceService:
         then directly dispatch generation (bypass remote-change routing)."""
         ctx = self.context
 
+        if self._chain_cancelled(source):
+            logger.info(
+                "Chain cancelled — not dispatching focus mode '%s'", target_mode
+            )
+            return
+
         # Message: instruction for the target focus mode
-        instruction_item = TextItem()
+        instruction_item = TextMessage()
         instruction_item.position = ctx.next_position()
         instruction_item.origin = "user"
         instruction_item.text = instruction
+        instruction_item.previous_message_id = str(source.id)
         instruction_item.metadata = {
             "focus_mode": target_mode,
             "source_item_id": str(source.id),
@@ -483,9 +568,10 @@ class InferenceService:
         ctx.insert(instruction_item)
 
         # Message: generation request for the target focus mode
-        req_item = TextItem()
+        req_item = TextMessage()
         req_item.position = ctx.next_position()
         req_item.origin = "assistant"
+        req_item.previous_message_id = str(instruction_item.id)
         req_item.request = {
             "stream": True,
             "focus_mode": target_mode,
@@ -494,6 +580,7 @@ class InferenceService:
             "focus_mode": target_mode,
             "caller_mode": caller_mode,
         }
+        self._arm_supervision(source, req_item)
         ctx.insert(req_item)
 
         logger.info(
@@ -506,17 +593,26 @@ class InferenceService:
         # Directly dispatch generation (local item won't trigger handle_change)
         await self._dispatch_generation(req_item)
 
-    async def _inject_continuation_request(self, target_mode: str) -> None:
+    async def _inject_continuation_request(
+        self, target_mode: str, source: TextMessage
+    ) -> None:
         """Insert a generation request to continue the given mode, and dispatch it."""
         ctx = self.context
-        req_item = TextItem()
+        if self._chain_cancelled(source):
+            logger.info(
+                "Chain cancelled — not injecting continuation for '%s'", target_mode
+            )
+            return
+        req_item = TextMessage()
         req_item.position = ctx.next_position()
         req_item.origin = "assistant"
+        req_item.previous_message_id = str(source.id)
         req_item.request = {
             "stream": True,
             "focus_mode": target_mode,
         }
         req_item.metadata = {"focus_mode": target_mode}
+        self._arm_supervision(source, req_item)
         ctx.insert(req_item)
 
         logger.info("Injected continuation request for mode '%s'", target_mode)
@@ -526,7 +622,7 @@ class InferenceService:
 
     def _inject_client_execution_request(
         self,
-        source: TextItem,
+        source: TextMessage,
         target_mode: str,
         arguments: dict[str, Any],
         caller_mode: str,
@@ -535,10 +631,11 @@ class InferenceService:
         ctx = self.context
 
         # Single item that signals client-side execution
-        exec_item = TextItem()
+        exec_item = TextMessage()
         exec_item.position = ctx.next_position()
         exec_item.origin = "tool"
         exec_item.text = json.dumps(arguments)
+        exec_item.previous_message_id = str(source.id)
         exec_item.request = {
             "execution": "client",
             "focus_mode": target_mode,
@@ -558,32 +655,54 @@ class InferenceService:
             list(arguments.keys()),
         )
 
-    def _inject_tool_error(self, source: TextItem, error_message: str) -> None:
+    async def _inject_tool_error(self, source: TextMessage, error_message: str) -> None:
         """Inject an error result and continue the caller mode."""
         ctx = self.context
         caller_mode = (source.metadata or {}).get("focus_mode", "main")
 
-        error_item = TextItem()
+        if self._chain_cancelled(source):
+            logger.info("Chain cancelled — not injecting tool error continuation")
+            return
+
+        error_item = TextMessage()
         error_item.position = ctx.next_position()
         error_item.origin = "tool"
         error_item.text = f"Error: {error_message}"
+        error_item.previous_message_id = str(source.id)
         error_item.metadata = {"visible_to": [caller_mode]}
         ctx.insert(error_item)
 
         # Continue the caller
-        req_item = TextItem()
+        req_item = TextMessage()
         req_item.position = ctx.next_position()
         req_item.origin = "assistant"
+        req_item.previous_message_id = str(error_item.id)
         req_item.request = {
             "stream": True,
             "focus_mode": caller_mode,
         }
         req_item.metadata = {"focus_mode": caller_mode}
+        self._arm_supervision(source, req_item)
         ctx.insert(req_item)
+
+        # Directly dispatch (we're already inside the lock from the parent chain)
+        await self._dispatch_generation(req_item)
 
     def reset_tool_call_depth(self) -> None:
         """Reset tool call depth counter (e.g. on new user message)."""
         self._tool_call_depth = 0
+
+
+def _loads_tool_json(raw_json: str) -> Any:
+    """Parse tool-call JSON, tolerating literal newlines in code strings.
+
+    json.loads(strict=False) accepts raw control chars (which models emit
+    inside multi-line `code`); json_repair is a fallback for other glitches.
+    """
+    try:
+        return json.loads(raw_json, strict=False)
+    except json.JSONDecodeError:
+        return json_repair.loads(raw_json)
 
 
 def _extract_tool_call(text: str) -> tuple[str, dict[str, Any] | None]:
@@ -605,7 +724,7 @@ def _extract_tool_call(text: str) -> tuple[str, dict[str, Any] | None]:
     else:
         raw_json = after_open[:close_idx].strip()
 
-    parsed = json_repair.loads(raw_json)
+    parsed = _loads_tool_json(raw_json)
     if not isinstance(parsed, dict) or "name" not in parsed:
         logger.error("Failed to parse tool call JSON: %s", raw_json)
         return text, None

@@ -83,6 +83,18 @@ Window {
         onActivated: appVM.hideTerminal()
     }
 
+    // Supervised mode shortcuts (redundant with CorrectionWindow + system globals)
+    Shortcut {
+        sequence: "Alt+C"
+        enabled: correctionVM ? correctionVM.visible : false
+        onActivated: correctionVM.submitCorrect()
+    }
+    Shortcut {
+        sequence: "Alt+P"
+        enabled: correctionVM ? correctionVM.visible : false
+        onActivated: correctionVM.submitPass()
+    }
+
     // ── React to view state visibility changes ──────────────────
     Connections {
         target: terminalState

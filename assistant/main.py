@@ -13,6 +13,7 @@ os.environ.setdefault("LOGLEVEL", "INFO")
 
 import click
 
+from assistant.logging_config import configure_logging
 from assistant.server.command_client import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
@@ -36,6 +37,7 @@ if not sivkit_pkg_version or not sivkit_pkg_version.startswith("0.1"):
 )
 def main(command, measure_command_send_time):
     """Screenshot Assistant with HTTP API support."""
+    configure_logging()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # If a command is specified, try to send it to a running instance
@@ -99,7 +101,6 @@ def main(command, measure_command_send_time):
     desktop_server = DesktopServer(DEFAULT_DESKTOP_SERVER_PORT)
     desktop_server.start()
 
-    # If this is a first start and --command was provided, execute it.
     if command:
         from assistant.recording_procedures import toggle_recording
         from assistant.terminal_actions import toggle_terminal

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
@@ -12,16 +11,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing aid
 
 from assistant.model_configs import DEFAULT_MODEL_KEY
 
-log = logging.getLogger(__name__)
-
 
 class ExecutionMode(Enum):
     USER_APPROVE = "user-approve"
     AUTO = "auto"
+    SUPERVISED = "supervised"
 
 
 _VALID_SESSION_STATES = {"new-session", "started", "paused", "disconnected", "error"}
-_VALID_MODEL_STATES = {"unknown", "unloaded", "loading", "loaded"}
 
 
 def _normalize_markdown(value: Optional[str]) -> str:
@@ -33,18 +30,13 @@ def _normalize_markdown(value: Optional[str]) -> str:
 class AssistantSettingsViewState(QObject):
     session_state_changed = Signal(str)
     assistant_working_changed = Signal(bool)
+    chain_ended = Signal(str)  # ChainStopReason.value — fire-and-forget settle
     user_query_changed = Signal(str)
     system_prompt_changed = Signal(str)
     info_messages_changed = Signal(str)
     _info_message_enqueued = Signal(str)
     context_updates_allowed_changed = Signal(bool)
     selected_model_changed = Signal(str)
-    server_model_state_changed = Signal(
-        str
-    )  # "unknown" | "unloaded" | "loading" | "loaded"
-    server_model_key_changed = Signal(
-        str
-    )  # the model key actually loaded on the server
     execution_mode_changed = Signal(str)  # ExecutionMode.value
     max_new_tokens_changed = Signal(int)
     capture_screen_changed = Signal(str)
@@ -63,8 +55,6 @@ class AssistantSettingsViewState(QObject):
         self._info_messages: list[str] = []
         self._context_updates_allowed = True
         self._selected_model = DEFAULT_MODEL_KEY
-        self._server_model_state = "unknown"
-        self._server_model_key = ""
         self._max_new_tokens = 256
         self._capture_screen = ""
         self._experiment_configs: list[dict] = []
@@ -107,7 +97,6 @@ class AssistantSettingsViewState(QObject):
         if self._assistant_working == value:
             return
         self._assistant_working = value
-        log.info("assistant_working changed to %s", value)
         self.assistant_working_changed.emit(value)
 
     # --- execution_mode --------------------------------------------
@@ -215,32 +204,6 @@ class AssistantSettingsViewState(QObject):
             return
         self._selected_model = value
         self.selected_model_changed.emit(value)
-
-    # --- server_model_state (read from server health) ------------------
-    @Property(str, notify=server_model_state_changed)
-    def server_model_state(self) -> str:
-        return self._server_model_state
-
-    @server_model_state.setter
-    def server_model_state(self, value: str) -> None:
-        if value not in _VALID_MODEL_STATES:
-            value = "unknown"
-        if self._server_model_state == value:
-            return
-        self._server_model_state = value
-        self.server_model_state_changed.emit(value)
-
-    # --- server_model_key (which model is actually on the server) ------
-    @Property(str, notify=server_model_key_changed)
-    def server_model_key(self) -> str:
-        return self._server_model_key
-
-    @server_model_key.setter
-    def server_model_key(self, value: str) -> None:
-        if self._server_model_key == value:
-            return
-        self._server_model_key = value
-        self.server_model_key_changed.emit(value)
 
     # --- max_new_tokens ------------------------------------------------
     @Property(int, notify=max_new_tokens_changed)

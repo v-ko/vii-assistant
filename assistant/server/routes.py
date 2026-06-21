@@ -32,14 +32,6 @@ def toggle_terminal() -> CommandResponse:
     return CommandResponse(success=True, message="Terminal toggled")
 
 
-@router.post("/confirm", response_model=CommandResponse)
-def confirm_action() -> CommandResponse:
-    """Confirm pending assistant actions (USER_APPROVE mode)."""
-    gate = vii.project_manager.hybrid_segment_service.action_gate
-    sivkit.call_delayed(gate.confirm, 0)
-    return CommandResponse(success=True, message="Action confirmed")
-
-
 @router.post("/stop", response_model=CommandResponse)
 def stop_assistant() -> CommandResponse:
     """Interrupt assistant execution."""
@@ -65,3 +57,34 @@ def take_snippet() -> CommandResponse:
 
     sivkit.call_delayed(start_snippet, 0)
     return CommandResponse(success=True, message="Snippet overlay activated")
+
+
+# ── Supervised mode routes ───────────────────────────────────────
+
+
+@router.post("/supervised/correct", response_model=CommandResponse)
+def supervised_correct() -> CommandResponse:
+    """Supervisor marks current turn as correct."""
+    gate = vii.project_manager.hybrid_segment_service.supervised_gate
+    sivkit.call_delayed(gate.submit_correct, 0)
+    return CommandResponse(success=True, message="Marked correct")
+
+
+@router.post("/supervised/pass", response_model=CommandResponse)
+def supervised_pass() -> CommandResponse:
+    """Supervisor passes (no label)."""
+    gate = vii.project_manager.hybrid_segment_service.supervised_gate
+    sivkit.call_delayed(gate.submit_pass, 0)
+    return CommandResponse(success=True, message="Marked pass")
+
+
+class SupervisedErrorRequest(BaseModel):
+    correction: str
+
+
+@router.post("/supervised/error", response_model=CommandResponse)
+def supervised_error(body: SupervisedErrorRequest) -> CommandResponse:
+    """Supervisor marks turn as error with correction text."""
+    gate = vii.project_manager.hybrid_segment_service.supervised_gate
+    sivkit.call_delayed(gate.submit_error, 0, args=[body.correction])
+    return CommandResponse(success=True, message="Marked error")

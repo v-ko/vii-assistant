@@ -8,6 +8,7 @@ custom ``text_append`` delta ops inside the standard sync protocol.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -26,12 +27,14 @@ from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta
 from sivkit.storage.websocket_sync_service import WebSocketSyncService
 
+from assistant.inference.authority import authority_guard
 from assistant.inference.backend_protocol import InferenceBackend
 from assistant.inference.context import ContextManager
 from assistant.inference.context_store import ContextStore
 from assistant.inference.llama_model_proxy import LlamaModelProxy
 from assistant.inference.model_manager import ModelManager
 from assistant.inference.service import InferenceService, generate_oneshot
+from assistant.logging_config import configure_logging
 from assistant.model_configs import MODEL_SPECS
 from assistant.transcription_service import TRANSCRIPTION_MODELS, TranscriptionService
 
@@ -48,10 +51,11 @@ def _backend_for_model(model_key: str) -> InferenceBackend:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     set_main_loop(AsyncioMainLoop())
-    app.state.backend: InferenceBackend = ModelManager()
+    app.state.backend = ModelManager()
     app.state.transcription_service = TranscriptionService()
-    app.state.active_service: InferenceService | None = None
+    app.state.active_service = None
     try:
         yield
     finally:
@@ -320,6 +324,7 @@ async def context_ws(websocket: WebSocket) -> None:
     service = InferenceService(backend, session_id=session_id)
     app.state.active_service = service
     store: ContextStore = service.context._store
+    pending_tasks: set[asyncio.Task] = set()
 
     # --- Wire inference trigger on remote changes ---
     sync = WebSocketSyncService(store, role="authority")
@@ -331,6 +336,25 @@ async def context_ws(websocket: WebSocket) -> None:
             # Check for cancellation signals on any change (even updates to dispatched items)
             service.check_cancellation(change)
 
+            # Supervision: a pass/correct verdict on a held turn resumes its
+            # withheld continuation.
+            resume_item = service.resume_target(change)
+            if resume_item is not None:
+                rtask = asyncio.create_task(service._resume_held_turn(resume_item))
+                pending_tasks.add(rtask)
+                rtask.add_done_callback(pending_tasks.discard)
+                rtask.add_done_callback(
+                    lambda t: (
+                        log.error(
+                            "WS session=%s resume task exception: %s",
+                            session_id,
+                            t.exception(),
+                        )
+                        if not t.cancelled() and t.exception()
+                        else None
+                    )
+                )
+
             if change.is_delete():
                 continue
             if not change.forward_component:
@@ -339,6 +363,8 @@ async def context_ws(websocket: WebSocket) -> None:
             async def _safe_handle(c: Change = change) -> None:
                 try:
                     await service.handle_change(c)
+                except asyncio.CancelledError:
+                    log.info("WS session=%s task cancelled", session_id)
                 except Exception as exc:  # noqa: BLE001
                     log.error(
                         "WS session=%s inference handle_change failed: %s",
@@ -348,6 +374,8 @@ async def context_ws(websocket: WebSocket) -> None:
                     )
 
             task = asyncio.create_task(_safe_handle())
+            pending_tasks.add(task)
+            task.add_done_callback(pending_tasks.discard)
             task.add_done_callback(
                 lambda t: (
                     log.error(
@@ -355,12 +383,19 @@ async def context_ws(websocket: WebSocket) -> None:
                         session_id,
                         t.exception(),
                     )
-                    if t.exception()
+                    if not t.cancelled() and t.exception()
                     else None
                 )
             )
 
     store.add_on_changes_callback(_on_remote_changes)
+
+    # Register the write-authority guard FIRST so it fires before any
+    # propagation. It raises ValueError if this process (the inference server)
+    # writes a field it does not own.
+    store.add_on_changes_callback(
+        lambda d, o: authority_guard("inference-server", d, o)
+    )
 
     # --- Run the sync protocol ---
     async def send(msg: dict) -> None:
@@ -396,6 +431,17 @@ async def context_ws(websocket: WebSocket) -> None:
         log.error("WS session=%s error: %s", session_id, exc, exc_info=True)
     finally:
         store.remove_on_changes_callback(_on_remote_changes)
+
+        # Signal all active generations to stop
+        for event in service._cancel_events.values():
+            event.set()
+
+        # Cancel and await all pending inference tasks
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
         if app.state.active_service is service:
             app.state.active_service = None
         log.info("WS session=%s ended", session_id)

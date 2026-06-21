@@ -96,16 +96,9 @@ Rectangle {
                 Layout.preferredHeight: uniformButtonHeight
                 verticalAlignment: Text.AlignVCenter
 
-                property bool connected: false
+                property bool connected: inferenceStatusVS.connected
                 text: connected ? "Server " + appVM.serverHost + " Connected" : "Server " + appVM.serverHost + " Disconnected"
                 color: connected ? "#4CAF50" : "#f44336"
-
-                Connections {
-                    target: appVM
-                    function onHealth_check_done(conn, modelState, modelKey) {
-                        healthLabel.connected = conn
-                    }
-                }
             }
 
             Item { Layout.fillHeight: true }
@@ -153,15 +146,15 @@ Rectangle {
                 Layout.preferredHeight: uniformButtonHeight
                 verticalAlignment: Text.AlignVCenter
                 text: {
-                    let state = settingsState ? settingsState.server_model_state : "unknown"
-                    let key = settingsState ? settingsState.server_model_key : ""
+                    let state = inferenceStatusVS.model_state
+                    let key = inferenceStatusVS.model_key
                     if (state === "loaded" && key) return "Model: " + key
                     if (state === "loading") return "Model: loading..."
                     if (state === "unloaded") return "Model: unloaded"
                     return "Model: unknown"
                 }
                 color: {
-                    let state = settingsState ? settingsState.server_model_state : "unknown"
+                    let state = inferenceStatusVS.model_state
                     if (state === "loaded") return "#4CAF50"
                     if (state === "loading") return "#FFA726"
                     return "#888"
@@ -169,54 +162,115 @@ Rectangle {
             }
 
             // Screen selector
-            ComboBox {
-                id: screenCombo
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                model: ListModel { id: screenListModel }
-                textRole: "displayName"
-                valueRole: "name"
+                spacing: 6
 
-                Component.onCompleted: populateScreens()
-
-                onActivated: function(index) {
-                    let item = screenListModel.get(index)
-                    if (item) appVM.setScreen(item.name)
+                Label {
+                    text: "Screen:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
                 }
 
-                Connections {
-                    target: appVM
-                    function onScreen_list_changed() {
-                        populateScreens()
+                ComboBox {
+                    id: screenCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    model: ListModel { id: screenListModel }
+                    textRole: "displayName"
+                    valueRole: "name"
+
+                    Component.onCompleted: populateScreens()
+
+                    onActivated: function(index) {
+                        let item = screenListModel.get(index)
+                        if (item) appVM.setScreen(item.name)
+                    }
+
+                    Connections {
+                        target: appVM
+                        function onScreen_list_changed() {
+                            populateScreens()
+                        }
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onCapture_screen_changed() {
+                            selectCurrentScreen()
+                        }
                     }
                 }
-
-                Connections {
-                    target: settingsState
-                    function onCapture_screen_changed() {
-                        selectCurrentScreen()
-                    }
-                }
-
-
             }
 
             // Execution mode selector
-            ComboBox {
-                id: modeCombo
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                model: ["user-approve", "auto"]
-                currentIndex: settingsState ? model.indexOf(settingsState.execution_mode) : 0
+                spacing: 6
 
-                onActivated: function(index) {
-                    appVM.setExecutionMode(model[index])
+                Label {
+                    text: "Approval:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
                 }
 
-                Connections {
-                    target: settingsState
-                    function onExecution_mode_changed(mode) {
-                        modeCombo.currentIndex = modeCombo.model.indexOf(mode)
+                ComboBox {
+                    id: modeCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    model: ["user-approve", "auto", "supervised"]
+                    currentIndex: settingsState ? model.indexOf(settingsState.execution_mode) : 0
+
+                    onActivated: function(index) {
+                        appVM.setExecutionMode(model[index])
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onExecution_mode_changed(mode) {
+                            modeCombo.currentIndex = modeCombo.model.indexOf(mode)
+                        }
+                    }
+                }
+            }
+
+            // Agent selector
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                spacing: 6
+
+                Label {
+                    text: "Agent:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ComboBox {
+                    id: agentCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    textRole: "name"
+                    model: ListModel { id: agentModel }
+
+                    Component.onCompleted: {
+                        var agents = appVM.getAgents()
+                        agentModel.clear()
+                        var selectedIdx = 0
+                        for (var i = 0; i < agents.length; i++) {
+                            agentModel.append(agents[i])
+                            if (agents[i].selected) selectedIdx = i
+                        }
+                        currentIndex = selectedIdx
+                    }
+
+                    onCurrentIndexChanged: {
+                        if (currentIndex >= 0 && agentModel.count > 0) {
+                            var item = agentModel.get(currentIndex)
+                            if (item) appVM.setActiveAgent(item.name)
+                        }
                     }
                 }
             }
@@ -359,10 +413,13 @@ Rectangle {
                 ColumnLayout {
                     spacing: 6
 
+                    property bool experimentActive: false
+
                     ComboBox {
                         id: experimentConfigCombo
                         Layout.fillWidth: true
                         textRole: "name"
+                        enabled: !parent.experimentActive
                         model: ListModel { id: experimentConfigModel }
 
                         Component.onCompleted: {
@@ -388,22 +445,63 @@ Rectangle {
                         spacing: 4
 
                         Button {
-                            text: "Step"
-                            onClicked: appVM.stepExperiment()
+                            text: "Auto Run"
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.runAllExperiment()
+                            }
                         }
                         Button {
-                            text: "Stop"
-                            onClicked: appVM.stopExperiment()
+                            text: "Cancel Auto Run"
+                            onClicked: appVM.cancelExperiment()
+                        }
+                        Button {
+                            text: "Reset Experiment"
+                            onClicked: {
+                                appVM.stopExperiment()
+                                parent.parent.experimentActive = false
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: 4
+
+                        Button {
+                            text: "Step"
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.stepExperiment()
+                            }
+                        }
+                        Button {
+                            text: "Random Sample"
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.randomExperimentStep()
+                            }
                         }
                         Button {
                             text: "Open Config"
                             onClicked: appVM.openExperimentConfig()
                         }
+                        Button {
+                            text: "Stats"
+                            onClicked: appVM.generateExperimentStats()
+                        }
                     }
 
                     Label {
+                        id: experimentProgressLabel
                         text: "Status: idle"
                         color: palette.text
+                    }
+
+                    Connections {
+                        target: appVM
+                        function onExperiment_progress(current, total) {
+                            experimentProgressLabel.text = "Sample " + (current + 1) + " of " + total
+                        }
                     }
 
                     Item { Layout.fillHeight: true }
@@ -456,14 +554,6 @@ Rectangle {
         }
     }
 
-    // ── Health check timer ──────────────────────────────────────
-    Timer {
-        interval: 5000
-        running: settingsRoot.Window.window ? settingsRoot.Window.window.visible : false
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: appVM.scheduleHealthCheck()
-    }
 
     function populateScreens() {
         screenListModel.clear()

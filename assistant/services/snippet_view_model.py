@@ -13,8 +13,8 @@ import logging
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import Property, QObject, QRect, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QGuiApplication, QImage, QScreen
+from PySide6.QtCore import Property, QObject, QRect, QUrl, Signal, Slot
+from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 
 from assistant.facade import vii
@@ -60,8 +60,8 @@ class SnippetViewModel(QObject):
     def region_selected(self, screen_name: str, x: float, y: float, w: float, h: float):
         """Called from QML when the user finishes dragging a selection.
 
-        Hides the overlays, waits briefly, then grabs the region from the
-        actual screen.
+        Crops the region from the screenshot captured before the overlay
+        appeared, so the crosshatch overlay never leaks into the snippet.
         """
         x, y, w, h = int(x), int(y), int(w), int(h)
 
@@ -71,13 +71,23 @@ class SnippetViewModel(QObject):
 
         log.info("Region selected on screen '%s': %d,%d %dx%d", screen_name, x, y, w, h)
 
-        # Hide overlays first so they don't appear in the capture
+        rect = QRect(x, y, w, h)
+        if not rect.isValid() or rect.width() < 5 or rect.height() < 5:
+            log.warning("Selected region too small, ignoring")
+            hide_snippet_overlays(vii.app.view_state)
+            return
+
+        # Grab the pre-overlay screenshot before hide clears the view states.
+        screenshot = self._find_screenshot(screen_name)
+
+        # Hide overlays now that we have the clean screenshot.
         hide_snippet_overlays(vii.app.view_state)
 
-        # Delay capture to let the overlay windows disappear
-        QTimer.singleShot(
-            150, lambda: self._grab_region(screen_name, QRect(x, y, w, h))
-        )
+        if screenshot is None or screenshot.isNull():
+            log.error("No pre-overlay screenshot for screen '%s'", screen_name)
+            return
+
+        self._crop_region(screenshot, rect)
 
     def sync_from_app_state(self):
         """React to changes in app_state.snippet_overlays.
@@ -144,35 +154,28 @@ class SnippetViewModel(QObject):
         self._overlay_windows.clear()
         log.info("All snippet overlays destroyed")
 
-    def _grab_region(self, screen_name: str, rect: QRect):
-        """Grab the selected region from the specified screen."""
-        screen = self._find_screen(screen_name)
-        if screen is None:
-            log.error("Screen '%s' not found for capture", screen_name)
-            return
+    def _find_screenshot(self, screen_name: str) -> QImage | None:
+        """Return the pre-overlay screenshot stored for the given screen."""
+        for vs in vii.app.view_state.snippet_overlays:
+            if vs.screen_name == screen_name:
+                return vs.screenshot
+        return None
 
-        if not rect.isValid() or rect.width() < 5 or rect.height() < 5:
-            log.warning("Selected region too small, ignoring")
-            return
-
-        pixmap = screen.grabWindow(0)
-        # Account for device pixel ratio (HiDPI)
-        dpr = pixmap.devicePixelRatio()
+    def _crop_region(self, screenshot: QImage, rect: QRect):
+        """Crop the selected region from the pre-overlay screenshot."""
+        # Account for device pixel ratio (HiDPI); rect is in logical coords.
+        dpr = screenshot.devicePixelRatio()
         physical_rect = QRect(
             int(rect.x() * dpr),
             int(rect.y() * dpr),
             int(rect.width() * dpr),
             int(rect.height() * dpr),
         )
-        region_pixmap = pixmap.copy(physical_rect)
-        image = region_pixmap.toImage()
+        region_image = screenshot.copy(physical_rect)
 
-        log.info("Captured snippet: %dx%d pixels", image.width(), image.height())
-        self.region_captured.emit(image)
-
-    @staticmethod
-    def _find_screen(name: str) -> QScreen | None:
-        for screen in QGuiApplication.screens():
-            if screen.name() == name:
-                return screen
-        return None
+        log.info(
+            "Captured snippet: %dx%d pixels",
+            region_image.width(),
+            region_image.height(),
+        )
+        self.region_captured.emit(region_image)

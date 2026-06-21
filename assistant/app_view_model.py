@@ -13,19 +13,20 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from assistant.facade import vii
 from assistant.model_configs import AVAILABLE_MODELS
-from assistant.procedures import fetch_raw_context_and_present
+from assistant.procedures import fetch_raw_context_and_present, run_all_experiment
 from assistant.terminal_actions import (
     add_tool_prompt,
-    apply_health_result,
     attach_clipboard,
     attach_screen,
+    cancel_experiment,
+    generate_experiment_stats,
     new_session,
     ocr_clipboard_action,
     open_app_config,
     open_experiment_config,
     open_focus_mode_prompt,
     open_sessions_folder,
-    schedule_health_check,
+    random_experiment_step,
     set_max_new_tokens,
     set_model,
     set_screen,
@@ -40,11 +41,11 @@ log = logging.getLogger(__name__)
 class AppViewModel(QObject):
     """ViewModel that QML binds to. Routes slot calls to @action functions."""
 
-    # Signal for async health/model check results
-    health_check_done = Signal(bool, str, str)  # connected, model_state, model_key
     context_debug_ready = Signal(str, str)  # focus_mode, prompt_text
     screen_list_changed = Signal()
     primary_screen_changed = Signal()
+    experiment_progress = Signal(int, int)  # current_step, total
+    active_agent_changed = Signal(str)
 
     # Display-friendly server label (schema stripped)
     @Property(str, constant=True)
@@ -53,7 +54,6 @@ class AppViewModel(QObject):
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self.health_check_done.connect(self._apply_health_result)
 
     def bind_screens(self) -> None:
         """Connect to app_state.screens_changed to track primary screen."""
@@ -115,7 +115,7 @@ class AppViewModel(QObject):
 
     @Slot(str)
     def setModel(self, model_key: str):
-        set_model(model_key)
+        set_model(model_key).catch(lambda exc: log.error("setModel failed: %s", exc))
 
     @Slot(int)
     def setMaxNewTokens(self, value: int):
@@ -140,16 +140,33 @@ class AppViewModel(QObject):
         step_experiment()
 
     @Slot()
+    def randomExperimentStep(self):
+        random_experiment_step()
+
+    @Slot()
     def stopExperiment(self):
         stop_experiment()
+
+    @Slot()
+    def runAllExperiment(self):
+        task = run_all_experiment()
+        vii.experiments_manager._run_all_task = task
+
+    @Slot()
+    def cancelExperiment(self):
+        cancel_experiment()
 
     @Slot()
     def openExperimentConfig(self):
         open_experiment_config()
 
+    @Slot()
+    def generateExperimentStats(self):
+        generate_experiment_stats()
+
     @Slot(result=list)
     def getExperimentConfigs(self) -> list:
-        from assistant.experiments_manager import EXPERIMENTS_DIR
+        from assistant.constants import EXPERIMENTS_DIR
 
         configs = sorted(EXPERIMENTS_DIR.glob("*.json"))
         try:
@@ -167,6 +184,23 @@ class AppViewModel(QObject):
         vii.experiments_manager.config_path = Path(path)
 
     # ── Data queries (non-mutating, no @action needed) ───────────
+
+    @Slot(result=list)
+    def getAgents(self) -> list:
+        active = vii.active_agent
+        return [
+            {"name": name, "selected": name == active}
+            for name in vii.get_available_agents()
+        ]
+
+    @Property(str, notify=active_agent_changed)
+    def activeAgent(self) -> str:
+        return vii.active_agent or ""
+
+    @Slot(str)
+    def setActiveAgent(self, name: str):
+        vii.set_active_agent(name)
+        self.active_agent_changed.emit(name)
 
     @Slot(result=list)
     def getAvailableModels(self) -> list:
@@ -194,15 +228,3 @@ class AppViewModel(QObject):
         fetch_raw_context_and_present(focus_mode).catch(
             lambda exc: log.error("fetchContextDebug failed: %s", exc)
         )
-
-    # ── Health check ─────────────────────────────────────────────
-
-    @Slot()
-    def scheduleHealthCheck(self):
-        schedule_health_check(self._on_health_result)
-
-    def _on_health_result(self, connected: bool, model_state: str, model_key: str):
-        self.health_check_done.emit(connected, model_state, model_key)
-
-    def _apply_health_result(self, connected: bool, model_state: str, model_key: str):
-        apply_health_result(connected, model_state, model_key)

@@ -13,10 +13,13 @@ from PySide6.QtCore import (
     Qt,
 )
 
-from assistant.view_states.context_view import ContextItemViewState, ContextViewerState
+from assistant.view_states.context_view import (
+    ContextMessageViewState,
+    ContextViewerState,
+)
 
 
-class ContextItemRole(IntEnum):
+class ContextMessageRole(IntEnum):
     ItemId = Qt.ItemDataRole.UserRole + 1
     Position = Qt.ItemDataRole.UserRole + 2
     ContentKind = Qt.ItemDataRole.UserRole + 3
@@ -28,7 +31,7 @@ class ContextItemRole(IntEnum):
     FocusMode = Qt.ItemDataRole.UserRole + 9
 
 
-def _sort_key(item: ContextItemViewState):
+def _sort_key(item: ContextMessageViewState):
     return (item.position, item.item_id)
 
 
@@ -43,7 +46,7 @@ class ContextListModel(QAbstractListModel):
     def __init__(self, state: ContextViewerState, parent=None):
         super().__init__(parent)
         self._state = state
-        self._items: list[ContextItemViewState] = []
+        self._items: list[ContextMessageViewState] = []
 
         state.item_added.connect(self._on_item_added)
         state.item_removed.connect(self._on_item_removed)
@@ -124,35 +127,35 @@ class ContextListModel(QAbstractListModel):
         if not index.isValid() or index.row() >= len(self._items):
             return None
         item = self._items[index.row()]
-        if role == ContextItemRole.ItemId:
+        if role == ContextMessageRole.ItemId:
             return item.item_id
-        if role == ContextItemRole.Position:
+        if role == ContextMessageRole.Position:
             return item.position
-        if role == ContextItemRole.ContentKind:
+        if role == ContextMessageRole.ContentKind:
             return item.content_kind
-        if role == ContextItemRole.Text:
+        if role == ContextMessageRole.Text:
             return item.text
-        if role == ContextItemRole.ImageB64:
+        if role == ContextMessageRole.ImageB64:
             return item.image_b64
-        if role == ContextItemRole.RequestSummary:
+        if role == ContextMessageRole.RequestSummary:
             return item.request_summary
-        if role == ContextItemRole.Origin:
+        if role == ContextMessageRole.Origin:
             return item.origin
-        if role == ContextItemRole.DisplayText:
+        if role == ContextMessageRole.DisplayText:
             return item.display_text
-        if role == ContextItemRole.FocusMode:
+        if role == ContextMessageRole.FocusMode:
             return item.focus_mode
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:
         return {
-            int(ContextItemRole.ItemId): QByteArray(b"itemId"),
-            int(ContextItemRole.Position): QByteArray(b"position"),
-            int(ContextItemRole.ContentKind): QByteArray(b"contentKind"),
-            int(ContextItemRole.Text): QByteArray(b"text"),
-            int(ContextItemRole.ImageB64): QByteArray(b"imageB64"),
-            int(ContextItemRole.RequestSummary): QByteArray(b"requestSummary"),
-            int(ContextItemRole.Origin): QByteArray(b"origin"),
-            int(ContextItemRole.DisplayText): QByteArray(b"displayText"),
-            int(ContextItemRole.FocusMode): QByteArray(b"focusMode"),
+            int(ContextMessageRole.ItemId): QByteArray(b"itemId"),
+            int(ContextMessageRole.Position): QByteArray(b"position"),
+            int(ContextMessageRole.ContentKind): QByteArray(b"contentKind"),
+            int(ContextMessageRole.Text): QByteArray(b"text"),
+            int(ContextMessageRole.ImageB64): QByteArray(b"imageB64"),
+            int(ContextMessageRole.RequestSummary): QByteArray(b"requestSummary"),
+            int(ContextMessageRole.Origin): QByteArray(b"origin"),
+            int(ContextMessageRole.DisplayText): QByteArray(b"displayText"),
+            int(ContextMessageRole.FocusMode): QByteArray(b"focusMode"),
         }

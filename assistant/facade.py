@@ -7,7 +7,7 @@ from PySide6.QtGui import QGuiApplication, QScreen
 from sivkit.storage.delta import Delta
 from sivkit.storage.in_memory_store import InMemoryStore
 
-from assistant.constants import EXPERIMENTS_DIR
+from assistant.constants import AGENTS_DIR, EXPERIMENTS_DIR
 from assistant.model.app_config import ViiConfig
 from assistant.model.experiment_config import ExperimentConfig
 from assistant.projections import project_config, project_context_delta_to_view
@@ -44,6 +44,7 @@ class Facade:
         self._load_config()
         self._session_manager = None
         self.inference_client = InferenceServerClient()
+        self._active_agent: str | None = None
 
     def _load_config(self) -> None:
         """Load config from disk into the store."""
@@ -76,16 +77,43 @@ class Facade:
                     path=str(path),
                     data_loader=data.get("data_loader", ""),
                     prompt=data.get("prompt", ""),
+                    dataset_path=data.get("dataset_path", ""),
+                    prompt_template=data.get("prompt_template", ""),
                     generation_params=data.get("generation_params", {}),
                     resolution=data.get("resolution"),
+                    start_index=data.get("start_index"),
+                    end_index=data.get("end_index"),
                     stream=data.get("stream", True),
                     chat_template_params=data.get("chat_template_params", {}),
+                    extraction=data.get("extraction", "response"),
+                    focus_mode=data.get("focus_mode", "main"),
+                    max_turns=data.get("max_turns") or {},
                 )
             )
 
     # --- explicit service setters (must be called early in main) ---------
     def set_project_manager(self, manager: ViiProjectManager) -> None:
         self._project_manager = manager
+
+    # --- Agent management -------------------------------------------------
+    def get_available_agents(self) -> list[str]:
+        """Return sorted list of agent folder names."""
+        if not AGENTS_DIR.exists():
+            return []
+        return sorted(d.name for d in AGENTS_DIR.iterdir() if d.is_dir())
+
+    @property
+    def active_agent(self) -> str | None:
+        """Return the currently active agent name, defaulting to the first available."""
+        if self._active_agent is None:
+            agents = self.get_available_agents()
+            if agents:
+                self._active_agent = agents[0]
+        return self._active_agent
+
+    def set_active_agent(self, name: str) -> None:
+        """Set the active agent by folder name."""
+        self._active_agent = name
 
     @property
     def app(self) -> ViiQmlApp:

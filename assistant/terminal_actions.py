@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from sivkit.libs.action import action
+from sivkit.libs.procedure import procedure
 
 from assistant.actions import add_user_message, ocr_clipboard
 from assistant.facade import raise_on_session_inactive, vii
 from assistant.image_ops import resize_to_target
-from assistant.inference.context import ImageItem
+from assistant.inference.context import ImageMessage
+from assistant.inference.focus_modes import PERCEPTION_MODES
 from assistant.model_configs import (
     MODEL_SPECS,
     get_resolution_for_model,
@@ -36,7 +38,7 @@ if TYPE_CHECKING:
 
 
 def _ensure_model_loaded() -> None:
-    state = vii.app.view_state.settings_VS.server_model_state
+    state = vii.app.view_state.inference_status_VS.model_state
     if state != "loaded":
         raise RuntimeError(
             f"Cannot proceed: model is not loaded (state={state!r}). "
@@ -132,13 +134,14 @@ def _add_image_item(pixmap, source: str) -> None:
     if not encoded:
         raise RuntimeError("Image encoding failed")
 
-    item = ImageItem()
+    item = ImageMessage()
     item.position = ctx.next_position()
     item.image_b64 = encoded
     item.width = meta["width"]
     item.height = meta["height"]
     item.size = meta["width"] * meta["height"]
     item.origin = source
+    item.metadata = {"visible_to": list(PERCEPTION_MODES)}
     ctx.insert(item)
 
 
@@ -154,18 +157,23 @@ def set_screen(screen_name: str) -> None:
     vii.update_config(cfg)
 
 
-@action("terminal.set_model")
-def set_model(model_key: str) -> None:
-    # Persist to config store (projector updates VS)
+@action("terminal.persist_selected_model")
+def persist_selected_model(model_key: str) -> None:
+    """Persist the selected model to config (projector updates the VS)."""
     cfg = vii.get_config()
     cfg.selected_model = model_key
     vii.update_config(cfg)
 
-    # Fire the HTTP request in a background thread
-    def _on_model_result(connected, model_state, mk):
-        vii.app.app_view_model.health_check_done.emit(connected, model_state, mk)
 
-    vii.inference_client.load_model_bg(model_key, _on_model_result)
+@procedure
+async def set_model(model_key: str) -> None:
+    """Persist the selection, then ask the server to (un)load the model.
+
+    The client updates its status attributes, which the projector copies
+    onto inference_status_VS — the view updates from there.
+    """
+    persist_selected_model(model_key)
+    await vii.inference_client.load_model(model_key)
 
 
 @action("terminal.set_max_new_tokens")
@@ -215,7 +223,10 @@ def open_focus_mode_prompt(mode_name: str) -> None:
     mode_config = FOCUS_MODES.get(mode_name)
     if mode_config is None:
         return
-    prompt_path = mode_config.system_prompt_path()
+    agent = vii.active_agent
+    if not agent:
+        return
+    prompt_path = mode_config.system_prompt_path(agent)
     # Create file if it doesn't exist
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     if not prompt_path.exists():
@@ -229,7 +240,51 @@ def open_focus_mode_prompt(mode_name: str) -> None:
 @action("terminal.step_experiment")
 def step_experiment() -> None:
     _ensure_model_loaded()
-    vii.experiments_manager.step()
+    em = vii.experiments_manager
+    ensure_experiment_started()
+    em.step()
+
+
+def ensure_experiment_started() -> None:
+    """Auto-start the selected experiment config if not already running.
+
+    Does NOT step/begin a chain — only loads the config and starts the
+    experiment. Safe to call before run-all (which drives stepping itself).
+    """
+    em = vii.experiments_manager
+    if em.running:
+        return
+    config_path = em.config_path
+    log.info(f"step_experiment: auto-starting from config_path={config_path}")
+    if config_path is None or not config_path.exists():
+        raise RuntimeError(f"No experiment config selected (path={config_path})")
+    import json
+
+    from assistant.model.experiment_config import ExperimentConfig
+
+    data = json.loads(config_path.read_text())
+    config = ExperimentConfig(
+        id=ExperimentConfig.id_for_path(config_path.stem),
+        name=data.get("name", config_path.stem),
+        path=str(config_path),
+        data_loader=data.get("data_loader", ""),
+        prompt=data.get("prompt", ""),
+        dataset_path=data.get("dataset_path", ""),
+        prompt_template=data.get("prompt_template", ""),
+        generation_params=data.get("generation_params", {}),
+        resolution=data.get("resolution"),
+        start_index=data.get("start_index"),
+        end_index=data.get("end_index"),
+        stream=data.get("stream", True),
+        chat_template_params=data.get("chat_template_params", {}),
+        extraction=data.get("extraction", "response"),
+        focus_mode=data.get("focus_mode", "main"),
+        max_turns=data.get("max_turns") or {},
+    )
+    log.info(
+        f"step_experiment: starting '{config.name}' data_loader={config.data_loader}"
+    )
+    em.start(config)
 
 
 @action("terminal.stop_experiment")
@@ -237,11 +292,56 @@ def stop_experiment() -> None:
     vii.experiments_manager.stop()
 
 
+@action("terminal.cancel_experiment")
+def cancel_experiment() -> None:
+    vii.experiments_manager.cancel()
+
+
+@action("terminal.random_experiment_step")
+def random_experiment_step() -> None:
+    _ensure_model_loaded()
+    em = vii.experiments_manager
+    if not em.running:
+        step_experiment()  # auto-start first
+    em.random_step()
+
+
 @action("terminal.open_experiment_config")
 def open_experiment_config() -> None:
     config_path = vii.experiments_manager.config_path
     if config_path and config_path.exists():
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+
+@action("terminal.generate_experiment_stats")
+def generate_experiment_stats() -> None:
+    """Generate stats from the current experiment's results and open the report."""
+    em = vii.experiments_manager
+    if em._output_dir is None or not em._output_dir.exists():
+        log.warning("No experiment output directory available")
+        return
+
+    from assistant.experiments.stats import (
+        compute_stats,
+        format_stats,
+        load_results,
+        load_run_params,
+    )
+
+    results = load_results(em._output_dir)
+    if not results:
+        log.warning("No results found to compute stats from")
+        return
+
+    stats = compute_stats(results)
+    run_params = load_run_params(em._output_dir)
+    report = format_stats(em._output_dir, stats, run_params)
+
+    # Write report to file and open it
+    report_path = em._output_dir / "stats.txt"
+    report_path.write_text(report)
+    log.info(f"Stats report: {report_path}\n{report}")
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path)))
 
 
 # ── Settings modal visibility ─────────────────────────────────────
@@ -264,27 +364,3 @@ def set_terminal_visible(visible: bool) -> None:
 def toggle_terminal() -> None:
     terminal_state = vii.app.terminal_state
     set_terminal_visible(not terminal_state.visible)
-
-
-# ── Health check ──
-
-
-@action("health.apply_result")
-def apply_health_result(connected: bool, model_state: str, model_key: str) -> None:
-    """Apply health check result to settings state and auto-start session."""
-    settings = vii.app.view_state.settings_VS
-    prev_state = settings.server_model_state
-    settings.server_model_state = model_state
-    settings.server_model_key = model_key
-
-    # Auto-start session when model becomes available
-    if model_state == "loaded" and prev_state != "loaded":
-        if settings.session_state != "started":
-            capture = vii.app.view_state.capture_screen_info
-            screen_name = capture.name if capture else ""
-            vii.project_manager.start_session(screen_name=screen_name)
-
-
-def schedule_health_check(callback) -> None:
-    """Run health check in background thread, call callback with results."""
-    vii.inference_client.check_status_bg(callback)

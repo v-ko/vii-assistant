@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 from assistant.view_states.context_view import ContextViewerState
+from assistant.view_states.inference_status import InferenceStatusViewState
 from assistant.view_states.overlay import OverlayViewState
 from assistant.view_states.recording_overlay import RecordingOverlayViewState
 from assistant.view_states.screen_info import ScreenInfoVS
@@ -23,6 +24,7 @@ class AppViewState(QObject):
     context_VS: ContextViewerState
     overlay_VS: OverlayViewState
     settings_modal_VS: SettingsModalViewState
+    inference_status_VS: InferenceStatusViewState
     snippet_overlays: list[SnippetOverlayViewState]
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -30,6 +32,7 @@ class AppViewState(QObject):
         self.settings_VS = AssistantSettingsViewState(parent=self)
         self.context_VS = ContextViewerState(parent=self)
         self.overlay_VS = OverlayViewState(parent=self)
+        self.inference_status_VS = InferenceStatusViewState(parent=self)
         self._recording_overlay_VS: RecordingOverlayViewState | None = None
         self.settings_modal_VS = SettingsModalViewState(parent=self)
         self.snippet_overlays = []

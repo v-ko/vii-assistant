@@ -1,7 +1,7 @@
-"""Hard-coded focus mode registry.
+"""Focus mode registry with agent-based prompt loading.
 
 Each focus mode defines:
-- system_prompt_path: Path to system prompt file (relative to task folder)
+- system_prompt_path: Path to system prompt file (resolved from active agent folder)
 - execution: "server" (inference-based) or "client" (executed locally by HybridSegmentService)
 - includes_perception: Whether the latest screenshot is included in context
 """
@@ -11,9 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# Hard-coded task folder path (relative to project root)
-TASKS_DIR = Path(__file__).resolve().parent.parent.parent / "tasks"
-ACTIVE_TASK = "info_gathering"
+from assistant.constants import AGENTS_DIR
 
 
 @dataclass(frozen=True)
@@ -23,15 +21,17 @@ class FocusModeConfig:
     includes_perception: bool = False
     has_prompt_file: bool = True  # Whether this mode has a system prompt file
 
-    def system_prompt_path(self, task: str = ACTIVE_TASK) -> Path:
-        return TASKS_DIR / task / f"{self.name}.md"
+    def system_prompt_path(self, agent: str) -> Path:
+        """Resolve prompt path from agent folder. Raises if not found."""
+        agent_path = AGENTS_DIR / agent / f"{self.name}.md"
+        if not agent_path.exists():
+            raise FileNotFoundError(f"System prompt not found: {agent_path}")
+        return agent_path
 
-    def load_system_prompt(self, task: str = ACTIVE_TASK) -> str:
+    def load_system_prompt(self, agent: str) -> str:
         if not self.has_prompt_file:
             return ""
-        path = self.system_prompt_path(task)
-        if not path.exists():
-            return ""
+        path = self.system_prompt_path(agent)
         return path.read_text(encoding="utf-8").strip()
 
 
@@ -71,5 +71,10 @@ CLIENT_TOOLS: set[str] = {
     name for name, cfg in FOCUS_MODES.items() if cfg.execution == "client"
 }
 
+# Focus modes whose context should include the latest screenshot
+PERCEPTION_MODES: list[str] = [
+    name for name, cfg in FOCUS_MODES.items() if cfg.includes_perception
+]
+
 # Max tool-call chain depth before force-stopping
-MAX_TOOL_CALL_DEPTH = 20
+MAX_TOOL_CALL_DEPTH = 5

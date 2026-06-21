@@ -18,3 +18,17 @@ def clear_pending_actions() -> None:
     overlay_vs = vii.app.view_state.overlay_VS
     overlay_vs.pending_actions = []
     overlay_vs.mode = OverlayMode.WORK
+
+
+@action("overlay.show_supervised_review")
+def show_supervised_review(text: str) -> None:
+    overlay_vs = vii.app.view_state.overlay_VS
+    overlay_vs.review_text = text
+    overlay_vs.mode = OverlayMode.SUPERVISED_REVIEW
+
+
+@action("overlay.clear_supervised_review")
+def clear_supervised_review() -> None:
+    overlay_vs = vii.app.view_state.overlay_VS
+    overlay_vs.review_text = ""
+    overlay_vs.mode = OverlayMode.WORK

@@ -1,6 +1,6 @@
 import logging
 
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -13,7 +13,10 @@ from PySide6.QtWidgets import QWidget
 
 from assistant.facade import vii
 from assistant.util import get_screen_by_name
-from assistant.view_states.overlay import OverlayMode, OverlayViewState
+from assistant.view_states.overlay import (
+    OverlayMode,
+    OverlayViewState,
+)
 
 log = logging.getLogger(__name__)
 
@@ -100,11 +103,27 @@ class ModelVisionOverlay(QWidget):
             self._draw_confirm_prompt(painter)
             return
 
+        # --- SUPERVISED_REVIEW: show agent response for supervisor review ---
+        if mode == OverlayMode.SUPERVISED_REVIEW:
+            painter.fillRect(self.rect(), QColor(0, 0, 40, 60))
+            self._draw_supervised_review(painter)
+            return
+
         # --- EXPERIMENT: sample image background ---
         if mode == OverlayMode.EXPERIMENT and self._state.sample_image is not None:
-            painter.drawImage(
-                QRect(0, 0, self.width(), self.height()), self._state.sample_image
-            )
+            img = self._state.sample_image
+            img_w, img_h = img.width(), img.height()
+            widget_w, widget_h = self.width(), self.height()
+            # Fit image preserving aspect ratio, centered
+            scale = min(widget_w / img_w, widget_h / img_h)
+            draw_w = int(img_w * scale)
+            draw_h = int(img_h * scale)
+            offset_x = (widget_w - draw_w) // 2
+            offset_y = (widget_h - draw_h) // 2
+            # Black background (letterbox)
+            painter.fillRect(self.rect(), QColor(0, 0, 0))
+            target_rect = QRectF(offset_x, offset_y, draw_w, draw_h)
+            painter.drawImage(target_rect, img)
 
         # --- WORK (default): red outline + shapes ---
         # Draw a thin red outline around the widget
@@ -148,6 +167,32 @@ class ModelVisionOverlay(QWidget):
         painter.drawText(
             text_rect,
             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            text,
+        )
+
+    def _draw_supervised_review(self, painter: QPainter) -> None:
+        """Draw agent response text and supervisor action hints."""
+        review_text = self._state.review_text
+        # Truncate very long responses for display
+        max_display = 2000
+        display_text = review_text[:max_display]
+        if len(review_text) > max_display:
+            display_text += "\n[...]"
+
+        lines = ["─── Agent Response ───", "", display_text, ""]
+        lines.append("Alt+C correct  |  Alt+P pass  |  Alt+E error (type correction)")
+        text = "\n".join(lines)
+
+        font = QFont("Monospace", 14)
+        painter.setFont(font)
+        painter.setPen(QColor(220, 220, 255, 240))
+        margin = 40
+        text_rect = self.rect().adjusted(margin, margin, -margin, -margin)
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignTop
+            | Qt.AlignmentFlag.AlignLeft
+            | Qt.TextFlag.TextWordWrap,
             text,
         )
 

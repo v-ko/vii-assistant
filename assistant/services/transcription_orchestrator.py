@@ -10,13 +10,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 import httpx
 import numpy as np
 
-from assistant.facade import vii
-from assistant.recording_actions import set_transcribing_active
+from assistant.services.inference_client import InferenceServerClient
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
     stitch_chunk_results,
@@ -32,16 +31,22 @@ class TranscriptionOrchestrator:
     """Client-side orchestrator: sends chunks to server, stitches results.
 
     Usage:
-        orch = TranscriptionOrchestrator()
+        orch = TranscriptionOrchestrator(inference_client)
         async for segment in orch.run(recording_service):
             # segment is the latest stitched text (incremental)
             ...
     """
 
-    def __init__(self) -> None:
+    def __init__(self, inference_client: InferenceServerClient) -> None:
+        self._inference_client = inference_client
+        self._on_transcribing_changed: Callable[[bool], None] | None = None
         self._generation: int = 0
         self._in_flight: int = 0
         self.last_result: TranscriptionResult | None = None
+
+    def set_on_transcribing_changed(self, callback: Callable[[bool], None]) -> None:
+        """Wire a callback to be notified when transcription starts/stops."""
+        self._on_transcribing_changed = callback
 
     async def run(
         self,
@@ -83,7 +88,8 @@ class TranscriptionOrchestrator:
                         break
 
                     if first_chunk:
-                        set_transcribing_active(True)
+                        if self._on_transcribing_changed:
+                            self._on_transcribing_changed(True)
                         first_chunk = False
 
                     audio_int16, chunk_start_time = item
@@ -128,7 +134,8 @@ class TranscriptionOrchestrator:
                         last_yielded_text = stitched.text
                         yield new_text
         finally:
-            set_transcribing_active(False)
+            if self._on_transcribing_changed:
+                self._on_transcribing_changed(False)
 
     async def _transcribe_chunk(
         self,
@@ -146,7 +153,7 @@ class TranscriptionOrchestrator:
             chunk_start_time,
             len(audio_int16),
         )
-        data = await vii.inference_client.transcribe(
+        data = await self._inference_client.transcribe(
             audio_b64, sample_rate=16000, client=client
         )
 

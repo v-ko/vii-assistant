@@ -14,6 +14,7 @@ from assistant.app_view_model import AppViewModel
 from assistant.context_list_model import ContextListModel
 from assistant.facade import vii
 from assistant.projections import project_screen_layout
+from assistant.services.correction_view_model import CorrectionViewModel
 from assistant.services.recording_overlay_view_model import RecordingOverlayViewModel
 from assistant.services.settings_modal_view_model import SettingsModalViewModel
 from assistant.services.snippet_view_model import SnippetViewModel
@@ -41,6 +42,7 @@ class ViiQmlApp(QApplication):
         # View models (only need app_state, no QML engine)
         self.app_view_model = AppViewModel(parent=self)
         self.context_model = ContextListModel(self.view_state.context_VS, parent=self)
+        self.correction_view_model = CorrectionViewModel(view_state, parent=self)
         self.recording_overlay_view_model = RecordingOverlayViewModel(view_state)
         self.settings_modal_view_model = SettingsModalViewModel(view_state)
         self.snippet_view_model = SnippetViewModel(view_state)
@@ -62,10 +64,12 @@ class ViiQmlApp(QApplication):
         self._engine = QQmlApplicationEngine()
         ctx = self.engine.rootContext()
         ctx.setContextProperty("settingsState", self.view_state.settings_VS)
+        ctx.setContextProperty("inferenceStatusVS", self.view_state.inference_status_VS)
         ctx.setContextProperty("contextState", self.view_state.context_VS)
         ctx.setContextProperty("contextModel", self.context_model)
         ctx.setContextProperty("terminalState", self.terminal_state)
         ctx.setContextProperty("appVM", self.app_view_model)
+        ctx.setContextProperty("correctionVM", self.correction_view_model)
         ctx.setContextProperty("recordingOverlayVM", self.recording_overlay_view_model)
         ctx.setContextProperty("settingsModalVM", self.settings_modal_view_model)
         ctx.setContextProperty("snippetVM", self.snippet_view_model)
@@ -84,6 +88,10 @@ class ViiQmlApp(QApplication):
 
         # Load recording overlay QML (one window per screen)
         self._create_recording_overlays()
+
+        # Load correction window QML (supervised mode)
+        correction_qml = QML_DIR / "CorrectionWindow.qml"
+        self.engine.load(QUrl.fromLocalFile(str(correction_qml)))
 
         # Screen debug widget (lazy, shown via view state signal)
         self.view_state.screen_debug_visible_changed.connect(
@@ -116,7 +124,12 @@ class ViiQmlApp(QApplication):
         tray_menu.addAction(quit_action)
 
         self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_icon_activated)
         self.tray_icon.show()
+
+    def _on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            toggle_terminal()
 
     def bind_screen_overlay(self, initial_screen_name: str):
         if self.overlay is None:
