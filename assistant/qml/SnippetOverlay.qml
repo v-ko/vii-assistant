@@ -20,10 +20,22 @@ Window {
     // Set by the loader to position on the correct screen
     property string screenName: ""
 
+    // Grab keyboard focus so Escape works despite X11BypassWindowManagerHint
+    // (the WM never gives focus to bypass windows on its own).
+    Component.onCompleted: {
+        requestActivate()
+        overlay.forceActiveFocus()
+    }
+
     Rectangle {
         id: overlay
         anchors.fill: parent
         color: "#28646464"  // Semi-transparent grey
+
+        // Receive key events directly (Shortcut alone is unreliable for
+        // bypass windows that the WM won't focus).
+        focus: true
+        Keys.onEscapePressed: snippetVM.cancel()
 
         // Crosshatch pattern via Canvas
         Canvas {
@@ -109,11 +121,5 @@ Window {
                 }
             }
         }
-    }
-
-    // Cancel on Escape
-    Shortcut {
-        sequence: "Escape"
-        onActivated: snippetVM.cancel()
     }
 }
