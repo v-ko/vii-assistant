@@ -4,15 +4,13 @@ import QtQuick.Layouts
 
 Window {
     id: root
-    width: Screen.width * 0.9
-    height: Screen.height / 2
-    x: (Screen.width - width) / 2
-    y: 0
+    width: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.width * 0.9 : Screen.width * 0.9
+    height: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.height / 2 : Screen.height / 2
+    x: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.x + (appVM.primaryScreenInfo.width - width) / 2 : (Screen.width - width) / 2
+    y: appVM.primaryScreenInfo ? appVM.primaryScreenInfo.y : 0
     visible: false
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-
-    property bool terminalVisible: false
 
     // Clip so nothing is visible outside the window area
     Item {
@@ -49,6 +47,11 @@ Window {
                     Layout.fillHeight: true
                 }
             }
+
+            // Settings modal overlay
+            SettingsModal {
+                id: settingsModalPopup
+            }
         }
     }
 
@@ -77,20 +80,34 @@ Window {
     // ── Keyboard handling ───────────────────────────────────────
     Shortcut {
         sequence: "Escape"
-        onActivated: root.hideTerminal()
+        onActivated: appVM.hideTerminal()
     }
 
-    function showTerminal() {
-        panel.y = -panel.height
-        root.visible = true
-        root.raise()
-        root.requestActivate()
-        terminalVisible = true
-        slideDown.start()
+    // Supervised mode shortcuts (redundant with CorrectionWindow + system globals)
+    Shortcut {
+        sequence: "Alt+C"
+        enabled: correctionVM ? correctionVM.visible : false
+        onActivated: correctionVM.submitCorrect()
+    }
+    Shortcut {
+        sequence: "Alt+P"
+        enabled: correctionVM ? correctionVM.visible : false
+        onActivated: correctionVM.submitPass()
     }
 
-    function hideTerminal() {
-        terminalVisible = false
-        slideUp.start()
+    // ── React to view state visibility changes ──────────────────
+    Connections {
+        target: terminalState
+        function onVisible_changed(vis) {
+            if (vis) {
+                panel.y = -panel.height
+                root.visible = true
+                root.raise()
+                root.requestActivate()
+                slideDown.start()
+            } else {
+                slideUp.start()
+            }
+        }
     }
 }

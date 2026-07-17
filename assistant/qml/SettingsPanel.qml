@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // Settings panel: model/session controls, prompts, capture actions.
-// Expects `settingsState`, `backend` in QML context from Python.
+// Expects `settingsState`, `appVM` in QML context from Python.
 
 Rectangle {
     id: settingsRoot
@@ -31,7 +31,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
                 enabled: settingsState ? settingsState.session_state !== "new-session" : true
-                onClicked: backend.newSession()
+                onClicked: appVM.newSession()
                 ToolTip.text: "Reset context and start a new session"
                 ToolTip.visible: hovered
             }
@@ -40,8 +40,8 @@ Rectangle {
                 text: "OCR clipboard"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? !settingsState.request_in_progress : true
-                onClicked: backend.ocrClipboard()
+                enabled: settingsState ? !settingsState.assistant_working : true
+                onClicked: appVM.ocrClipboard()
                 ToolTip.text: "Run OCR on clipboard image"
                 ToolTip.visible: hovered
             }
@@ -73,8 +73,8 @@ Rectangle {
                 text: "Attach screen"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? (!settingsState.request_in_progress && settingsState.context_updates_allowed) : true
-                onClicked: backend.attachScreen()
+                enabled: settingsState ? (!settingsState.assistant_working && settingsState.context_updates_allowed) : true
+                onClicked: appVM.attachScreen()
                 ToolTip.text: "Capture watched screen and add to context"
                 ToolTip.visible: hovered
             }
@@ -83,8 +83,8 @@ Rectangle {
                 text: "Attach clipboard"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                enabled: settingsState ? (!settingsState.request_in_progress && settingsState.context_updates_allowed) : true
-                onClicked: backend.attachClipboard()
+                enabled: settingsState ? (!settingsState.assistant_working && settingsState.context_updates_allowed) : true
+                onClicked: appVM.attachClipboard()
                 ToolTip.text: "Add clipboard image to context"
                 ToolTip.visible: hovered
             }
@@ -96,16 +96,9 @@ Rectangle {
                 Layout.preferredHeight: uniformButtonHeight
                 verticalAlignment: Text.AlignVCenter
 
-                property bool connected: false
-                text: connected ? "Server: Connected" : "Server: Disconnected"
+                property bool connected: inferenceStatusVS.connected
+                text: connected ? "Server " + appVM.serverHost + " Connected" : "Server " + appVM.serverHost + " Disconnected"
                 color: connected ? "#4CAF50" : "#f44336"
-
-                Connections {
-                    target: backend
-                    function onHealth_check_done(conn, modelState, modelKey) {
-                        healthLabel.connected = conn
-                    }
-                }
             }
 
             Item { Layout.fillHeight: true }
@@ -118,17 +111,24 @@ Rectangle {
             spacing: 8
 
             Button {
+                text: "\u2699 Settings"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: settingsModalVM.show()
+            }
+
+            Button {
                 text: "Open sessions folder"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                onClicked: backend.openSessionsFolder()
+                onClicked: appVM.openSessionsFolder()
             }
 
             Button {
                 text: "Open app config"
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                onClicked: backend.openAppConfig()
+                onClicked: appVM.openAppConfig()
             }
 
             // Model selector
@@ -146,15 +146,15 @@ Rectangle {
                 Layout.preferredHeight: uniformButtonHeight
                 verticalAlignment: Text.AlignVCenter
                 text: {
-                    let state = settingsState ? settingsState.server_model_state : "unknown"
-                    let key = settingsState ? settingsState.server_model_key : ""
+                    let state = inferenceStatusVS.model_state
+                    let key = inferenceStatusVS.model_key
                     if (state === "loaded" && key) return "Model: " + key
                     if (state === "loading") return "Model: loading..."
                     if (state === "unloaded") return "Model: unloaded"
                     return "Model: unknown"
                 }
                 color: {
-                    let state = settingsState ? settingsState.server_model_state : "unknown"
+                    let state = inferenceStatusVS.model_state
                     if (state === "loaded") return "#4CAF50"
                     if (state === "loading") return "#FFA726"
                     return "#888"
@@ -162,28 +162,171 @@ Rectangle {
             }
 
             // Screen selector
-            ComboBox {
-                id: screenCombo
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.preferredHeight: uniformButtonHeight
-                model: ListModel { id: screenListModel }
-                textRole: "displayName"
-                valueRole: "name"
+                spacing: 6
 
-                Component.onCompleted: populateScreens()
-
-                onActivated: function(index) {
-                    let item = screenListModel.get(index)
-                    if (item) backend.setScreen(item.name)
+                Label {
+                    text: "Screen:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
                 }
 
-                // Re-sync when Python sets screen (e.g. after config init)
-                Connections {
-                    target: settingsState
-                    function onScreen_changed(screenName) {
-                        populateScreens()
+                ComboBox {
+                    id: screenCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    model: ListModel { id: screenListModel }
+                    textRole: "displayName"
+                    valueRole: "name"
+
+                    Component.onCompleted: populateScreens()
+
+                    onActivated: function(index) {
+                        let item = screenListModel.get(index)
+                        if (item) appVM.setScreen(item.name)
+                    }
+
+                    Connections {
+                        target: appVM
+                        function onScreen_list_changed() {
+                            populateScreens()
+                        }
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onCapture_screen_changed() {
+                            selectCurrentScreen()
+                        }
                     }
                 }
+            }
+
+            // Execution mode selector
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                spacing: 6
+
+                Label {
+                    text: "Approval:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ComboBox {
+                    id: modeCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    model: ["user-approve", "auto", "supervised"]
+                    currentIndex: settingsState ? model.indexOf(settingsState.execution_mode) : 0
+
+                    onActivated: function(index) {
+                        appVM.setExecutionMode(model[index])
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onExecution_mode_changed(mode) {
+                            modeCombo.currentIndex = modeCombo.model.indexOf(mode)
+                        }
+                    }
+                }
+            }
+
+            // Agent selector
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                spacing: 6
+
+                Label {
+                    text: "Agent:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ComboBox {
+                    id: agentCombo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: uniformButtonHeight
+                    textRole: "name"
+                    model: ListModel { id: agentModel }
+
+                    Component.onCompleted: {
+                        var agents = appVM.getAgents()
+                        agentModel.clear()
+                        var selectedIdx = 0
+                        for (var i = 0; i < agents.length; i++) {
+                            agentModel.append(agents[i])
+                            if (agents[i].selected) selectedIdx = i
+                        }
+                        currentIndex = selectedIdx
+                    }
+
+                    onCurrentIndexChanged: {
+                        if (currentIndex >= 0 && agentModel.count > 0) {
+                            var item = agentModel.get(currentIndex)
+                            if (item) appVM.setActiveAgent(item.name)
+                        }
+                    }
+                }
+            }
+
+            // Max tokens per reply
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                spacing: 6
+
+                Label {
+                    text: "Max tokens:"
+                    color: palette.text
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                SpinBox {
+                    id: maxTokensSpin
+                    Layout.fillWidth: true
+                    from: 16
+                    to: 16384
+                    stepSize: 64
+                    value: settingsState ? settingsState.max_new_tokens : 256
+                    editable: true
+
+                    onValueModified: {
+                        appVM.setMaxNewTokens(value)
+                    }
+
+                    Connections {
+                        target: settingsState
+                        function onMax_new_tokens_changed(val) {
+                            if (maxTokensSpin.value !== val)
+                                maxTokensSpin.value = val
+                        }
+                    }
+                }
+            }
+
+            // ── Debug / Quit ────────────────────────────────────
+            Item { Layout.preferredHeight: 16 }
+
+            Button {
+                text: "Screen Debug"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: appVM.showScreenDebug()
+                ToolTip.text: "Show screen layout debug window"
+                ToolTip.visible: hovered
+            }
+
+            Button {
+                text: "Quit"
+                Layout.fillWidth: true
+                Layout.preferredHeight: uniformButtonHeight
+                onClicked: Qt.quit()
             }
 
             Item { Layout.fillHeight: true }
@@ -242,48 +385,27 @@ Rectangle {
                     }
                 }
 
-                // Tab 1: System prompt
+                // Tab 1: System prompt (focus mode files)
                 ColumnLayout {
                     spacing: 4
 
-                    ScrollView {
+                    Label {
+                        text: "System prompts (open in external editor, takes effect on next session)"
+                        color: palette.text
+                        wrapMode: Text.Wrap
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
-
-                        TextArea {
-                            id: systemPromptEdit
-                            placeholderText: "Define the system prompt (markdown)"
-                            wrapMode: TextArea.Wrap
-                            text: settingsState ? settingsState.system_prompt_markdown : ""
-                            color: palette.text
-
-                            onTextChanged: {
-                                if (settingsState && text !== settingsState.system_prompt_markdown) {
-                                    settingsState.system_prompt_markdown = text
-                                }
-                            }
-
-                            Connections {
-                                target: settingsState
-                                function onSystem_prompt_changed(val) {
-                                    if (systemPromptEdit.text !== val)
-                                        systemPromptEdit.text = val
-                                }
-                            }
-
-                            background: Rectangle {
-                                color: palette.base
-                                border.color: palette.mid
-                                border.width: 1
-                                radius: 2
-                            }
-                        }
                     }
 
                     Button {
-                        text: "Add tool prompt"
+                        text: "Main prompt"
                         Layout.fillWidth: true
-                        onClicked: backend.addToolPrompt()
+                        onClicked: appVM.openFocusModePrompt("main")
+                    }
+
+                    Button {
+                        text: "Localization prompt"
+                        Layout.fillWidth: true
+                        onClicked: appVM.openFocusModePrompt("localization")
                     }
                 }
 
@@ -291,14 +413,17 @@ Rectangle {
                 ColumnLayout {
                     spacing: 6
 
+                    property bool experimentActive: false
+
                     ComboBox {
                         id: experimentConfigCombo
                         Layout.fillWidth: true
                         textRole: "name"
+                        enabled: !parent.experimentActive
                         model: ListModel { id: experimentConfigModel }
 
                         Component.onCompleted: {
-                            var configs = backend.getExperimentConfigs()
+                            var configs = appVM.getExperimentConfigs()
                             experimentConfigModel.clear()
                             var selectedIdx = 0
                             for (var i = 0; i < configs.length; i++) {
@@ -311,7 +436,30 @@ Rectangle {
                         onCurrentIndexChanged: {
                             if (currentIndex >= 0 && experimentConfigModel.count > 0) {
                                 var item = experimentConfigModel.get(currentIndex)
-                                if (item) backend.setExperimentConfig(item.path)
+                                if (item) appVM.setExperimentConfig(item.path)
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: 4
+
+                        Button {
+                            text: "Auto Run"
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.runAllExperiment()
+                            }
+                        }
+                        Button {
+                            text: "Cancel Auto Run"
+                            onClicked: appVM.cancelExperiment()
+                        }
+                        Button {
+                            text: "Reset Experiment"
+                            onClicked: {
+                                appVM.stopExperiment()
+                                parent.parent.experimentActive = false
                             }
                         }
                     }
@@ -321,21 +469,39 @@ Rectangle {
 
                         Button {
                             text: "Step"
-                            onClicked: backend.stepExperiment()
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.stepExperiment()
+                            }
                         }
                         Button {
-                            text: "Stop"
-                            onClicked: backend.stopExperiment()
+                            text: "Random Sample"
+                            onClicked: {
+                                parent.parent.experimentActive = true
+                                appVM.randomExperimentStep()
+                            }
                         }
                         Button {
                             text: "Open Config"
-                            onClicked: backend.openExperimentConfig()
+                            onClicked: appVM.openExperimentConfig()
+                        }
+                        Button {
+                            text: "Stats"
+                            onClicked: appVM.generateExperimentStats()
                         }
                     }
 
                     Label {
+                        id: experimentProgressLabel
                         text: "Status: idle"
                         color: palette.text
+                    }
+
+                    Connections {
+                        target: appVM
+                        function onExperiment_progress(current, total) {
+                            experimentProgressLabel.text = "Sample " + (current + 1) + " of " + total
+                        }
                     }
 
                     Item { Layout.fillHeight: true }
@@ -365,7 +531,7 @@ Rectangle {
                 valueRole: "key"
 
                 Component.onCompleted: {
-                    let models = backend.getAvailableModels()
+                    let models = appVM.getAvailableModels()
                     for (let i = 0; i < models.length; i++) {
                         modelListModel.append(models[i])
                     }
@@ -384,31 +550,26 @@ Rectangle {
 
         onAccepted: {
             let item = modelListModel.get(modelCombo.currentIndex)
-            if (item) backend.setModel(item.key)
+            if (item) appVM.setModel(item.key)
         }
     }
 
-    // ── Health check timer ──────────────────────────────────────
-    Timer {
-        interval: 5000
-        running: settingsRoot.Window.window ? settingsRoot.Window.window.visible : false
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: backend.scheduleHealthCheck()
-    }
 
     function populateScreens() {
         screenListModel.clear()
-        let screens = backend.getScreenList()
+        let screens = appVM.getScreenList()
         for (let i = 0; i < screens.length; i++) {
             screenListModel.append(screens[i])
         }
-        // Select current screen
+        selectCurrentScreen()
+    }
+
+    function selectCurrentScreen() {
         if (settingsState) {
             for (let j = 0; j < screenListModel.count; j++) {
-                if (screenListModel.get(j).name === settingsState.screen) {
+                if (screenListModel.get(j).name === settingsState.capture_screen) {
                     screenCombo.currentIndex = j
-                    break
+                    return
                 }
             }
         }

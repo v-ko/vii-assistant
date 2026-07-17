@@ -1,6 +1,9 @@
 *.pyc
 *.egg-info
 node_modules
+.env
+
+.VSCodeCounter
 
 fusion-py-src
 
@@ -15,3 +18,9 @@ assistant/experiments/*
 tmp/*
 
 assistant/scripts/build_paper_corpus.py
+run_inference_server.sh
+
+datasets/**
+thesis/**
+scripts/fetch_citation_graph.py
+scripts/peek_dataset.py

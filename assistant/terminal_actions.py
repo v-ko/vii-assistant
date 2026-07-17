@@ -1,47 +1,44 @@
 """Actions for the VII assistant terminal window.
 
 All state mutations go through @action-decorated functions.
-The QML backend calls these — it never mutates state directly.
+The QML ViewModel calls these — it never mutates state directly.
 """
 
 from __future__ import annotations
 
-import json
-import threading
-import urllib.error
-import urllib.request
+import logging
 from base64 import b64encode
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fusion import get_logger
-from fusion.libs.action import action
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
+from sivkit.libs.action import action
+from sivkit.libs.procedure import procedure
 
-from assistant.actions import add_user_message, ocr_clipboard, start_session
-from assistant.facade import vii
+from assistant.actions import add_user_message, ocr_clipboard
+from assistant.facade import raise_on_session_inactive, vii
 from assistant.image_ops import resize_to_target
-from assistant.inference.context import ContextItem
+from assistant.inference.context import ImageMessage
+from assistant.inference.focus_modes import PERCEPTION_MODES
 from assistant.model_configs import (
-    AVAILABLE_MODELS,
     MODEL_SPECS,
     get_resolution_for_model,
 )
-from assistant.services.hybrid_segment_service import hfi
-from assistant.services.project_manager import INFERENCE_HTTP_BASE
+from assistant.services.segment_parsing import hfi
+from assistant.util import get_screen_by_name
 from assistant.utils.capture_utils import clipboard_image, take_screenshot
 from assistant.utils.image_utils import qpixmap_to_pil
 
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from assistant.view_states.settings import AssistantSettingsViewState
+    pass
 
 
 def _ensure_model_loaded() -> None:
-    state = vii.app_state.settings_VS.server_model_state
+    state = vii.app.view_state.inference_status_VS.model_state
     if state != "loaded":
         raise RuntimeError(
             f"Cannot proceed: model is not loaded (state={state!r}). "
@@ -54,8 +51,11 @@ def _ensure_model_loaded() -> None:
 
 @action("terminal.ensure_session")
 def ensure_session() -> None:
-    if vii.app_state.settings_VS.session_state != "started":
-        start_session(screen_name=vii.app_state.settings_VS.screen)
+    """Fire-and-forget session start (returns Task internally)."""
+    if vii.app.view_state.settings_VS.session_state != "started":
+        capture = vii.app.view_state.capture_screen_info
+        screen_name = capture.name if capture else vii.get_config().capture_screen
+        vii.project_manager.start_session(screen_name=screen_name)
 
 
 @action("terminal.new_session")
@@ -74,6 +74,8 @@ def open_sessions_folder() -> None:
 @action("terminal.submit_message")
 def submit_message(text: str) -> None:
     _ensure_model_loaded()
+    # Reset stopped state so the assistant can work again
+    vii.project_manager.hybrid_segment_service.reset_turns()
     add_user_message(text)
 
 
@@ -82,10 +84,13 @@ def submit_message(text: str) -> None:
 
 @action("terminal.attach_screen")
 def attach_screen() -> None:
-    try:
-        screen = vii.current_watched_screen()
-    except Exception as e:
-        log.warning("Cannot attach screen: %s", e)
+    capture = vii.app.view_state.capture_screen_info
+    if capture is None:
+        log.warning("Cannot attach screen: no capture screen configured")
+        return
+    screen = get_screen_by_name(capture.name)
+    if screen is None:
+        log.warning("Cannot attach screen: screen '%s' not found", capture.name)
         return
     pixmap = take_screenshot(screen)
     if pixmap is None:
@@ -109,10 +114,10 @@ def ocr_clipboard_action() -> None:
 
 
 def _add_image_item(pixmap, source: str) -> None:
-    ensure_session()
-    controller = vii.context_controller
+    raise_on_session_inactive()
+    ctx = vii.project_manager.context_manager
     pil = qpixmap_to_pil(pixmap)
-    model_key = vii.app_state.settings_VS.selected_model
+    model_key = vii.get_config().selected_model
     spec = MODEL_SPECS.get(model_key, {})
     if not spec.get("vision"):
         log.warning(
@@ -129,14 +134,15 @@ def _add_image_item(pixmap, source: str) -> None:
     if not encoded:
         raise RuntimeError("Image encoding failed")
 
-    item = ContextItem.create_image(
-        position=controller.next_position(),
-        image_b64=encoded,
-        width=meta["width"],
-        height=meta["height"],
-        origin=source,
-    )
-    controller.create(item)
+    item = ImageMessage()
+    item.position = ctx.next_position()
+    item.image_b64 = encoded
+    item.width = meta["width"]
+    item.height = meta["height"]
+    item.size = meta["width"] * meta["height"]
+    item.origin = source
+    item.metadata = {"visible_to": list(PERCEPTION_MODES)}
+    ctx.insert(item)
 
 
 # ── Settings actions ─────────────────────────────────────────────
@@ -144,17 +150,50 @@ def _add_image_item(pixmap, source: str) -> None:
 
 @action("terminal.set_screen")
 def set_screen(screen_name: str) -> None:
-    settings = vii.app_state.settings_VS
-    if settings.screen != screen_name:
-        settings.screen = screen_name
+    cfg = vii.get_config()
+    if cfg.capture_screen == screen_name:
+        return
+    cfg.capture_screen = screen_name
+    vii.update_config(cfg)
 
 
-@action("terminal.set_model")
-def set_model(model_key: str) -> None:
-    settings = vii.app_state.settings_VS
-    settings.selected_model = model_key
-    # Fire the HTTP request in a background thread
-    threading.Thread(target=_do_model_load, args=(model_key,), daemon=True).start()
+@action("terminal.persist_selected_model")
+def persist_selected_model(model_key: str) -> None:
+    """Persist the selected model to config (projector updates the VS)."""
+    cfg = vii.get_config()
+    cfg.selected_model = model_key
+    vii.update_config(cfg)
+
+
+@procedure
+async def set_model(model_key: str) -> None:
+    """Persist the selection, then ask the server to (un)load the model.
+
+    The client updates its status attributes, which the projector copies
+    onto inference_status_VS — the view updates from there.
+    """
+    persist_selected_model(model_key)
+    await vii.inference_client.load_model(model_key)
+
+
+@action("terminal.set_max_new_tokens")
+def set_max_new_tokens(value: int) -> None:
+    value = max(1, value)
+    cfg = vii.get_config()
+    cfg.max_new_tokens = value
+    vii.update_config(cfg)
+
+
+@action("terminal.set_input_device")
+def set_input_device(device_id: str) -> None:
+    cfg = vii.get_config()
+    cfg.input_device = device_id
+    vii.update_config(cfg)
+
+
+@action("terminal.show_context_debug")
+def show_context_debug(focus_mode: str, text: str) -> None:
+    vii.app.app_view_model.context_debug_ready.emit(focus_mode, text)
 
 
 @action("terminal.add_tool_prompt")
@@ -162,7 +201,7 @@ def add_tool_prompt() -> None:
     tool_prompt = hfi.generate_tool_prompt()
     if not tool_prompt:
         return
-    settings = vii.app_state.settings_VS
+    settings = vii.app.view_state.settings_VS
     current = settings.system_prompt_markdown
     separator = "\n\n" if current.strip() else ""
     settings.system_prompt_markdown = current + separator + tool_prompt
@@ -170,9 +209,29 @@ def add_tool_prompt() -> None:
 
 @action("terminal.open_app_config")
 def open_app_config() -> None:
-    config_path = vii.config.config_file
+    from assistant.services.config_file_adapter import CONFIG_FILE
+
+    config_path = CONFIG_FILE
     if config_path.exists():
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+
+@action("terminal.open_focus_mode_prompt")
+def open_focus_mode_prompt(mode_name: str) -> None:
+    from assistant.inference.focus_modes import FOCUS_MODES
+
+    mode_config = FOCUS_MODES.get(mode_name)
+    if mode_config is None:
+        return
+    agent = vii.active_agent
+    if not agent:
+        return
+    prompt_path = mode_config.system_prompt_path(agent)
+    # Create file if it doesn't exist
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    if not prompt_path.exists():
+        prompt_path.write_text("", encoding="utf-8")
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(prompt_path)))
 
 
 # ── Experiment actions ───────────────────────────────────────────
@@ -181,7 +240,51 @@ def open_app_config() -> None:
 @action("terminal.step_experiment")
 def step_experiment() -> None:
     _ensure_model_loaded()
-    vii.experiments_manager.step()
+    em = vii.experiments_manager
+    ensure_experiment_started()
+    em.step()
+
+
+def ensure_experiment_started() -> None:
+    """Auto-start the selected experiment config if not already running.
+
+    Does NOT step/begin a chain — only loads the config and starts the
+    experiment. Safe to call before run-all (which drives stepping itself).
+    """
+    em = vii.experiments_manager
+    if em.running:
+        return
+    config_path = em.config_path
+    log.info(f"step_experiment: auto-starting from config_path={config_path}")
+    if config_path is None or not config_path.exists():
+        raise RuntimeError(f"No experiment config selected (path={config_path})")
+    import json
+
+    from assistant.model.experiment_config import ExperimentConfig
+
+    data = json.loads(config_path.read_text())
+    config = ExperimentConfig(
+        id=ExperimentConfig.id_for_path(config_path.stem),
+        name=data.get("name", config_path.stem),
+        path=str(config_path),
+        data_loader=data.get("data_loader", ""),
+        prompt=data.get("prompt", ""),
+        dataset_path=data.get("dataset_path", ""),
+        prompt_template=data.get("prompt_template", ""),
+        generation_params=data.get("generation_params", {}),
+        resolution=data.get("resolution"),
+        start_index=data.get("start_index"),
+        end_index=data.get("end_index"),
+        stream=data.get("stream", True),
+        chat_template_params=data.get("chat_template_params", {}),
+        extraction=data.get("extraction", "response"),
+        focus_mode=data.get("focus_mode", "main"),
+        max_turns=data.get("max_turns") or {},
+    )
+    log.info(
+        f"step_experiment: starting '{config.name}' data_loader={config.data_loader}"
+    )
+    em.start(config)
 
 
 @action("terminal.stop_experiment")
@@ -189,75 +292,75 @@ def stop_experiment() -> None:
     vii.experiments_manager.stop()
 
 
+@action("terminal.cancel_experiment")
+def cancel_experiment() -> None:
+    vii.experiments_manager.cancel()
+
+
+@action("terminal.random_experiment_step")
+def random_experiment_step() -> None:
+    _ensure_model_loaded()
+    em = vii.experiments_manager
+    if not em.running:
+        step_experiment()  # auto-start first
+    em.random_step()
+
+
 @action("terminal.open_experiment_config")
 def open_experiment_config() -> None:
     config_path = vii.experiments_manager.config_path
-    if config_path.exists():
+    if config_path and config_path.exists():
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_path)))
+
+
+@action("terminal.generate_experiment_stats")
+def generate_experiment_stats() -> None:
+    """Generate stats from the current experiment's results and open the report."""
+    em = vii.experiments_manager
+    if em._output_dir is None or not em._output_dir.exists():
+        log.warning("No experiment output directory available")
+        return
+
+    from assistant.experiments.stats import (
+        compute_stats,
+        format_stats,
+        load_results,
+        load_run_params,
+    )
+
+    results = load_results(em._output_dir)
+    if not results:
+        log.warning("No results found to compute stats from")
+        return
+
+    stats = compute_stats(results)
+    run_params = load_run_params(em._output_dir)
+    report = format_stats(em._output_dir, stats, run_params)
+
+    # Write report to file and open it
+    report_path = em._output_dir / "stats.txt"
+    report_path.write_text(report)
+    log.info(f"Stats report: {report_path}\n{report}")
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path)))
+
+
+# ── Settings modal visibility ─────────────────────────────────────
+
+
+@action("settings_modal.set_visible")
+def set_settings_modal_visible(visible: bool) -> None:
+    vii.app.view_state.settings_modal_VS.visible = visible
 
 
 # ── Toggle terminal ──────────────────────────────────────────────
 
 
-@action("terminal.toggle")
+@action("set_terminal_visible")
+def set_terminal_visible(visible: bool) -> None:
+    vii.app.terminal_state.visible = visible
+
+
+@action("terminal.toggle_terminal")
 def toggle_terminal() -> None:
-    qt_app = vii.qt_app
-    root = qt_app.terminal_window
-    if root and root.property("terminalVisible"):
-        qt_app.hide_terminal()
-        if qt_app.overlay:
-            qt_app.overlay.hide()
-    else:
-        qt_app.show_terminal()
-        if qt_app.overlay:
-            qt_app.overlay.show()
-
-
-# ── Health check (background, not an action since no state mutation) ──
-
-
-def schedule_health_check(callback) -> None:
-    """Run health check in background thread, call callback with results."""
-    threading.Thread(target=_do_health_check, args=(callback,), daemon=True).start()
-
-
-def _do_health_check(callback) -> None:
-    url = f"{INFERENCE_HTTP_BASE}/status"
-    try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        model_info = data.get("model", {})
-        model_state = model_info.get("state", "unknown")
-        model_key = model_info.get("model_key") or ""
-        callback(True, model_state, model_key)
-    except Exception:
-        callback(False, "unknown", "")
-
-
-def _do_model_load(model_key: str) -> None:
-    url = f"{INFERENCE_HTTP_BASE}/model"
-    if model_key == "none":
-        req = urllib.request.Request(url, method="DELETE")
-    else:
-        payload = json.dumps({"model_key": model_key}).encode()
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-        model_info = data.get("model", {})
-        model_state = model_info.get("state", "unknown")
-        mk = model_info.get("model_key") or ""
-        # Marshal result back to main thread via the backend signal
-        vii.qt_app.qml_backend.health_check_done.emit(True, model_state, mk)
-    except Exception:
-        _do_health_check(
-            lambda connected, ms, mk: vii.qt_app.qml_backend.health_check_done.emit(
-                connected, ms, mk
-            )
-        )
+    terminal_state = vii.app.terminal_state
+    set_terminal_visible(not terminal_state.visible)

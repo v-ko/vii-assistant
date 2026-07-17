@@ -1,0 +1,17 @@
+[project]
+name = "vii-phone"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "py-cord[voice]",
+    "edge-tts",
+    "numpy",
+    "httpx",
+]
+
+[project.scripts]
+vii-phone = "vii_phone.main:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

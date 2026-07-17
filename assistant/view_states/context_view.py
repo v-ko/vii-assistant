@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from fusion.platform.qt_widgets import Property
 from PySide6.QtCore import QObject, Signal
+from sivkit.platform.qt_widgets import Property
 
-from assistant.inference.context import ContentType, ContextItem
+from assistant.inference.context import ContextMessage, ImageMessage, TextMessage
 
 
-def _summarize_request(item: ContextItem) -> str:
+def _summarize_request(item: ContextMessage) -> str:
     payload = item.request or {}
     if not isinstance(payload, dict):
         return ""
@@ -30,25 +30,82 @@ def _summarize_request(item: ContextItem) -> str:
     return "Request: " + ", ".join(parts)
 
 
-class ContextItemViewState(QObject):
+def _format_display_text(item: ContextMessage) -> str:
+    """Format item text for UI display. Prettifies tool call arguments."""
+    if not isinstance(item, TextMessage):
+        return ""
+    text = item.text
+    meta = item.metadata or {}
+    request = item.request or {}
+
+    # Client execution request items have raw JSON arguments — format them
+    if isinstance(request, dict) and request.get("execution") == "client":
+        arguments = meta.get("arguments", {})
+        focus_mode = request.get("focus_mode", "")
+        if focus_mode == "python":
+            code = arguments.get("code", "")
+            return f"▶ {code}" if code else text
+        elif focus_mode == "click_at":
+            return f"⊕ click ({arguments.get('x', '?')}, {arguments.get('y', '?')})"
+        elif focus_mode == "scroll":
+            direction = arguments.get("direction", "down")
+            amount = arguments.get("amount", 0)
+            coord = arguments.get("coordinate", ["?", "?"])
+            arrow = "↑" if direction == "up" else "↓"
+            return f"{arrow} scroll {amount} at ({coord[0]}, {coord[1]})"
+        return text
+
+    # Tool call in metadata (completed assistant generation that triggered a tool)
+    tool_call = meta.get("tool_call")
+    if tool_call and isinstance(tool_call, dict):
+        name = tool_call.get("name", "")
+        args = tool_call.get("arguments", {})
+        suffix = ""
+        if name == "focus":
+            mode = args.get("mode", "")
+            suffix = f" [{mode}]: {args.get('instruction', '')}"
+        elif name == "localization":
+            suffix = f": {args.get('instruction', '')}"
+        elif name == "python":
+            code = args.get("code", "")
+            suffix = f": {code[:80]}{'…' if len(code) > 80 else ''}"
+        elif name in ("click_at", "scroll"):
+            suffix = f": {args}"
+        # Show text before tool call (strip markers) + short tool call summary
+        # Strip <tool_call>...</tool_call> from display text
+        display = (
+            text.split("<tool_call>")[0].strip() if "<tool_call>" in text else text
+        )
+        parts = []
+        if display:
+            parts.append(display)
+        parts.append(f"⚡ {name}{suffix}")
+        return "\n".join(parts)
+
+    return text
+
+
+class ContextMessageViewState(QObject):
     position_changed = Signal(int)
     content_kind_changed = Signal(str)
     text_changed = Signal(str)
+    display_text_changed = Signal(str)
     image_b64_changed = Signal(str)
-    tool_call_changed = Signal(str)
     request_summary_changed = Signal(str)
     origin_changed = Signal(str)
+    focus_mode_changed = Signal(str)
 
     def __init__(self, item_id: str, parent: QObject | None = None):
         super().__init__(parent)
         self._item_id = item_id
         self._position = 0
-        self._content_kind = ContentType.TEXT.value
+        self._content_kind = "text"
         self._text = ""
+        self._display_text = ""
         self._image_b64 = ""
-        self._tool_call = ""
         self._request_summary = ""
         self._origin = ""
+        self._focus_mode = ""
 
     @Property(str, constant=True)
     def item_id(self) -> str:
@@ -98,17 +155,6 @@ class ContextItemViewState(QObject):
         self._image_b64 = value
         self.image_b64_changed.emit(value)
 
-    @Property(str, notify=tool_call_changed)
-    def tool_call(self) -> str:
-        return self._tool_call
-
-    @tool_call.setter
-    def tool_call(self, value: str) -> None:
-        if self._tool_call == value:
-            return
-        self._tool_call = value
-        self.tool_call_changed.emit(value)
-
     @Property(str, notify=request_summary_changed)
     def request_summary(self) -> str:
         return self._request_summary
@@ -131,51 +177,73 @@ class ContextItemViewState(QObject):
         self._origin = value
         self.origin_changed.emit(value)
 
-    def apply_context_item(self, item: ContextItem) -> bool:
-        kind = item.content_type().value
+    @Property(str, notify=display_text_changed)
+    def display_text(self) -> str:
+        return self._display_text
+
+    @display_text.setter
+    def display_text(self, value: str) -> None:
+        if self._display_text == value:
+            return
+        self._display_text = value
+        self.display_text_changed.emit(value)
+
+    @Property(str, notify=focus_mode_changed)
+    def focus_mode(self) -> str:
+        return self._focus_mode
+
+    @focus_mode.setter
+    def focus_mode(self, value: str) -> None:
+        if self._focus_mode == value:
+            return
+        self._focus_mode = value
+        self.focus_mode_changed.emit(value)
+
+    def apply_context_item(self, item: ContextMessage) -> bool:
         reposition = item.position != self._position
         previous_kind = self._content_kind
-        origin = (item.metadata or {}).get("origin", "") if item.metadata else ""
 
         self.position = item.position
-        self.content_kind = kind
-        self.origin = origin
+        self.origin = item.origin
         self.request_summary = _summarize_request(item)
+        self.focus_mode = (item.metadata or {}).get("focus_mode", "")
+        self.display_text = _format_display_text(item)
 
-        if kind == ContentType.TEXT.value:
-            text = str(item.content.get("text", ""))
-            self.text = text
+        if isinstance(item, TextMessage):
+            self.content_kind = "text"
+            self.text = item.text
             self.image_b64 = ""
-            self.tool_call = ""
-        elif kind == ContentType.IMAGE.value:
-            image_b64 = item.content.get("image")
-            self.image_b64 = image_b64 if isinstance(image_b64, str) else ""
+        elif isinstance(item, ImageMessage):
+            self.content_kind = "image"
+            self.image_b64 = item.image_b64
             self.text = ""
-            self.tool_call = ""
         else:
-            payload = item.content.get("tool_call")
-            self.tool_call = str(payload) if payload is not None else ""
+            self.content_kind = "unknown"
             self.text = ""
             self.image_b64 = ""
 
-        kind_changed = previous_kind != kind
+        kind_changed = previous_kind != self._content_kind
         return reposition or kind_changed
 
 
 class ContextViewerState(QObject):
-    items_changed = Signal()
+    items_changed = Signal()  # bulk reset (replace_all)
+    item_added = Signal(str)  # item_id
+    item_removed = Signal(str)  # item_id
+    item_moved = Signal(str)  # item_id (position changed)
+    item_updated = Signal(str)  # item_id (properties changed, no structural change)
     interactions_enabled_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._items: dict[str, ContextItemViewState] = {}
+        self._items: dict[str, ContextMessageViewState] = {}
         self._interactions_enabled = False
 
     @Property(list, notify=items_changed)
-    def items(self) -> list[ContextItemViewState]:
+    def items(self) -> list[ContextMessageViewState]:
         return self.sorted_items()
 
-    def sorted_items(self) -> list[ContextItemViewState]:
+    def sorted_items(self) -> list[ContextMessageViewState]:
         return sorted(
             self._items.values(),
             key=lambda state: (state.position, state.item_id),
@@ -192,21 +260,24 @@ class ContextViewerState(QObject):
         self._interactions_enabled = value
         self.interactions_enabled_changed.emit(value)
 
-    def get_item(self, item_id: str) -> ContextItemViewState | None:
+    def get_item(self, item_id: str) -> ContextMessageViewState | None:
         return self._items.get(item_id)
 
-    def apply_entity(self, item: ContextItem) -> None:
+    def apply_entity(self, item: ContextMessage) -> None:
         """Create or update a view state entry from a ContextItem entity."""
         key: str = str(item.id)
         state = self._items.get(key)
-        created = False
         if state is None:
-            state = ContextItemViewState(key, parent=self)
+            state = ContextMessageViewState(key, parent=self)
             self._items[key] = state
-            created = True
-        refresh_needed = state.apply_context_item(item)
-        if created or refresh_needed:
-            self.items_changed.emit()
+            state.apply_context_item(item)
+            self.item_added.emit(key)
+        else:
+            reposition = state.apply_context_item(item)
+            if reposition:
+                self.item_moved.emit(key)
+            else:
+                self.item_updated.emit(key)
 
     def remove_entity(self, entity_id: str) -> None:
         """Remove a view state entry by entity id."""
@@ -214,34 +285,29 @@ class ContextViewerState(QObject):
         if state is not None:
             state.setParent(None)
             state.deleteLater()
-            self.items_changed.emit()
+            self.item_removed.emit(entity_id)
 
     def apply_changes(self, changes: Iterable) -> None:
         # Kept for compatibility but not used in the new flow
         pass
 
-    def replace_all(self, items: Iterable[ContextItem]) -> None:
+    def replace_all(self, items: Iterable[ContextMessage]) -> None:
         current_ids = set(self._items.keys())
         next_ids: set[str] = set()
-        needs_emit = False
         for item in items:
-            if not isinstance(item, ContextItem):  # defensive
+            if not isinstance(item, ContextMessage):  # defensive
                 continue
             key: str = str(item.id)
             next_ids.add(key)
             state = self._items.get(key)
             if state is None:
-                state = ContextItemViewState(key, parent=self)
+                state = ContextMessageViewState(key, parent=self)
                 self._items[key] = state
-                needs_emit = True
-            if state.apply_context_item(item):
-                needs_emit = True
+            state.apply_context_item(item)
         removed = current_ids - next_ids
         for removed_id in removed:
             state = self._items.pop(removed_id, None)
             if state is not None:
                 state.setParent(None)
                 state.deleteLater()
-                needs_emit = True
-        if needs_emit:
-            self.items_changed.emit()
+        self.items_changed.emit()

@@ -5,26 +5,26 @@ from subprocess import DEVNULL, Popen
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import QMessageBox
 
-from assistant.facade import vii
-from assistant.inference.context import ContextItem
+from assistant.facade import raise_on_session_inactive, vii
+from assistant.inference.context import TextMessage
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.utils.capture_utils import clipboard_image
+from assistant.view_states.settings import ExecutionMode
 
 
 def ocr_clipboard() -> None:
     """Perform OCR on current clipboard image and update UI + clipboard.
 
     Side effects:
-    - Sets request_in_progress during async worker
+    - Sets assistant_working during async worker
     - On completion, copies recognized text to both standard & selection clipboards
     - Writes first line notification via system notification if available
     """
     pixmap = clipboard_image()
     if not pixmap:
         msg = "No image found in clipboard for OCR"
-        vii.qt_app.terminal_state.output_text = msg
+        vii.app.terminal_state.output_text = msg
         # Attempt desktop notification mirroring success path UX
         try:  # pragma: no cover (depends on notify-send availability)
             Popen(
@@ -37,11 +37,11 @@ def ocr_clipboard() -> None:
             pass
         return
 
-    settings = vii.app_state.settings_VS
-    settings.request_in_progress = True
+    settings = vii.app.view_state.settings_VS
+    settings.assistant_working = True
 
     def _finished(text: str):
-        settings.request_in_progress = False
+        settings.assistant_working = False
         notify_text = None
         try:
             cb = QGuiApplication.clipboard()
@@ -50,9 +50,9 @@ def ocr_clipboard() -> None:
             notify_text = text
         except Exception as e:  # pragma: no cover
             text_local = f"{text}\n(Clipboard copy failed: {e})"
-            vii.qt_app.terminal_state.output_text = text_local
+            vii.app.terminal_state.output_text = text_local
         else:
-            vii.qt_app.terminal_state.output_text = text
+            vii.app.terminal_state.output_text = text
         if notify_text:
             snippet = (
                 notify_text.strip().splitlines()[0]
@@ -88,11 +88,6 @@ def get_clipboard_ocr_text(lang: str = "eng") -> str:
         return f"Error: OCR failed: {e}"
 
 
-def start_session(*, screen_name: str | None = None) -> None:
-    """Delegate to AutomationService to start a session."""
-    vii.project_manager.start_session(screen_name=screen_name)
-
-
 def pause_or_stop_session(*, new_state: str) -> None:
     """Pause (stop recording) the active session."""
     vii.project_manager.pause_session(new_state=new_state)
@@ -112,48 +107,74 @@ def open_sessions_folder() -> None:
         print(f"Failed to open sessions directory: {sessions_dir}")
 
 
-def _ensure_session() -> None:
-    if vii.app_state.settings_VS.session_state != "started":
-        start_session(screen_name=vii.app_state.settings_VS.screen)
-
-
 def add_user_message(text: str) -> None:
-    print(f"[TRACE] add_user_message called with text={text!r}")
-    _ensure_session()
+    # print(f"[TRACE] add_user_message called with text={text!r}")
+    raise_on_session_inactive()
 
-    # Guard: warn if no model is loaded on the server
-    settings_vs = vii.app_state.settings_VS
-    model_state = settings_vs.server_model_state
-    if model_state != "loaded":
-        QMessageBox.warning(
-            None,
-            "No model loaded",
-            "No model is loaded on the inference server.\n"
-            "Please select and load a model first.",
-        )
-        return
-
-    controller = vii.context_controller
+    ctx = vii.project_manager.context_manager
     cleaned = text.strip()
+    user_item_id = ""
     if cleaned:
-        print(f"[TRACE] add_user_message: creating text item")
-        text_item = ContextItem.create_text(
-            position=controller.next_position(),
-            text=cleaned,
-            origin="user",
-        )
-        controller.create(text_item)
+        # print(f"[TRACE] add_user_message: creating text item")
+        text_item = TextMessage()
+        text_item.position = ctx.next_position()
+        text_item.text = cleaned
+        text_item.origin = "user"
+        text_item.metadata = {"focus_mode": "main"}
+        ctx.insert(text_item)
+        user_item_id = str(text_item.id)
 
-    request_item = ContextItem()
-    request_item.position = controller.next_position()
-    request_item.size = 0
-    request_item.content = {"text": ""}
-    generation_params = vii.config.get("default_generation_params", {})
+    # Reset the hybrid agent chain state for this new user turn (clears the
+    # stopped flag from a prior stop, turn count, and tool-call dedup state).
+    vii.project_manager.hybrid_segment_service.reset_turns()
+
+    request_item = TextMessage()
+    request_item.position = ctx.next_position()
+    request_item.origin = "assistant"
+    request_item.previous_message_id = user_item_id
+    cfg = vii.get_config()
+    generation_params = {"max_new_tokens": cfg.max_new_tokens}
     request_item.request = {
         "stream": True,
-        "generation_params": dict(generation_params or {}),
+        "focus_mode": "main",
+        "generation_params": generation_params,
     }
-    request_item.metadata = {"origin": "user"}
-    print(f"[TRACE] add_user_message: creating request item")
-    controller.create(request_item)
-    print(f"[TRACE] add_user_message: done")
+    request_item.metadata = {"focus_mode": "main"}
+    # In supervised mode the root turn is born "pending" — every turn is then
+    # gated/labeled; the supervised state propagates down the lineage by
+    # re-arming each continuation.
+    if vii.app.view_state.settings_VS.execution_mode == ExecutionMode.SUPERVISED.value:
+        request_item.teacher_feedback = "pending"
+    # print(f"[TRACE] add_user_message: creating request item")
+    ctx.insert(request_item)
+    vii.app.view_state.settings_VS.assistant_working = True
+    # print(f"[TRACE] add_user_message: done")
+
+
+def stop_assistant() -> None:
+    """Cancel the active generation and stop the assistant's agent loop.
+
+    Marks the latest client-visible request item ``cancelled=True`` (a top-level
+    lineage flag). The ancestry guard on both processes suppresses any further
+    continuation born from this chain, and the server aborts any in-flight
+    generation when it observes the flag.
+    """
+    settings = vii.app.view_state.settings_VS
+    ctx_mgr = vii.project_manager.context_manager
+
+    # Mark the latest request item (completed or not) as cancelled.
+    for item in ctx_mgr.items_reversed():
+        if not isinstance(item, TextMessage):
+            continue
+        if not isinstance(item.request, dict):
+            continue
+        updated = item.copy()
+        updated.cancelled = True
+        ctx_mgr.update(updated)
+        break
+
+    # Stop the hybrid segment service agent loop (interrupts gates, sets the
+    # stopped flag, and settles the active chain future if one is running).
+    vii.project_manager.hybrid_segment_service.cancel_chain("user stopped")
+
+    settings.assistant_working = False

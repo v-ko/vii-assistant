@@ -1,5 +1,4 @@
 from transformers import (
-    AutoModelForMultimodalLM,
     Qwen3_5ForConditionalGeneration,
     Qwen3VLForConditionalGeneration,
 )
@@ -48,6 +47,7 @@ MODEL_SPECS = {
         "vision": True,
         "allowed_resolutions": _QWEN3_VL_RESOLUTIONS,
         "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
     },
     "qwen3_vl_30b_a3b": {
         "id": "Qwen/Qwen3-VL-30B-A3B-Instruct",
@@ -56,6 +56,7 @@ MODEL_SPECS = {
         "vision": True,
         "allowed_resolutions": _QWEN3_VL_RESOLUTIONS,
         "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
     },
     "gui_owl_1_5_4b": {
         "id": "mPLUG/GUI-Owl-1.5-4B-Instruct",
@@ -64,6 +65,7 @@ MODEL_SPECS = {
         "vision": True,
         "allowed_resolutions": _QWEN3_VL_RESOLUTIONS,
         "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
     },
     "qwen3_5_4b": {
         "id": "Qwen/Qwen3.5-4B",
@@ -72,17 +74,77 @@ MODEL_SPECS = {
         "vision": True,
         "allowed_resolutions": _QWEN3_VL_RESOLUTIONS,
         "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
         "chat_template_params": {
             "enable_thinking": False,
         },
     },
-    "gemma4_e4b": {
-        "id": "google/gemma-4-E4B-it",
-        "class": AutoModelForMultimodalLM,
-        "display_name": "Gemma 4 E4B",
+    # --- llama.cpp backend models (served via LlamaModelProxy) ---
+    # Notes on Gemma 4 vision args:
+    #  - --image-max-tokens 1120: highest budget for fine-grained tasks (bbox/OCR).
+    #    At 1920x1088 input the server uses ~920 tokens without downscaling.
+    #  - --ubatch-size 2048: must be >= image tokens because the SigLIP encoder
+    #    uses non-causal attention and requires all image tokens in one ubatch.
+    #    Default ubatch (512) crashes with an assertion if image tokens exceed it.
+    "gemma4_e4b_gguf": {
+        "id": "ggml-org/gemma-4-E4B-it-GGUF",
+        "backend": "llama_cpp",
+        "display_name": "Gemma 4 E4B (GGUF Q8_0)",
         "vision": True,
-        "allowed_resolutions": _GEMMA4_RESOLUTIONS,
-        "default_resolution": (1056, 576),  # budget=280
+        "default_resolution": (1920, 1088),
+        "bbox_format": "yxyx",
+        "llama_cpp_args": [
+            "-hff",
+            "gemma-4-E4B-it-Q8_0.gguf",
+            "--ctx-size",
+            "8192",
+            "-ngl",
+            "99",
+            "--ubatch-size",
+            "2048",
+            "--image-max-tokens",
+            "1120",
+            "--parallel",
+            "2",
+        ],
+        "chat_template_params": {
+            "enable_thinking": False,
+        },
+    },
+    "gemma4_26b_a4b_gguf": {
+        "id": "ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "backend": "llama_cpp",
+        "display_name": "Gemma 4 26B A4B (GGUF Q4_K_M)",
+        "vision": True,
+        "default_resolution": (1920, 1088),
+        "bbox_format": "yxyx",
+        "llama_cpp_args": [
+            "-hff",
+            "gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "--ctx-size",
+            "8192",
+            "--ubatch-size",
+            "2048",
+            "--image-max-tokens",
+            "1120",
+        ],
+        "chat_template_params": {
+            "enable_thinking": False,
+        },
+    },
+    "qwen3_6_35b_a3b_gguf": {
+        "id": "unsloth/Qwen3.6-35B-A3B-GGUF",
+        "backend": "llama_cpp",
+        "display_name": "Qwen3.6 35B A3B (GGUF Q4_K_M)",
+        "vision": True,
+        "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
+        "llama_cpp_args": [
+            "-hff",
+            "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+            "--ctx-size",
+            "8192",
+        ],
         "chat_template_params": {
             "enable_thinking": False,
         },
@@ -94,7 +156,9 @@ DEFAULT_MODEL_KEY = "qwen3_vl_4b"
 AVAILABLE_MODELS: dict[str, str] = {"none": "No model"}
 AVAILABLE_MODELS.update({k: v["display_name"] for k, v in MODEL_SPECS.items()})
 
-MODEL_CLASS_MAP = {spec["id"]: spec["class"] for spec in MODEL_SPECS.values()}
+MODEL_CLASS_MAP = {
+    spec["id"]: spec["class"] for spec in MODEL_SPECS.values() if "class" in spec
+}
 
 
 def get_resolution_for_model(
