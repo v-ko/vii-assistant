@@ -25,6 +25,7 @@ dependencies = [
 [project.scripts]
 vii-assistant = "assistant.main:main"
 vii-experiment = "assistant.run_experiment:main"
+vii-inference = "assistant.inference.server:main"
 
 [tool.setuptools]
 packages = ["assistant"]

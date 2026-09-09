@@ -6,7 +6,9 @@ import asyncio
 import base64
 import io
 import logging
+import os
 import subprocess
+import tempfile
 import threading
 from collections.abc import AsyncIterator
 from typing import Any
@@ -100,6 +102,11 @@ class LlamaModelProxy:
         # Consecutive output-less generation failures (wedge detector).
         self._consecutive_wedge_failures = 0
         self._restarting = False
+        # llama-server stdout/stderr is redirected straight to this file. The
+        # kernel writes to the fd directly, so there is no pipe buffer to stall
+        # and no reader thread needed.
+        self._log_file: io.BufferedWriter | None = None
+        self._log_path = os.path.join(tempfile.gettempdir(), f"llama-server-{port}.log")
 
     @property
     def state(self) -> str:
@@ -121,7 +128,9 @@ class LlamaModelProxy:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{self.base_url}/health")
                 return resp.status_code == 200
-        except (httpx.ConnectError, httpx.TimeoutException):
+        except httpx.HTTPError:
+            # Covers ConnectError, TimeoutException, and ReadError/
+            # RemoteProtocolError (server accepted the socket then died mid-load).
             return False
 
     async def load_model(self, model_key: str) -> None:
@@ -178,9 +187,11 @@ class LlamaModelProxy:
             log.info("LlamaModelProxy: starting: %s", " ".join(cmd))
 
             try:
+                self._log_file = open(self._log_path, "wb")
+                log.info("LlamaModelProxy: llama-server logs -> %s", self._log_path)
                 self._process = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
+                    stdout=self._log_file,
                     stderr=subprocess.STDOUT,
                 )
 
@@ -380,14 +391,11 @@ class LlamaModelProxy:
             # Check if process died
             if self._process and self._process.poll() is not None:
                 rc = self._process.returncode
-                # Capture whatever the process printed before dying
-                output = ""
-                if self._process.stdout:
-                    output = self._process.stdout.read().decode(errors="replace")
+                output = self._read_log_tail()
                 log.error(
-                    "LlamaModelProxy: process exited with code %d\n%s",
+                    "LlamaModelProxy: process exited with code %s\n%s",
                     rc,
-                    output[-2000:] if output else "(no output)",
+                    output or "(no output)",
                 )
                 return False
             if await self.health_check():
@@ -395,6 +403,15 @@ class LlamaModelProxy:
             await asyncio.sleep(_HEALTH_POLL_INTERVAL)
             elapsed += _HEALTH_POLL_INTERVAL
         return False
+
+    def _read_log_tail(self, limit: int = 8000) -> str:
+        """Return the tail of the llama-server log file for diagnostics."""
+        try:
+            with open(self._log_path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return ""
+        return data[-limit:].decode(errors="replace")
 
     async def _kill_process(self) -> None:
         """Terminate the llama-server subprocess if running."""
@@ -412,3 +429,6 @@ class LlamaModelProxy:
                 self._process.kill()
                 await asyncio.to_thread(self._process.wait)
         self._process = None
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None

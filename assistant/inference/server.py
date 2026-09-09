@@ -445,3 +445,29 @@ async def context_ws(websocket: WebSocket) -> None:
         if app.state.active_service is service:
             app.state.active_service = None
         log.info("WS session=%s ended", session_id)
+
+
+def main() -> None:
+    """CLI entrypoint: run the inference server via uvicorn."""
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Run the VII inference server.")
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8008, help="Bind port (default: 8008)"
+    )
+    args = parser.parse_args()
+
+    uvicorn.run(
+        "assistant.inference.server:app",
+        host=args.host,
+        port=args.port,
+    )
+
+
+if __name__ == "__main__":
+    main()

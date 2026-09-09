@@ -133,6 +133,23 @@ MODEL_SPECS = {
         },
     },
     "qwen3_6_35b_a3b_gguf": {
+        "id": "huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF",
+        "backend": "llama_cpp",
+        "display_name": "Qwen3.6 35B A3B abliterated (GGUF Q4_K)",
+        "vision": True,
+        "default_resolution": (1920, 1088),
+        "bbox_format": "xyxy",
+        "llama_cpp_args": [
+            "-hff",
+            "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf",
+            "--ctx-size",
+            "8192",
+        ],
+        "chat_template_params": {
+            "enable_thinking": False,
+        },
+    },
+    "qwen3_6_35b_a3b_gguf_stock": {
         "id": "unsloth/Qwen3.6-35B-A3B-GGUF",
         "backend": "llama_cpp",
         "display_name": "Qwen3.6 35B A3B (GGUF Q4_K_M)",
