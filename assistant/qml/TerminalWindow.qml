@@ -80,6 +80,8 @@ Window {
     // ── Keyboard handling ───────────────────────────────────────
     Shortcut {
         sequence: "Escape"
+        // Let the settings modal handle Escape (CloseOnEscape) when open
+        enabled: !settingsModalPopup.visible
         onActivated: appVM.hideTerminal()
     }
 
