@@ -1,3 +1,4 @@
+# TODO(input-recording): requires pynput (no longer a dependency) - adapt or remove
 from __future__ import annotations
 
 import time

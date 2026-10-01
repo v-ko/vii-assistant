@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from sivkit.storage.delta import Delta
 
 log = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".config" / "vii-assistant"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-DEBOUNCE_SECONDS = 1.0
+DEBOUNCE_MS = 1000
 
 
 class ConfigFileAdapter:
@@ -24,23 +24,17 @@ class ConfigFileAdapter:
 
     def __init__(self, store) -> None:
         self._store = store
-        self._debounce_timer: threading.Timer | None = None
-        self._lock = threading.Lock()
+        self._debounce_timer = QTimer()
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(DEBOUNCE_MS)
+        self._debounce_timer.timeout.connect(self._flush)
 
     def on_store_changed(self, delta: Delta, origin: str | None = None) -> None:
         """Callback for InMemoryStore.add_on_changes_callback."""
-        with self._lock:
-            if self._debounce_timer is not None:
-                self._debounce_timer.cancel()
-            self._debounce_timer = threading.Timer(DEBOUNCE_SECONDS, self._flush)
-            self._debounce_timer.daemon = True
-            self._debounce_timer.start()
+        self._debounce_timer.start()
 
     def _flush(self) -> None:
         """Write current config to disk."""
-        with self._lock:
-            self._debounce_timer = None
-
         entity = self._store.find_one(id="app-config")
         if entity is None:
             return

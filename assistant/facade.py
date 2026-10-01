@@ -37,11 +37,11 @@ class Facade:
 
     def __init__(self):
         self._config_store = InMemoryStore()
+        self._load_config()
         self._config_file_adapter = ConfigFileAdapter(self._config_store)
         self._config_store.add_on_changes_callback(
             self._config_file_adapter.on_store_changed
         )
-        self._load_config()
         self._session_manager = None
         self.inference_client = InferenceServerClient()
         self._active_agent: str | None = None

@@ -19,6 +19,7 @@ from PySide6.QtGui import QGuiApplication
 
 from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 from assistant.facade import vii
+from assistant.services.input_control import send_paste_shortcut
 
 log = logging.getLogger(__name__)
 
@@ -216,26 +217,14 @@ async def _build_final_output(orch) -> str:
 
 
 def _paste_text(text: str) -> None:
-    """Insert text at cursor via clipboard + ydotool Ctrl+V.
+    """Insert text at cursor via clipboard + synthetic Ctrl+V.
 
     Saves/restores previous clipboard to avoid polluting clipboard managers.
     """
     clipboard = QGuiApplication.clipboard()
     prev = clipboard.text()
     clipboard.setText(text)
-
-    try:
-        # Ctrl+V via ydotool key codes: 29=LCtrl, 47=V
-        Popen(
-            ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
-            start_new_session=True,
-            stdout=DEVNULL,
-            stderr=DEVNULL,
-        )
-    except FileNotFoundError:
-        log.error("ydotool not found — cannot paste transcription output")
-    except Exception as exc:
-        log.error("ydotool paste failed: %s", exc)
+    send_paste_shortcut()
 
     # Restore previous clipboard after a short delay
     QTimer.singleShot(500, lambda: clipboard.setText(prev))

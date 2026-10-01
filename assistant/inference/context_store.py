@@ -55,26 +55,26 @@ class ContextStore(InMemoryStore):
         Returns a Delta with a custom-op key so it can be forwarded via
         the standard sync protocol.
         """
-        with self._lock:
-            entity = self._entity_cache.get(entity_id)
-            if entity is None:
-                raise KeyError(f"text_append: entity {entity_id!r} not in store")
+        self._assert_owner_thread()
+        entity = self._entity_cache.get(entity_id)
+        if entity is None:
+            raise KeyError(f"text_append: entity {entity_id!r} not in store")
 
-            # Mutate the text field in-place
-            old_text = getattr(entity, "text", "")
-            entity.text = old_text + chunk  # type: ignore[attr-defined]
+        # Mutate the text field in-place
+        old_text = getattr(entity, "text", "")
+        entity.text = old_text + chunk  # type: ignore[attr-defined]
 
-            # Build the custom-op delta entry.
-            op_key = f"{entity_id}{OP_SEP}text_append"
-            forward = {"chunk": chunk}
-            reverse = {"chunk": chunk}  # reverse is same chunk (for undo: remove it)
-            change = Change(entity_id, reverse, forward)
-            delta_data: DeltaData = {op_key: change.asdict()}
-            delta = Delta.from_data(delta_data)
+        # Build the custom-op delta entry.
+        op_key = f"{entity_id}{OP_SEP}text_append"
+        forward = {"chunk": chunk}
+        reverse = {"chunk": chunk}  # reverse is same chunk (for undo: remove it)
+        change = Change(entity_id, reverse, forward)
+        delta_data: DeltaData = {op_key: change.asdict()}
+        delta = Delta.from_data(delta_data)
 
-            if self._on_changes_callbacks and not self._applying_internally:
-                self._fire_on_changes(delta, None)
-            return delta
+        if self._on_changes_callbacks and not self._applying_internally:
+            self._fire_on_changes(delta, None)
+        return delta
 
     def _apply_text_append(self, entity_id: str, forward: dict[str, Any]) -> None:
         """Apply a remote text_append op to the cached entity."""
@@ -96,11 +96,7 @@ class ContextStore(InMemoryStore):
 
     def apply_delta(self, delta: Delta, origin: str | None = None) -> Delta:
         """Override to intercept custom-op keys before standard processing."""
-        with self._lock:
-            return self._apply_delta_unlocked(delta, origin)
-
-    def _apply_delta_unlocked(self, delta: Delta, origin: str | None = None) -> Delta:
-        """Actual apply logic, must be called under self._lock."""
+        self._assert_owner_thread()
         # Separate custom ops from regular changes.
         regular_data: DeltaData = {}
         custom_ops: list[tuple[str, str, Change]] = []  # (entity_id, op_name, change)

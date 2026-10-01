@@ -2,7 +2,8 @@
 
 Uses relative mouse movement with iterative convergence (via Qt cursor
 position feedback) to work correctly across multiple monitors.
-Requires ydotoold daemon running for mouse/type. All operations are async.
+Requires ydotoold daemon running for mouse/type. Pointer/typing operations
+are async; send_paste_shortcut is fire-and-forget (ydotool, or SendInput on Windows).
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import sys
+from subprocess import DEVNULL, Popen
 
 from PySide6.QtGui import QCursor
 
@@ -110,3 +113,74 @@ async def type_text(text: str) -> bool:
     if not _check_available("xdotool"):
         return False
     return await _run("xdotool", ["type", "--", text])
+
+
+def send_paste_shortcut() -> None:
+    """Send Ctrl+V to the focused window."""
+    if sys.platform == "win32":
+        _send_ctrl_v_win32()
+        return
+    try:
+        # ydotool key codes: 29=LCtrl, 47=V
+        Popen(
+            ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
+            start_new_session=True,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        )
+    except FileNotFoundError:
+        log.error("ydotool not found — cannot paste")
+    except Exception as exc:
+        log.error("ydotool paste failed: %s", exc)
+
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    # Only needed so the union (and thus INPUT) has the size SendInput expects
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUT_UNION)]
+
+    def _send_ctrl_v_win32() -> None:
+        INPUT_KEYBOARD = 1
+        KEYEVENTF_KEYUP = 0x0002
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+
+        def key(vk: int, flags: int = 0) -> _INPUT:
+            ki = _KEYBDINPUT(wVk=vk, dwFlags=flags)
+            return _INPUT(type=INPUT_KEYBOARD, u=_INPUT_UNION(ki=ki))
+
+        events = (_INPUT * 4)(
+            key(VK_CONTROL),
+            key(VK_V),
+            key(VK_V, KEYEVENTF_KEYUP),
+            key(VK_CONTROL, KEYEVENTF_KEYUP),
+        )
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        sent = user32.SendInput(len(events), events, ctypes.sizeof(_INPUT))
+        if sent != len(events):
+            log.error("SendInput paste failed (error %d)", ctypes.get_last_error())

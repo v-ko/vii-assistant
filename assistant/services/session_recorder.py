@@ -1,3 +1,7 @@
+"""TODO(input-recording): disconnected and pynput is no longer a dependency
+(it only sees XWayland apps on Wayland). Adapt (e.g. evdev + KWin) or remove.
+"""
+
 from __future__ import annotations
 
 import logging

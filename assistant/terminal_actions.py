@@ -28,7 +28,7 @@ from assistant.model_configs import (
 )
 from assistant.services.segment_parsing import hfi
 from assistant.util import get_screen_by_name
-from assistant.utils.capture_utils import clipboard_image, take_screenshot
+from assistant.utils.capture_utils import clipboard_image, grab_screen
 from assistant.utils.image_utils import qpixmap_to_pil
 
 log = logging.getLogger(__name__)
@@ -82,8 +82,8 @@ def submit_message(text: str) -> None:
 # ── Capture actions ──────────────────────────────────────────────
 
 
-@action("terminal.attach_screen")
-def attach_screen() -> None:
+@procedure
+async def attach_screen() -> None:
     capture = vii.app.view_state.capture_screen_info
     if capture is None:
         log.warning("Cannot attach screen: no capture screen configured")
@@ -92,10 +92,15 @@ def attach_screen() -> None:
     if screen is None:
         log.warning("Cannot attach screen: screen '%s' not found", capture.name)
         return
-    pixmap = take_screenshot(screen)
-    if pixmap is None:
+    pixmap = await grab_screen(screen)
+    if pixmap is None or pixmap.isNull():
         log.warning("Failed to capture screenshot")
         return
+    attach_screenshot(pixmap)
+
+
+@action("terminal.attach_screenshot")
+def attach_screenshot(pixmap) -> None:
     _add_image_item(pixmap, "screenshot")
 
 

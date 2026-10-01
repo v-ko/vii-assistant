@@ -1,7 +1,7 @@
 """SnippetViewModel — manages fullscreen overlays for screen region selection.
 
-Activated via the `snippet` command. Calls the show_snippet_overlays action
-which captures screenshots and creates view states. The view model reacts
+Activated via the `snippet` command. The start_snippet procedure captures
+screenshots and creates view states. The view model reacts
 to view state changes by creating/destroying actual QML overlay windows.
 
 On completion or cancellation, calls hide_snippet_overlays to clean up.
@@ -18,7 +18,8 @@ from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 
 from assistant.facade import vii
-from assistant.snippet_actions import hide_snippet_overlays, show_snippet_overlays
+from assistant.snippet_actions import hide_snippet_overlays
+from assistant.snippet_procedures import start_snippet
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +49,7 @@ class SnippetViewModel(QObject):
 
     @Slot()
     def activate(self):
-        """Trigger the show_snippet_overlays action."""
-        show_snippet_overlays(vii.app.view_state)
+        start_snippet()
 
     @Slot()
     def cancel(self):

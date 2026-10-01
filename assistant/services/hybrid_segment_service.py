@@ -43,7 +43,7 @@ from assistant.services.segment_parsing import (
 )
 from assistant.services.supervised_gate import SupervisedGate
 from assistant.util import Shape, get_screen_by_name
-from assistant.utils.capture_utils import take_screenshot
+from assistant.utils.capture_utils import grab_screen
 from assistant.utils.image_utils import qpixmap_to_pil
 from assistant.view_states.overlay import OverlayMode
 from assistant.view_states.settings import ExecutionMode
@@ -294,7 +294,7 @@ class HybridSegmentService:
         if is_action and in_experiment:
             # Grounding experiments are static single-image tasks: never move the
             # real pointer. Record the attempt and continue the chain.
-            self._insert_result_and_continue(
+            await self._insert_result_and_continue(
                 f"{focus_mode} skipped (experiment mode)",
                 item_id,
                 caller_mode,
@@ -328,9 +328,11 @@ class HybridSegmentService:
         else:
             result_text = f"Error: unknown client execution mode '{focus_mode}'"
 
-        self._insert_result_and_continue(result_text, item_id, caller_mode, is_action)
+        await self._insert_result_and_continue(
+            result_text, item_id, caller_mode, is_action
+        )
 
-    def _insert_result_and_continue(
+    async def _insert_result_and_continue(
         self, result_text: str, source_item_id: str, caller_mode: str, is_action: bool
     ) -> None:
         """Insert tool result, optionally capture screen, and continue caller mode."""
@@ -360,7 +362,7 @@ class HybridSegmentService:
         # Insert a fresh observation (screenshot) ONLY after input/action tools.
         # Read-only tools (python/crop_image/curator_push) must not trigger one.
         if is_action:
-            self._insert_screen_capture()
+            await self._insert_screen_capture()
 
         # Check loop limit
         self._turn_count += 1
@@ -843,7 +845,7 @@ class HybridSegmentService:
         ctx.insert(item)
         return item
 
-    def _insert_screen_capture(self) -> None:
+    async def _insert_screen_capture(self) -> None:
         """Capture the watched screen, resize, and insert as an ImageItem."""
         capture = vii.app.view_state.capture_screen_info
         screen_name = capture.name if capture else ""
@@ -859,7 +861,7 @@ class HybridSegmentService:
             log.warning("_insert_screen_capture: no screen available")
             return
 
-        qpixmap = take_screenshot(screen)
+        qpixmap = await grab_screen(screen)
         if qpixmap is None or qpixmap.isNull():
             log.warning("_insert_screen_capture: screenshot failed")
             return

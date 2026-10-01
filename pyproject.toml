@@ -12,14 +12,10 @@ dependencies = [
   "PySide6",
   "Pillow",
   "numpy",
-  "requests",
   "click",
   "sivkit",
-  "pynput",
   "pytesseract",
-  "websockets",
   "httpx",
-  "json-repair",
 ]
 
 [project.scripts]
@@ -35,6 +31,7 @@ packages = ["assistant"]
 inference = [
   "fastapi",
   "uvicorn",
+  "json-repair",
   "qwen-vl-utils",
   "transformers",
   "torch",

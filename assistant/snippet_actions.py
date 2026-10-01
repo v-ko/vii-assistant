@@ -1,6 +1,6 @@
 """Actions for snippet overlay state management.
 
-show_snippet_overlays: captures screenshots and creates view states per screen.
+show_snippet_overlays: creates view states per screen from captured screenshots.
 hide_snippet_overlays: removes all snippet overlay view states.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPixmap
 from sivkit.libs.action import action
 
 from assistant.view_states.snippet import SnippetOverlayViewState
@@ -17,15 +17,18 @@ log = logging.getLogger(__name__)
 
 
 @action("snippet.show_overlays")
-def show_snippet_overlays(app_state) -> None:
-    """Capture screenshots and create a SnippetOverlayViewState per screen."""
+def show_snippet_overlays(app_state, screenshots: dict[str, QPixmap]) -> None:
+    """Create a SnippetOverlayViewState per captured screen."""
     # If already showing, do nothing
     if app_state.snippet_overlays:
         return
 
     screens = QGuiApplication.screens()
     for screen in screens:
-        pixmap = screen.grabWindow(0)
+        pixmap = screenshots.get(screen.name())
+        if pixmap is None or pixmap.isNull():
+            log.warning("No screenshot for screen '%s', skipping", screen.name())
+            continue
         screenshot = pixmap.toImage()
         vs = SnippetOverlayViewState(
             screen_name=screen.name(),

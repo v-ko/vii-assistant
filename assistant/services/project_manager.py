@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sivkit.libs.procedure import procedure
 from sivkit.storage.websockets_client_sync import WebSocketsClientSync
@@ -15,7 +15,8 @@ from assistant.procedures import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
 from assistant.util import get_screen_by_name
 
-from .session_recorder import SessionRecorder, SessionRecorderConfig
+if TYPE_CHECKING:
+    from .session_recorder import SessionRecorder, SessionRecorderConfig
 
 TASK_FILENAME = "task.md"
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
@@ -78,11 +79,14 @@ class SessionManager:
         )
 
     # Public API ---------------------------------------------------------
+    # TODO(input-recording): disconnected, pynput not installed - adapt or remove
     def start_recording(
         self, recorder_config: Optional[SessionRecorderConfig] = None
     ) -> None:
         if self._recording:
             return
+        from .session_recorder import SessionRecorder
+
         if recorder_config is not None:
             self._recorder_config = recorder_config
         config = self._recorder_config

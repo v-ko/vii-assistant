@@ -11,6 +11,10 @@ from importlib.metadata import PackageNotFoundError, version
 # Set logging level before importing anything else (especially sivkit)
 os.environ.setdefault("LOGLEVEL", "INFO")
 
+# Run via XWayland on Wayland sessions: overlays need stay-on-top/bypass-WM
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
 import click
 
 from assistant.logging_config import configure_logging

@@ -21,14 +21,20 @@ from sivkit.libs.procedure import procedure
 from assistant.facade import vii
 from assistant.inference.context import ImageMessage, TextMessage
 from assistant.snippet_actions import show_snippet_overlays
+from assistant.utils.capture_utils import grab_screens
 from assistant.utils.image_utils import qimage_to_pil
 
 log = logging.getLogger(__name__)
 
 
-def start_snippet() -> None:
+@procedure
+async def start_snippet() -> None:
     """Entry point from the route/hotkey. Shows overlays and waits for selection."""
-    show_snippet_overlays(vii.app.view_state)
+    app_state = vii.app.view_state
+    if app_state.snippet_overlays:
+        return
+    screenshots = await grab_screens(QGuiApplication.screens())
+    show_snippet_overlays(app_state, screenshots)
 
 
 @procedure
