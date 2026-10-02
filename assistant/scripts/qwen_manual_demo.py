@@ -9,12 +9,12 @@ from PIL import Image
 from torch import nn
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration as QwenModel
 
-from assistant.image_ops import resize_to_target
 from assistant.model_configs import (
     DEFAULT_MODEL_KEY,
     MODEL_SPECS,
     get_resolution_for_model,
 )
+from assistant.utils.image_ops import resize_to_target
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Ordered variety of image sizes to stress resizing & positional embedding logic

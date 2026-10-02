@@ -1,6 +1,6 @@
 """Debug window that shows a zoomed-out view of all screens and window positions.
 
-Launch via: from assistant.widgets.screen_debug import ScreenDebugWidget; w = ScreenDebugWidget(); w.show()
+Launch via: from assistant.components.screen_debug.widget import ScreenDebugWidget; w = ScreenDebugWidget(); w.show()
 Or call show_screen_debug() from qml_app after init.
 """
 
@@ -26,7 +26,7 @@ class ScreenDebugWidget(QWidget):
 
     def closeEvent(self, event):
         """Reset view state flag when user closes the window."""
-        from assistant.debug_actions import hide_screen_debug
+        from assistant.actions.debug import hide_screen_debug
 
         hide_screen_debug()
         super().closeEvent(event)

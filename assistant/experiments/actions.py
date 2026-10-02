@@ -14,13 +14,13 @@ from PIL import Image
 from PySide6.QtGui import QImage
 from sivkit.libs.action import action
 
+from assistant.components.vision_overlay.view_state import DisplayTransform, OverlayMode
 from assistant.facade import vii
-from assistant.image_ops import ResizeMetadata, resize_to_target
 from assistant.inference.context import ImageMessage, TextMessage
 from assistant.model.experiment_config import ExperimentConfig
 from assistant.model_configs import get_resolution_for_model
-from assistant.util import Shape
-from assistant.view_states.overlay import DisplayTransform, OverlayMode
+from assistant.utils.image_ops import ResizeMetadata, resize_to_target
+from assistant.utils.misc import Shape
 
 log = logging.getLogger(__name__)
 

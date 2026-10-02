@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from assistant.transcription_types import TranscriptionResult, WordTimestamp
+from assistant.inference.transcription_types import TranscriptionResult, WordTimestamp
 
 CHUNK_DURATION_S = 30
 OVERLAP_DURATION_S = 7

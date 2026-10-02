@@ -17,9 +17,8 @@ from PySide6.QtGui import QDesktopServices
 from sivkit.libs.action import action
 from sivkit.libs.procedure import procedure
 
-from assistant.actions import add_user_message, ocr_clipboard
+from assistant.actions.app import add_user_message, ocr_clipboard
 from assistant.facade import raise_on_session_inactive, vii
-from assistant.image_ops import resize_to_target
 from assistant.inference.context import ImageMessage
 from assistant.inference.focus_modes import PERCEPTION_MODES
 from assistant.model_configs import (
@@ -27,9 +26,10 @@ from assistant.model_configs import (
     get_resolution_for_model,
 )
 from assistant.services.segment_parsing import hfi
-from assistant.util import get_screen_by_name
 from assistant.utils.capture_utils import clipboard_image, grab_screen
+from assistant.utils.image_ops import resize_to_target
 from assistant.utils.image_utils import qpixmap_to_pil
+from assistant.utils.misc import get_screen_by_name
 
 log = logging.getLogger(__name__)
 

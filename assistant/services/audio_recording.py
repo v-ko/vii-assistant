@@ -18,10 +18,10 @@ import numpy as np
 from PySide6.QtCore import QByteArray, QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
 
-from assistant.recording_actions import set_recording_active
+from assistant.actions.recording import set_recording_active
 
 if TYPE_CHECKING:
-    from assistant.services.recording_overlay_view_model import (
+    from assistant.components.recording_overlay.view_model import (
         RecordingOverlayViewModel,
     )
 

@@ -13,7 +13,7 @@ from PySide6.QtCore import (
     Qt,
 )
 
-from assistant.view_states.context_view import (
+from assistant.components.context_viewer.view_state import (
     ContextMessageViewState,
     ContextViewerState,
 )

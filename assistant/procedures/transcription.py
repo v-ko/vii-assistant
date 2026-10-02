@@ -16,12 +16,12 @@ from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
 from sivkit.libs.procedure import procedure
 
 from assistant.facade import vii
+from assistant.inference.transcription_types import TranscriptionResult, WordTimestamp
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
     OVERLAP_DURATION_S,
     stitch_chunk_results,
 )
-from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
 log = logging.getLogger(__name__)
 

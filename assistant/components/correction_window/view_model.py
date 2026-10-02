@@ -9,8 +9,8 @@ import logging
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from assistant.components.vision_overlay.view_state import OverlayMode, OverlayViewState
 from assistant.facade import vii
-from assistant.view_states.overlay import OverlayMode, OverlayViewState
 
 log = logging.getLogger(__name__)
 

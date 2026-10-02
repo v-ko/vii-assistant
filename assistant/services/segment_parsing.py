@@ -248,7 +248,7 @@ def _parse_json_item(item: dict, out: SegmentOutput, bbox_format: str) -> None:
 # Shape extraction from agent code (AST-based)
 # ---------------------------------------------------------------------------
 
-from assistant.util import Shape
+from assistant.utils.misc import Shape
 
 
 def _is_grid_coord(value: int) -> bool:

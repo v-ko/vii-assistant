@@ -34,9 +34,12 @@ from assistant.inference.context_store import ContextStore
 from assistant.inference.llama_model_proxy import LlamaModelProxy
 from assistant.inference.model_manager import ModelManager
 from assistant.inference.service import InferenceService, generate_oneshot
+from assistant.inference.transcription_service import (
+    TRANSCRIPTION_MODELS,
+    TranscriptionService,
+)
 from assistant.logging_config import configure_logging
 from assistant.model_configs import MODEL_SPECS
-from assistant.transcription_service import TRANSCRIPTION_MODELS, TranscriptionService
 
 log = logging.getLogger(__name__)
 

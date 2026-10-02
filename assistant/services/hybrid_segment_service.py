@@ -16,14 +16,13 @@ from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta
 from sivkit.util.rectangle import Rectangle
 
-from assistant.facade import vii
-from assistant.image_ops import (
-    qwen_grid_to_original_image,
-    qwen_point_to_original_image,
-    resize_to_target,
-    scale_qwen_bbox_xyxy,
-    scale_qwen_point,
+from assistant.actions.overlay import (
+    clear_supervised_review,
+    show_supervised_review,
 )
+from assistant.app.settings_view_state import ExecutionMode
+from assistant.components.vision_overlay.view_state import OverlayMode
+from assistant.facade import vii
 from assistant.inference.context import (
     ContextMessage,
     ImageMessage,
@@ -32,21 +31,22 @@ from assistant.inference.context import (
 from assistant.inference.context_store import OP_SEP
 from assistant.inference.focus_modes import PERCEPTION_MODES
 from assistant.model_configs import get_resolution_for_model
-from assistant.overlay_actions import (
-    clear_supervised_review,
-    show_supervised_review,
-)
 from assistant.services.overlay_manager import OverlayManager
 from assistant.services.segment_parsing import (
     hfi,
     parse_segment_output,
 )
 from assistant.services.supervised_gate import SupervisedGate
-from assistant.util import Shape, get_screen_by_name
 from assistant.utils.capture_utils import grab_screen
+from assistant.utils.image_ops import (
+    qwen_grid_to_original_image,
+    qwen_point_to_original_image,
+    resize_to_target,
+    scale_qwen_bbox_xyxy,
+    scale_qwen_point,
+)
 from assistant.utils.image_utils import qpixmap_to_pil
-from assistant.view_states.overlay import OverlayMode
-from assistant.view_states.settings import ExecutionMode
+from assistant.utils.misc import Shape, get_screen_by_name
 
 log = logging.getLogger(__name__)
 
@@ -429,7 +429,7 @@ class HybridSegmentService:
         """Synchronous curator push for use inside exec'd Python code."""
         import httpx as _httpx
 
-        from assistant.services.curator_client import CURATOR_SERVER_URL
+        from assistant.curator_client import CURATOR_SERVER_URL
 
         payload: dict = {"feed": feed, "content": content}
         if metadata:
@@ -624,7 +624,7 @@ class HybridSegmentService:
 
     def _show_preview_shapes(self, grid_shapes: list) -> None:
         """Convert shapes in Qwen 0-1000 grid to screen coords and show on overlay."""
-        from assistant.util import Shape
+        from assistant.utils.misc import Shape
 
         output_w, output_h = self._resolve_output_resolution()
         input_w, input_h = self._resolve_input_resolution(output_w, output_h)
@@ -634,7 +634,7 @@ class HybridSegmentService:
             if shape["type"] == "rect":
                 x, y, w, h = shape["geometry"]
                 # Convert from xywh in grid to screen pixels
-                from assistant.image_ops import scale_qwen_bbox_xyxy
+                from assistant.utils.image_ops import scale_qwen_bbox_xyxy
 
                 sx, sy, ex, ey = scale_qwen_bbox_xyxy(
                     (x, y, x + w, y + h),
@@ -651,7 +651,7 @@ class HybridSegmentService:
                 )
             elif shape["type"] == "point":
                 x, y = shape["geometry"]
-                from assistant.image_ops import scale_qwen_point
+                from assistant.utils.image_ops import scale_qwen_point
 
                 sx, sy = scale_qwen_point(
                     (x, y),

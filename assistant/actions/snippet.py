@@ -11,7 +11,7 @@ import logging
 from PySide6.QtGui import QGuiApplication, QPixmap
 from sivkit.libs.action import action
 
-from assistant.view_states.snippet import SnippetOverlayViewState
+from assistant.components.snippet_overlay.view_state import SnippetOverlayViewState
 
 log = logging.getLogger(__name__)
 

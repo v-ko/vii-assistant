@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Property, QObject, Signal
 
 if TYPE_CHECKING:
-    from assistant.app_state import AppViewState
-    from assistant.view_states.recording_overlay import RecordingOverlayViewState
+    from assistant.app.view_state import AppViewState
+    from assistant.components.recording_overlay.view_state import (
+        RecordingOverlayViewState,
+    )
 
 
 class RecordingOverlayViewModel(QObject):

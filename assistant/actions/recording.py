@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from sivkit.libs.action import action
 
+from assistant.components.recording_overlay.view_state import RecordingOverlayViewState
 from assistant.facade import vii
-from assistant.view_states.recording_overlay import RecordingOverlayViewState
 
 
 @action("recording.set_overlay_visible")

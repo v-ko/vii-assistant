@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PIL import Image
 from PySide6.QtGui import QImage
 
+from assistant.components.vision_overlay.view_state import DisplayTransform
 from assistant.constants import EXPERIMENTS_DIR
 from assistant.experiments.actions import (
     clear_experiment_context,
@@ -43,8 +44,7 @@ from assistant.facade import vii
 from assistant.inference.context import TextMessage
 from assistant.model.experiment_config import ExperimentConfig
 from assistant.services.segment_parsing import hfi
-from assistant.util import Shape
-from assistant.view_states.overlay import DisplayTransform
+from assistant.utils.misc import Shape
 
 if TYPE_CHECKING:
     from assistant.services.hybrid_segment_service import ChainResult
@@ -392,7 +392,7 @@ class ExperimentsManager:
         capture = vii.app.view_state.capture_screen_info
         if not capture:
             return
-        from assistant.util import get_screen_by_name
+        from assistant.utils.misc import get_screen_by_name
 
         screen = get_screen_by_name(capture.name)
         if not screen:
@@ -429,8 +429,8 @@ class ExperimentsManager:
                 scaled_gt.append(shape)
 
         # Compute resize metadata for the action (needed for shape mapping)
-        from assistant.image_ops import resize_to_target
         from assistant.model_configs import get_resolution_for_model
+        from assistant.utils.image_ops import resize_to_target
 
         assert self._config is not None
         res_override = (
@@ -687,7 +687,7 @@ class ExperimentsManager:
         to undo the center-padding and aspect-preserving scale the model saw.
         Returns the bbox unchanged if metadata or the sample image is missing.
         """
-        from assistant.image_ops import qwen_grid_to_original_image
+        from assistant.utils.image_ops import qwen_grid_to_original_image
 
         meta = vii.app.view_state.overlay_VS.resize_meta
         if meta is None or self._current_sample_image is None:

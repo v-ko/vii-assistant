@@ -11,9 +11,9 @@ from sivkit.storage.websockets_client_sync import WebSocketsClientSync
 
 from assistant.facade import vii
 from assistant.inference.context import ContextManager, TextMessage
-from assistant.procedures import handle_hybrid_context_delta
+from assistant.procedures.app import handle_hybrid_context_delta
 from assistant.services.hybrid_segment_service import HybridSegmentService
-from assistant.util import get_screen_by_name
+from assistant.utils.misc import get_screen_by_name
 
 if TYPE_CHECKING:
     from .session_recorder import SessionRecorder, SessionRecorderConfig

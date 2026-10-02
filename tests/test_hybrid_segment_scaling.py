@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 
 from assistant import facade as real_facade
-from assistant.image_ops import scale_qwen_bbox_xyxy
 from assistant.inference.context import ContextManager, ImageMessage, TextMessage
 from assistant.services.hybrid_segment_service import HybridSegmentService
+from assistant.utils.image_ops import scale_qwen_bbox_xyxy
 
 
 class _OverlayStub:

@@ -1,18 +1,18 @@
 """One-shot app initialization — services, view models, and Qt app for the assistant."""
 
-from assistant.app_state import AppViewState
-from assistant.experiments_manager import ExperimentsManager
-from assistant.headless_app import ViiHeadlessApp
+from assistant.actions.recording import set_transcribing_active
+from assistant.app.headless_app import ViiHeadlessApp
+from assistant.app.qml_app import ViiQmlApp
+from assistant.app.view_state import AppViewState
+from assistant.procedures.snippet import handle_snippet_result
 from assistant.projections import project_inference_status
-from assistant.qml_app import ViiQmlApp
-from assistant.recording_actions import set_transcribing_active
 from assistant.services.audio_recording import AudioRecordingService
+from assistant.services.experiments_manager import ExperimentsManager
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
     OVERLAP_DURATION_S,
 )
 from assistant.services.transcription_orchestrator import TranscriptionOrchestrator
-from assistant.snippet_procedures import handle_snippet_result
 
 
 def _wire_inference_status(

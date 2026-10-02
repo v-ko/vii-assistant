@@ -6,9 +6,9 @@ from PySide6.QtWidgets import QApplication
 from sivkit.loop import set_main_loop
 from sivkit.platform.qt_widgets.qt_main_loop import QtMainLoop
 
-from assistant.app_state import AppViewState
-from assistant.app_view_model import AppViewModel
-from assistant.view_states.terminal import TerminalViewState
+from assistant.app.view_model import AppViewModel
+from assistant.app.view_state import AppViewState
+from assistant.components.terminal_window.view_state import TerminalViewState
 
 
 class ViiHeadlessApp(QApplication):

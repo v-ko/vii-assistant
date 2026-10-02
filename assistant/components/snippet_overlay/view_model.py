@@ -17,13 +17,13 @@ from PySide6.QtCore import Property, QObject, QRect, QUrl, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 
+from assistant.actions.snippet import hide_snippet_overlays
 from assistant.facade import vii
-from assistant.snippet_actions import hide_snippet_overlays
-from assistant.snippet_procedures import start_snippet
+from assistant.procedures.snippet import start_snippet
 
 log = logging.getLogger(__name__)
 
-QML_DIR = Path(__file__).parent.parent / "qml"
+QML_DIR = Path(__file__).parent
 
 
 class SnippetViewModel(QObject):

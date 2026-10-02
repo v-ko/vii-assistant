@@ -8,16 +8,16 @@ from sivkit.storage.delta import Delta
 from sivkit.storage.in_memory_store import InMemoryStore
 
 from assistant.constants import AGENTS_DIR, EXPERIMENTS_DIR
+from assistant.inference_client import InferenceServerClient
 from assistant.model.app_config import ViiConfig
 from assistant.model.experiment_config import ExperimentConfig
 from assistant.projections import project_config, project_context_delta_to_view
 from assistant.services.config_file_adapter import CONFIG_FILE, ConfigFileAdapter
-from assistant.services.inference_client import InferenceServerClient
-from assistant.util import get_screen_by_name
+from assistant.utils.misc import get_screen_by_name
 
 if TYPE_CHECKING:
-    from assistant.experiments_manager import ExperimentsManager
-    from assistant.qml_app import ViiQmlApp
+    from assistant.services.experiments_manager import ExperimentsManager
+    from assistant.app.qml_app import ViiQmlApp
     from assistant.services.audio_recording import AudioRecordingService
     from assistant.services.project_manager import SessionManager, ViiProjectManager
     from assistant.services.transcription_orchestrator import TranscriptionOrchestrator

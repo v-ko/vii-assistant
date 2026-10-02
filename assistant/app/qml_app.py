@@ -9,24 +9,24 @@ from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 from sivkit.loop import set_main_loop
 from sivkit.platform.qt_widgets.qt_main_loop import QtMainLoop
 
-from assistant.app_state import AppViewState
-from assistant.app_view_model import AppViewModel
-from assistant.context_list_model import ContextListModel
+from assistant.actions.terminal import toggle_terminal
+from assistant.app.screen_info import ScreenInfoData
+from assistant.app.view_model import AppViewModel
+from assistant.app.view_state import AppViewState
+from assistant.components.context_viewer.list_model import ContextListModel
+from assistant.components.correction_window.view_model import CorrectionViewModel
+from assistant.components.recording_overlay.view_model import RecordingOverlayViewModel
+from assistant.components.settings_modal.view_model import SettingsModalViewModel
+from assistant.components.snippet_overlay.view_model import SnippetViewModel
+from assistant.components.terminal_window.view_state import TerminalViewState
+from assistant.components.vision_overlay.widget import ModelVisionOverlay
 from assistant.facade import vii
 from assistant.projections import project_screen_layout
-from assistant.services.correction_view_model import CorrectionViewModel
-from assistant.services.recording_overlay_view_model import RecordingOverlayViewModel
-from assistant.services.settings_modal_view_model import SettingsModalViewModel
-from assistant.services.snippet_view_model import SnippetViewModel
-from assistant.terminal_actions import toggle_terminal
-from assistant.util import get_screen_by_name
-from assistant.view_states.screen_info import ScreenInfoData
-from assistant.view_states.terminal import TerminalViewState
-from assistant.widgets.overlay import ModelVisionOverlay
+from assistant.utils.misc import get_screen_by_name
 
 log = logging.getLogger(__name__)
 
-QML_DIR = Path(__file__).parent / "qml"
+QML_DIR = Path(__file__).resolve().parent.parent / "components"
 
 
 class ViiQmlApp(QApplication):
@@ -78,7 +78,7 @@ class ViiQmlApp(QApplication):
         self.engine.addImportPath(str(QML_DIR))
 
         # Load main QML
-        qml_file = QML_DIR / "TerminalWindow.qml"
+        qml_file = QML_DIR / "terminal_window" / "TerminalWindow.qml"
         self.engine.load(QUrl.fromLocalFile(str(qml_file)))
         if not self.engine.rootObjects():
             log.error("Failed to load QML file: %s", qml_file)
@@ -90,7 +90,7 @@ class ViiQmlApp(QApplication):
         self._create_recording_overlays()
 
         # Load correction window QML (supervised mode)
-        correction_qml = QML_DIR / "CorrectionWindow.qml"
+        correction_qml = QML_DIR / "correction_window" / "CorrectionWindow.qml"
         self.engine.load(QUrl.fromLocalFile(str(correction_qml)))
 
         # Screen debug widget (lazy, shown via view state signal)
@@ -228,7 +228,7 @@ class ViiQmlApp(QApplication):
         """Show or hide the screen debug widget based on view state."""
         if visible:
             if self._screen_debug_widget is None:
-                from assistant.widgets.screen_debug import ScreenDebugWidget
+                from assistant.components.screen_debug.widget import ScreenDebugWidget
 
                 self._screen_debug_widget = ScreenDebugWidget()
             self._screen_debug_widget.show()
@@ -242,7 +242,7 @@ class ViiQmlApp(QApplication):
         """Create one RecordingOverlay QML window per screen."""
         self._destroy_recording_overlays()
 
-        pill_qml = QML_DIR / "RecordingOverlay.qml"
+        pill_qml = QML_DIR / "recording_overlay" / "RecordingOverlay.qml"
         if self._recording_overlay_component is None:
             self._recording_overlay_component = QQmlComponent(
                 self.engine, QUrl.fromLocalFile(str(pill_qml))

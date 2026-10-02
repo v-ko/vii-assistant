@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from assistant.transcription import ParakeetTranscriber, TranscriptionResult
+from assistant.inference.transcription import ParakeetTranscriber, TranscriptionResult
 
 # Default cache location for models
 MODELS_CACHE_DIR = Path.home() / ".cache" / "vii-assistant" / "models"

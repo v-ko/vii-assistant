@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from assistant.util import RectShape, Shape
 from assistant.utils.capture_utils import take_screenshot
+from assistant.utils.misc import RectShape, Shape
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class ScreenGrabDataLoader(DataLoader):
         capture = vii.app.view_state.capture_screen_info
         if capture is None:
             raise RuntimeError("No capture screen configured")
-        from assistant.util import get_screen_by_name
+        from assistant.utils.misc import get_screen_by_name
 
         screen = get_screen_by_name(capture.name)
         if screen is None:

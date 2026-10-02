@@ -13,11 +13,11 @@ if TYPE_CHECKING:
 
     from assistant.services.hybrid_segment_service import HybridSegmentService
 
+from assistant.actions.terminal import show_context_debug
 from assistant.constants import EXPERIMENT_RESULTS_DIR, EXPERIMENTS_DIR
 from assistant.experiments.stats import compute_stats, format_stats, load_results
 from assistant.facade import vii
 from assistant.inference.context import TextMessage
-from assistant.terminal_actions import show_context_debug
 
 log = logging.getLogger(__name__)
 
@@ -106,15 +106,15 @@ async def run_all_experiment(resume_dir: "Path | None" = None) -> None:
     """
     from datetime import datetime
 
+    from assistant.actions.terminal import (
+        _ensure_model_loaded,
+        ensure_experiment_started,
+    )
     from assistant.experiments.actions import mark_experiment_finished
-    from assistant.experiments_manager import (
+    from assistant.services.experiments_manager import (
         INFERENCE_TIMEOUT_S,
         MAX_CONSECUTIVE_FAILURES,
         ExperimentState,
-    )
-    from assistant.terminal_actions import (
-        _ensure_model_loaded,
-        ensure_experiment_started,
     )
 
     _ensure_model_loaded()

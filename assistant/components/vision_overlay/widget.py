@@ -11,12 +11,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from assistant.facade import vii
-from assistant.util import get_screen_by_name
-from assistant.view_states.overlay import (
+from assistant.components.vision_overlay.view_state import (
     OverlayMode,
     OverlayViewState,
 )
+from assistant.facade import vii
+from assistant.utils.misc import get_screen_by_name
 
 log = logging.getLogger(__name__)
 

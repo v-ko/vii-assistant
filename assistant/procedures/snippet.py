@@ -18,9 +18,9 @@ from PySide6.QtGui import QGuiApplication, QImage
 from sivkit.libs.model import dump_to_dict
 from sivkit.libs.procedure import procedure
 
+from assistant.actions.snippet import show_snippet_overlays
 from assistant.facade import vii
 from assistant.inference.context import ImageMessage, TextMessage
-from assistant.snippet_actions import show_snippet_overlays
 from assistant.utils.capture_utils import grab_screens
 from assistant.utils.image_utils import qimage_to_pil
 
@@ -45,7 +45,7 @@ async def handle_snippet_result(image: QImage) -> None:
     """
     import time
 
-    from assistant.recording_procedures import (
+    from assistant.procedures.recording import (
         _active_task,
         _pending_snippets,
         _recording_start_unix,

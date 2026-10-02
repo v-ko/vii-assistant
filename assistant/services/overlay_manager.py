@@ -11,8 +11,8 @@ import logging
 
 from PySide6.QtGui import QGuiApplication
 
-from assistant.view_states.overlay import OverlayMode, OverlayViewState
-from assistant.widgets.overlay import ModelVisionOverlay
+from assistant.components.vision_overlay.view_state import OverlayMode, OverlayViewState
+from assistant.components.vision_overlay.widget import ModelVisionOverlay
 
 log = logging.getLogger(__name__)
 

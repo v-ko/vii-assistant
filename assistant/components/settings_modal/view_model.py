@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from assistant.actions.terminal import set_input_device, set_settings_modal_visible
 from assistant.constants import RECORDINGS_DIR
 from assistant.facade import vii
+from assistant.procedures.transcription import transcribe_file
 from assistant.services.audio_recording import AudioRecordingService
-from assistant.terminal_actions import set_input_device, set_settings_modal_visible
-from assistant.transcription_procedures import transcribe_file
 
 if TYPE_CHECKING:
-    from assistant.app_state import AppViewState
+    from assistant.app.view_state import AppViewState
 
 log = logging.getLogger(__name__)
 

@@ -11,10 +11,7 @@ import logging
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from assistant.facade import vii
-from assistant.model_configs import AVAILABLE_MODELS
-from assistant.procedures import fetch_raw_context_and_present, run_all_experiment
-from assistant.terminal_actions import (
+from assistant.actions.terminal import (
     add_tool_prompt,
     attach_clipboard,
     attach_screen,
@@ -34,6 +31,9 @@ from assistant.terminal_actions import (
     stop_experiment,
     submit_message,
 )
+from assistant.facade import vii
+from assistant.model_configs import AVAILABLE_MODELS
+from assistant.procedures.app import fetch_raw_context_and_present, run_all_experiment
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class AppViewModel(QObject):
 
     @Slot()
     def stopAssistant(self):
-        from assistant.actions import stop_assistant
+        from assistant.actions.app import stop_assistant
 
         stop_assistant()
 
@@ -218,7 +218,7 @@ class AppViewModel(QObject):
 
     @Slot()
     def showScreenDebug(self):
-        from assistant.debug_actions import show_screen_debug
+        from assistant.actions.debug import show_screen_debug
 
         show_screen_debug()
 

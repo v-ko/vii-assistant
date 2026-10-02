@@ -11,15 +11,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import click
 
+from assistant.actions.terminal import set_model
+from assistant.app.init_app import init_headless
 from assistant.facade import vii
 from assistant.inference.context import ContextManager
-from assistant.init_app import init_headless
 from assistant.logging_config import configure_logging
 from assistant.model_configs import AVAILABLE_MODELS
-from assistant.procedures import run_experiment_headless
+from assistant.procedures.app import run_experiment_headless
 from assistant.services.config_file_adapter import CONFIG_DIR
 from assistant.services.project_manager import ViiProjectManager
-from assistant.terminal_actions import set_model
 
 log = logging.getLogger(__name__)
 

@@ -15,12 +15,12 @@ from typing import AsyncGenerator, Callable
 import httpx
 import numpy as np
 
-from assistant.services.inference_client import InferenceServerClient
+from assistant.inference.transcription_types import TranscriptionResult, WordTimestamp
+from assistant.inference_client import InferenceServerClient
 from assistant.services.transcription_chunking import (
     CHUNK_DURATION_S,
     stitch_chunk_results,
 )
-from assistant.transcription_types import TranscriptionResult, WordTimestamp
 
 log = logging.getLogger(__name__)
 

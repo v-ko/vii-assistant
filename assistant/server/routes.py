@@ -4,7 +4,7 @@ import sivkit
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-import assistant.terminal_actions as terminal_actions
+import assistant.actions.terminal as terminal_actions
 from assistant.facade import vii
 
 # Create the FastAPI app
@@ -35,7 +35,7 @@ def toggle_terminal() -> CommandResponse:
 @router.post("/stop", response_model=CommandResponse)
 def stop_assistant() -> CommandResponse:
     """Interrupt assistant execution."""
-    from assistant.actions import stop_assistant as _stop
+    from assistant.actions.app import stop_assistant as _stop
 
     sivkit.call_delayed(_stop, 0)
     return CommandResponse(success=True, message="Assistant stopped")
@@ -44,7 +44,7 @@ def stop_assistant() -> CommandResponse:
 @router.post("/toggle_recording", response_model=CommandResponse)
 def toggle_recording() -> CommandResponse:
     """Toggle audio recording for transcription."""
-    from assistant.recording_procedures import toggle_recording as _toggle
+    from assistant.procedures.recording import toggle_recording as _toggle
 
     sivkit.call_delayed(_toggle, 0)
     return CommandResponse(success=True, message="Recording toggled")
@@ -53,7 +53,7 @@ def toggle_recording() -> CommandResponse:
 @router.post("/snippet", response_model=CommandResponse)
 def take_snippet() -> CommandResponse:
     """Activate screen snippet overlay for region selection."""
-    from assistant.snippet_procedures import start_snippet
+    from assistant.procedures.snippet import start_snippet
 
     sivkit.call_delayed(start_snippet, 0)
     return CommandResponse(success=True, message="Snippet overlay activated")

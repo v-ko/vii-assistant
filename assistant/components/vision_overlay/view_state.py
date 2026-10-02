@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage
 
-from assistant.util import Shape
+from assistant.utils.misc import Shape
 
 if TYPE_CHECKING:
-    from assistant.image_ops import ResizeMetadata
+    from assistant.utils.image_ops import ResizeMetadata
 
 
 @dataclass

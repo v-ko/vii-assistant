@@ -6,11 +6,11 @@ from subprocess import DEVNULL, Popen
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QClipboard, QDesktopServices, QGuiApplication
 
+from assistant.app.settings_view_state import ExecutionMode
 from assistant.facade import raise_on_session_inactive, vii
 from assistant.inference.context import TextMessage
 from assistant.services.ocr import ocr_sync, start_ocr
 from assistant.utils.capture_utils import clipboard_image
-from assistant.view_states.settings import ExecutionMode
 
 
 def ocr_clipboard() -> None:

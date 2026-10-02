@@ -13,7 +13,7 @@ import sivkit
 from assistant.constants import INFERENCE_HTTP_BASE
 
 if TYPE_CHECKING:
-    from assistant.view_states.terminal import TerminalViewState
+    from assistant.components.terminal_window.view_state import TerminalViewState
 
 log = logging.getLogger(__name__)
 

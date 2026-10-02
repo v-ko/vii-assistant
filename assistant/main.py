@@ -80,9 +80,9 @@ def main(command, measure_command_send_time):
 
         sys.exit(1)
 
+    from assistant.app.init_app import init_app
     from assistant.facade import vii
     from assistant.inference.context import ContextManager
-    from assistant.init_app import init_app
     from assistant.server.desktop_server import DesktopServer
     from assistant.services.project_manager import ViiProjectManager
 
@@ -97,7 +97,7 @@ def main(command, measure_command_send_time):
     print(f"Config: {vii.get_config()}")
 
     # Auto-load the configured model on the inference server
-    from assistant.terminal_actions import set_model
+    from assistant.actions.terminal import set_model
 
     set_model(vii.get_config().selected_model)
 
@@ -106,8 +106,8 @@ def main(command, measure_command_send_time):
     desktop_server.start()
 
     if command:
-        from assistant.recording_procedures import toggle_recording
-        from assistant.terminal_actions import toggle_terminal
+        from assistant.actions.terminal import toggle_terminal
+        from assistant.procedures.recording import toggle_recording
 
         fresh_start_commands = {
             "toggle_terminal": toggle_terminal,

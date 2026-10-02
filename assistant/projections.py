@@ -15,16 +15,16 @@ from sivkit.libs.action import action
 from sivkit.storage.change import Change
 from sivkit.storage.delta import Delta
 
+from assistant.actions.snippet import hide_snippet_overlays
+from assistant.app.screen_info import ScreenInfoData, ScreenInfoVS
 from assistant.inference.context import ContextMessage
 from assistant.inference.context_store import OP_SEP
 from assistant.model.app_config import ViiConfig
-from assistant.snippet_actions import hide_snippet_overlays
-from assistant.view_states.screen_info import ScreenInfoData, ScreenInfoVS
 
 if TYPE_CHECKING:
-    from assistant.app_state import AppViewState
+    from assistant.app.view_state import AppViewState
     from assistant.inference.context import ContextManager
-    from assistant.services.inference_client import InferenceServerClient
+    from assistant.inference_client import InferenceServerClient
 
 log = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 from sivkit.platform.qt_widgets import Property
 
-from assistant.app_state import AppViewState
+from assistant.app.view_state import AppViewState
 
 
 class TerminalViewState(QObject):

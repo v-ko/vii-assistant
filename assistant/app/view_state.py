@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
 
-from assistant.view_states.context_view import ContextViewerState
-from assistant.view_states.inference_status import InferenceStatusViewState
-from assistant.view_states.overlay import OverlayViewState
-from assistant.view_states.recording_overlay import RecordingOverlayViewState
-from assistant.view_states.screen_info import ScreenInfoVS
-from assistant.view_states.settings import AssistantSettingsViewState
-from assistant.view_states.settings_modal import SettingsModalViewState
-from assistant.view_states.snippet import SnippetOverlayViewState
+from assistant.app.inference_status_view_state import InferenceStatusViewState
+from assistant.app.screen_info import ScreenInfoVS
+from assistant.app.settings_view_state import AssistantSettingsViewState
+from assistant.components.context_viewer.view_state import ContextViewerState
+from assistant.components.recording_overlay.view_state import RecordingOverlayViewState
+from assistant.components.settings_modal.view_state import SettingsModalViewState
+from assistant.components.snippet_overlay.view_state import SnippetOverlayViewState
+from assistant.components.vision_overlay.view_state import OverlayViewState
 
 
 class AppViewState(QObject):

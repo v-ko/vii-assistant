@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from sivkit.libs.action import action
 
+from assistant.components.vision_overlay.view_state import OverlayMode
 from assistant.facade import vii
-from assistant.view_states.overlay import OverlayMode
 
 
 @action("overlay.show_pending_actions")

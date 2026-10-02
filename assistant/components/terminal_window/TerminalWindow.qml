@@ -1,6 +1,9 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "../context_viewer"
+import "../settings_panel"
+import "../settings_modal"
 
 Window {
     id: root

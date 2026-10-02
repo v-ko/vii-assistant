@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
-from assistant.transcription_types import TranscriptionResult, WordTimestamp
+from assistant.inference.transcription_types import TranscriptionResult, WordTimestamp
 
 
 class ParakeetTranscriber:
