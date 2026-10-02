@@ -17,7 +17,6 @@ if sys.platform.startswith("linux"):
 
 import click
 
-from assistant.logging_config import configure_logging
 from assistant.server.command_client import port_is_taken, send_command
 
 DEFAULT_DESKTOP_SERVER_PORT = 51177
@@ -41,7 +40,6 @@ if not sivkit_pkg_version or not sivkit_pkg_version.startswith("0.1"):
 )
 def main(command, measure_command_send_time):
     """Screenshot Assistant with HTTP API support."""
-    configure_logging()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # If a command is specified, try to send it to a running instance
@@ -80,11 +78,13 @@ def main(command, measure_command_send_time):
 
         sys.exit(1)
 
-    from assistant.app.init_app import init_app
+    from assistant.app.init_app import configure_logging, init_app
     from assistant.facade import vii
     from assistant.inference.context import ContextManager
     from assistant.server.desktop_server import DesktopServer
     from assistant.services.project_manager import ViiProjectManager
+
+    configure_logging()
 
     # Instantiate services first then inject into facade to avoid circular imports
     ctx_manager = ContextManager()

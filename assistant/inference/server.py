@@ -38,7 +38,6 @@ from assistant.inference.transcription_service import (
     TRANSCRIPTION_MODELS,
     TranscriptionService,
 )
-from assistant.logging_config import configure_logging
 from assistant.model_configs import MODEL_SPECS
 
 log = logging.getLogger(__name__)
@@ -54,7 +53,8 @@ def _backend_for_model(model_key: str) -> InferenceBackend:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     set_main_loop(AsyncioMainLoop())
     app.state.backend = ModelManager()
     app.state.transcription_service = TranscriptionService()

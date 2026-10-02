@@ -1,5 +1,7 @@
 """One-shot app initialization — services, view models, and Qt app for the assistant."""
 
+import logging
+
 from assistant.actions.recording import set_transcribing_active
 from assistant.app.headless_app import ViiHeadlessApp
 from assistant.app.qml_app import ViiQmlApp
@@ -13,6 +15,12 @@ from assistant.services.transcription_chunking import (
     OVERLAP_DURATION_S,
 )
 from assistant.services.transcription_orchestrator import TranscriptionOrchestrator
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Configure root logging and silence noisy third-party loggers."""
+    logging.basicConfig(level=level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _wire_inference_status(
