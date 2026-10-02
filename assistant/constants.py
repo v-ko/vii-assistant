@@ -35,8 +35,8 @@ APP_DATA_DIR = Path(
 RECORDINGS_DIR = APP_DATA_DIR / "transcription_recordings"
 MAX_SAVED_RECORDINGS = 5
 
-# Experiment configs
-EXPERIMENTS_DIR = Path(__file__).parent / "experiments"
+# Experiment configs (project root level)
+EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
 
 # Experiment run outputs (results, sample images, stats)
 EXPERIMENT_RESULTS_DIR = Path.home() / "vii" / "experiments"
