@@ -35,12 +35,9 @@ inference = [
   "fastapi",
   "uvicorn",
   "json-repair",
-  "qwen-vl-utils",
   "transformers",
   "torch",
   "torchvision",
-  "torchaudio",
-  "torchcodec",
   "onnxruntime-gpu",
 ]
 all = ["vii-assistant[inference]"]

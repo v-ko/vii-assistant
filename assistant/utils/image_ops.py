@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict
+from typing import TypedDict
 
 from PIL import Image
-from qwen_vl_utils import smart_resize
-
-
-class SupportsVisionResize(Protocol):
-    patch_size: int
-    min_pixels: int
-    max_pixels: int
 
 
 class ResizeMetadata(TypedDict):
@@ -22,31 +15,6 @@ class ResizeMetadata(TypedDict):
     scale: float
     src_width: int
     src_height: int
-
-
-def resize_like_preprocessor(
-    image: Image.Image,
-    image_processor: SupportsVisionResize,
-) -> tuple[Image.Image, ResizeMetadata]:
-    resized_height, resized_width = smart_resize(
-        image.height,
-        image.width,
-        factor=image_processor.patch_size,
-        min_pixels=image_processor.min_pixels,
-        max_pixels=image_processor.max_pixels,
-    )
-    resized_image = image.resize((resized_width, resized_height))
-    src_w, src_h = image.size
-    scale = min(resized_width / src_w, resized_height / src_h)
-    return resized_image, ResizeMetadata(
-        width=resized_width,
-        height=resized_height,
-        paste_x=0,
-        paste_y=0,
-        scale=scale,
-        src_width=src_w,
-        src_height=src_h,
-    )
 
 
 def resize_to_target(
