@@ -3,8 +3,9 @@
 Responsibilities:
 - Start/stop recording on toggle
 - Accumulate PCM in buffer (16kHz mono int16)
-- Compute 10-band spectrogram at 10 Hz and push to pill controller
+- Update the recording overlay's 10-band spectrum at 10 Hz
 - Emit chunk-ready signals for transcription orchestrator
+- Stream audio to a WAV file in RECORDINGS_DIR
 - Enforce 2h recording cap
 """
 
@@ -12,6 +13,9 @@ from __future__ import annotations
 
 import logging
 import time
+import wave
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,6 +23,7 @@ from PySide6.QtCore import QByteArray, QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
 
 from assistant.actions.recording import set_recording_active
+from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 
 if TYPE_CHECKING:
     from assistant.components.recording_overlay.view_model import (
@@ -43,7 +48,7 @@ class AudioRecordingService(QObject):
     # Args: (chunk_audio_int16: np.ndarray, chunk_start_time_s: float)
     chunk_ready = Signal(object, float)
 
-    # Emitted when recording stops (final partial chunk if any).
+    # Emitted after the final partial chunk, if any, has been delivered.
     recording_stopped = Signal()
 
     def __init__(
@@ -66,6 +71,8 @@ class AudioRecordingService(QObject):
         self._buffer = QByteArray()
         self._recording = False
         self._start_time: float = 0.0
+        self._wav: wave.Wave_write | None = None
+        self._recording_path: Path | None = None
 
         # Spectrum timer (10 Hz while recording)
         self._spectrum_timer = QTimer(self)
@@ -91,6 +98,11 @@ class AudioRecordingService(QObject):
         return self._recording
 
     @property
+    def recording_path(self) -> Path | None:
+        """Path to the current or most recent WAV recording, or None if none opened."""
+        return self._recording_path
+
+    @property
     def selected_device_id(self) -> str:
         return self._selected_device_id
 
@@ -110,14 +122,6 @@ class AudioRecordingService(QObject):
                 }
             )
         return devices
-
-    @property
-    def full_buffer_int16(self) -> np.ndarray:
-        """Return the full recording buffer as int16 numpy array."""
-        data = self._buffer.data()
-        if not data:
-            return np.array([], dtype=np.int16)
-        return np.frombuffer(data, dtype=np.int16).copy()
 
     @property
     def elapsed_seconds(self) -> float:
@@ -181,6 +185,7 @@ class AudioRecordingService(QObject):
             self._source = None
             return
 
+        self._open_wav()
         self._io_device.readyRead.connect(self._on_ready_read)
         self._recording = True
         self._spectrum_timer.start()
@@ -202,6 +207,7 @@ class AudioRecordingService(QObject):
             self._source.deleteLater()
             self._source = None
         self._io_device = None
+        self._close_wav()
 
         # Emit final partial chunk if there's leftover audio
         total_samples = self._buffer.size() // SAMPLE_SIZE_BYTES
@@ -230,7 +236,50 @@ class AudioRecordingService(QObject):
         if data.isEmpty():
             return
         self._buffer.append(data)
+        if self._wav is not None:
+            try:
+                self._wav.writeframes(data.data())
+            except Exception as exc:
+                log.error("Failed to write recording file: %s", exc)
+                self._close_wav()
         self._check_chunk_boundary()
+
+    def _open_wav(self) -> None:
+        self._recording_path = None
+        try:
+            RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+            path = RECORDINGS_DIR / f"recording_{datetime.now():%Y%m%d_%H%M%S}.wav"
+            wf = wave.open(str(path), "wb")
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_SIZE_BYTES)
+            wf.setframerate(SAMPLE_RATE)
+        except Exception as exc:
+            log.error("Failed to open recording file: %s", exc)
+            return
+        self._wav = wf
+        self._recording_path = path
+        log.info("Writing recording to %s", path)
+        self._prune_old_recordings()
+
+    def _close_wav(self) -> None:
+        if self._wav is None:
+            return
+        try:
+            self._wav.close()
+            log.info("Saved recording to %s", self._recording_path)
+        except Exception as exc:
+            log.error("Failed to finalize recording %s: %s", self._recording_path, exc)
+        self._wav = None
+
+    @staticmethod
+    def _prune_old_recordings() -> None:
+        existing = sorted(RECORDINGS_DIR.glob("recording_*.wav"))
+        for old in existing[:-MAX_SAVED_RECORDINGS]:
+            try:
+                old.unlink()
+                log.debug("Removed old recording: %s", old.name)
+            except OSError as exc:
+                log.warning("Failed to remove old recording %s: %s", old.name, exc)
 
     def _check_chunk_boundary(self) -> None:
         total_samples = self._buffer.size() // SAMPLE_SIZE_BYTES

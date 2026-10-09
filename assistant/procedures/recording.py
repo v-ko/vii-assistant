@@ -1,7 +1,7 @@
 """Recording and transcription procedures.
 
-The @procedure functions are the consumer/policy layer.
-They consume the async generator from the orchestrator and apply output.
+This is the consumer/policy layer: it controls recording and delivers
+transcription output to the active application.
 """
 
 from __future__ import annotations
@@ -9,15 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import wave
-from datetime import datetime
 from subprocess import DEVNULL, Popen
 
 import numpy as np
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 
-from assistant.constants import MAX_SAVED_RECORDINGS, RECORDINGS_DIR
 from assistant.facade import vii
 from assistant.services.input_control import send_paste_shortcut
 
@@ -25,7 +22,7 @@ log = logging.getLogger(__name__)
 
 # Module-level state for the running transcription task
 _active_task: asyncio.Task | None = None
-_chunk_queue: asyncio.Queue | None = None
+_chunk_queue: asyncio.Queue[tuple[np.ndarray, float] | None] | None = None
 _recording_start_unix: float = 0.0  # Unix time when recording started
 # Pending snippet descriptions: (recording_relative_time, Task[str])
 _pending_snippets: list[tuple[float, asyncio.Task]] = []
@@ -52,7 +49,8 @@ def toggle_recording() -> None:
         return
 
     # Start recording and kick off the transcription procedure
-    _chunk_queue = asyncio.Queue()
+    queue: asyncio.Queue[tuple[np.ndarray, float] | None] = asyncio.Queue()
+    _chunk_queue = queue
     _pending_snippets = []
 
     # Connect signals BEFORE start() so we don't miss early data
@@ -67,7 +65,7 @@ def toggle_recording() -> None:
         return
 
     _recording_start_unix = time.time()
-    _active_task = asyncio.ensure_future(_transcribe_to_ydotool())
+    _active_task = asyncio.ensure_future(_transcribe_to_ydotool(queue))
     _active_task.add_done_callback(_log_task_result)
     log.info("Transcription task started")
 
@@ -118,15 +116,16 @@ def _on_recording_stopped() -> None:
 PASTE_INCREMENTALLY = False
 
 
-async def _transcribe_to_ydotool() -> None:
-    """Consume transcription generator and type output via ydotool."""
+async def _transcribe_to_ydotool(
+    queue: asyncio.Queue[tuple[np.ndarray, float] | None],
+) -> None:
+    """Transcribe queued audio and paste text into the active application."""
     global _chunk_queue, _pending_snippets
 
     orch = vii.transcription_orchestrator
-    rec = vii.audio_recording_service
 
     try:
-        async for text_segment in orch.run(_chunk_queue):
+        async for text_segment in orch.run(queue):
             if text_segment:
                 if PASTE_INCREMENTALLY:
                     log.info("Got text segment (%d chars), pasting", len(text_segment))
@@ -148,7 +147,6 @@ async def _transcribe_to_ydotool() -> None:
         log.error("Transcription failed: %s", exc, exc_info=True)
         _notify_error(str(exc))
     finally:
-        _save_recording(rec)
         _chunk_queue = None
         _pending_snippets = []
 
@@ -241,37 +239,3 @@ def _notify_error(message: str) -> None:
         )
     except Exception:
         pass
-
-
-def _save_recording(rec) -> None:
-    """Save full recording buffer as WAV, keeping only the last N recordings."""
-    audio = rec.full_buffer_int16
-    if len(audio) == 0:
-        log.warning("No audio to save")
-        return
-
-    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = RECORDINGS_DIR / f"recording_{timestamp}.wav"
-
-    try:
-        with wave.open(str(filepath), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)  # int16
-            wf.setframerate(16000)
-            wf.writeframes(audio.tobytes())
-        log.info("Saved recording to %s", filepath)
-    except Exception as exc:
-        log.error("Failed to save recording: %s", exc)
-        return
-
-    # Enforce cap: delete oldest files beyond MAX_SAVED_RECORDINGS
-    existing = sorted(RECORDINGS_DIR.glob("recording_*.wav"))
-    while len(existing) > MAX_SAVED_RECORDINGS:
-        oldest = existing.pop(0)
-        try:
-            oldest.unlink()
-            log.debug("Removed old recording: %s", oldest.name)
-        except OSError as exc:
-            log.warning("Failed to remove old recording %s: %s", oldest.name, exc)

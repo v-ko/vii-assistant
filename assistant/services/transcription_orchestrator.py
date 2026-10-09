@@ -64,6 +64,7 @@ class TranscriptionOrchestrator:
         self._generation += 1
         gen = generation if generation is not None else self._generation
         self._in_flight = 0
+        self.last_result = None
 
         chunk_results: list[tuple[float, TranscriptionResult]] = []
         last_yielded_text = ""
